@@ -371,6 +371,16 @@ impl Sim {
         self.observed(&format!("torpor {}", args.join(" ")), c, b"")
     }
 
+    /// The command line with extra environment variables for this one run (fault injection).
+    pub fn cli_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Out {
+        let mut c = self.cmd();
+        c.args(args);
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        self.observed(&format!("torpor {}", args.join(" ")), c, b"")
+    }
+
     pub fn status(&self) -> Out {
         self.cli(&["status"])
     }
@@ -690,4 +700,58 @@ pub fn make_plugin_root(dir: &Path, with_binary: bool) -> PathBuf {
         std::fs::create_dir_all(root.join("dist")).unwrap();
     }
     root
+}
+
+/// Copy a folder tree (files, folders, symlinks, modes) with std only.
+pub fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let md = std::fs::symlink_metadata(&src).unwrap();
+        if md.is_dir() {
+            copy_tree(&src, &dst);
+        } else if md.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(&src).unwrap(), &dst).unwrap();
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// Empty a folder but keep the folder itself (the open project directory of a running harness).
+pub fn clear_dir(dir: &Path) {
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        let md = std::fs::symlink_metadata(&p).unwrap();
+        if md.is_dir() {
+            std::fs::remove_dir_all(&p).unwrap();
+        } else {
+            std::fs::remove_file(&p).unwrap();
+        }
+    }
+}
+
+/// The store is intact: SQLite says ok, and every file a live point names is stored and readable.
+pub fn assert_store_sound(env: &Env) {
+    use torpor::store::Ws;
+    let ws = Ws::open_in(&env.thome, &env.proj, false).unwrap();
+    let ic: String = ws.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+    assert_eq!(ic, "ok", "PRAGMA integrity_check");
+    let mut st = ws.conn.prepare("SELECT id,tree_id FROM points WHERE dropped=0").unwrap();
+    let rows: Vec<(i64, Vec<u8>)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    for (id, tree) in rows {
+        let tree: [u8; 32] = tree.try_into().unwrap();
+        let flat = torpor::capture::flatten_tree(&ws, &ws.conn, &tree).unwrap_or_else(|e| panic!("point {id}: tree unreadable: {e}"));
+        for (path, e) in flat {
+            if matches!(e.kind, 'f' | 'l' | 's') {
+                let bid = torpor::util::unhex32(&e.id).unwrap();
+                assert!(ws.blob_exists(&ws.conn, &bid), "point {id}: {path} names a missing blob");
+                let loose: i64 = ws.conn.query_row("SELECT loose FROM blobs WHERE id=?1", [&bid[..]], |r| r.get(0)).unwrap();
+                if loose != 0 {
+                    assert!(ws.loose_path(&bid).exists(), "point {id}: {path}: loose file missing");
+                }
+            }
+        }
+    }
 }

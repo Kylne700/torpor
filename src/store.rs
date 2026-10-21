@@ -261,6 +261,13 @@ impl Ws {
         }
     }
 
+    /// Release the lock; the next `lock_*` takes it again. Restore uses this to hand over to a plain shared hook lock.
+    pub fn unlock(&mut self) {
+        if let Some(f) = &self.lock {
+            let _ = f.unlock();
+        }
+    }
+
     pub fn objects_dir(&self) -> PathBuf {
         self.dir.join("objects")
     }
@@ -397,8 +404,8 @@ pub fn disk_floor(total: u64) -> u64 {
     GIB.max((total / 20).min(10 * GIB))
 }
 
-/// Err(Disk) when the file system holding `path` is below the floor (spec 2.4).
-pub fn check_disk(path: &Path) -> Result<()> {
+/// `disk_space`, with the test override for the free bytes (fault-inject builds only).
+pub fn free_space(path: &Path) -> (u64, u64) {
     let (mut free, total) = disk_space(path);
     #[cfg(feature = "fault-inject")]
     if let Some(v) = std::env::var("TORPOR_TEST_FREE_BYTES").ok().and_then(|s| s.parse::<u64>().ok()) {
@@ -406,6 +413,12 @@ pub fn check_disk(path: &Path) -> Result<()> {
     }
     #[cfg(not(feature = "fault-inject"))]
     let _ = &mut free;
+    (free, total)
+}
+
+/// Err(Disk) when the file system holding `path` is below the floor (spec 2.4).
+pub fn check_disk(path: &Path) -> Result<()> {
+    let (free, total) = free_space(path);
     if free < disk_floor(total) {
         return Err(Error::Disk(format!("{:.1} GB free", free as f64 / 1e9)));
     }
@@ -474,6 +487,11 @@ impl Key {
             Some(k) => Ok(k),
             None => Key::create(),
         }
+    }
+
+    /// The id a secret file with these bytes has in the store (lets a restore compare a live file with a saved one).
+    pub fn secret_id(&self, bytes: &[u8]) -> [u8; 32] {
+        *blake3::keyed_hash(&self.id_key(), bytes).as_bytes()
     }
 
     fn id_key(&self) -> [u8; 32] {

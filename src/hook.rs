@@ -3,7 +3,7 @@ use crate::capture::{self, Captured, Mode, PointKind, PointSpec, Req};
 use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
-use crate::{mask, retention, scan, transcript};
+use crate::{mask, restore, retention, scan, transcript};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::cell::Cell;
@@ -185,6 +185,11 @@ fn handle(event: &str, shared: &Shared, t0: Instant, own_ms: u64) -> Result<Opti
         *g = (ws.home.clone(), Some(ws.dir.clone()), ws.id.clone());
     }
     inject_faults();
+    // A crashed restore is finished first (spec 6.3 step 7). On Busy the normal path goes on; the hook deadline may cut this short, the journal makes that safe.
+    if matches!(event, "SessionStart" | "UserPromptSubmit") && restore::has_pending(&ws) && ws.lock_exclusive(LOCK_WAIT_MS).is_ok() {
+        let _ = restore::recover_locked(&ws);
+        ws.unlock();
+    }
     ws.lock_shared(LOCK_WAIT_MS)?;
     let now = now_ns();
     let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;

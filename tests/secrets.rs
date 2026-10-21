@@ -146,3 +146,35 @@ fn the_store_and_the_key_are_private() {
     assert!(parts[1].chars().chain(parts[2].chars()).all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
     assert!(!sim.env.key.starts_with(&sim.env.thome), "the key must live outside the store");
 }
+
+/// A7, restore half: delete a secret, go back, and it is back byte for byte and private, while the canary (also typed in
+/// a prompt and a shell command) never shows up in any store file, the restore's own output, or a stage folder.
+#[test]
+fn a_restored_secret_comes_back_exact_and_private_and_never_clear_in_the_store() {
+    let mut sim = Sim::new();
+    let proj = sim.env.proj.clone();
+    let tc = canary(9);
+    let env_bytes = format!("TORPOR_CANARY={tc}\nOTHER=1\n");
+    write_files(&proj, &[(".env", &env_bytes), ("src/main.rs", "fn main() {}\n")]);
+    std::fs::set_permissions(proj.join(".env"), std::fs::Permissions::from_mode(0o640)).unwrap();
+    sim.session_start();
+    sim.prompt(&format!("please keep {tc} out of git"));
+    assert_eq!(sim.bash(&format!("echo {tc} > /dev/null")), 0);
+    sim.edit("src/main.rs", "fn main() { /* one */ }\n");
+    sim.stop();
+    sim.prompt("clean up");
+    assert_eq!(sim.bash("rm .env"), 0);
+    sim.stop();
+    assert!(!proj.join(".env").exists());
+
+    let o = sim.cli(&["back", "1"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert_eq!(std::fs::read(proj.join(".env")).unwrap(), env_bytes.as_bytes(), "the secret comes back byte for byte");
+    let mode = std::fs::metadata(proj.join(".env")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "a restored secret is private whatever its old mode was");
+    assert!(!o.stdout.contains(&tc) && !o.stderr.contains(&tc), "the restore report shows the secret: {}", o.stdout);
+    assert!(!proj.join(".torpor-stage").exists());
+    let found = hits(&sim.env.thome, &tc);
+    assert!(found.is_empty(), "canary found after the restore in {found:?}");
+    sim.verify_last_point();
+}

@@ -32,6 +32,7 @@ chacha20poly1305 = "0.11"
 getrandom = "0.4"
 
 libc = "0.2"
+diffy = "0.5.2"
 
 [dev-dependencies]
 # Self dev-dependency: plain `cargo test` builds the binary with fault injection.
@@ -41,6 +42,7 @@ regex = "1" # only the mask differential test
 inotify = "0.11"
 # Only the P10 test uses the online backup API (spec 5.8 branch: it writes next to WAL databases, so the product reads raw bytes).
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+proptest = "1.12.0"
 
 [profile.release]
 opt-level = 3

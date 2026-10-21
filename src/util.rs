@@ -184,3 +184,29 @@ pub fn human_bytes(n: u64) -> String {
         format!("{n} B")
     }
 }
+
+/// Crash-test hook. `TORPOR_FAULT=<domain>:<k>` kills this process with SIGKILL at the k-th call for that domain
+/// (domains: `restore`, `capture`); `<domain>:0` only prints `fault-step <domain> <n>` on stderr for every call, so a test can count the steps.
+/// Release builds (no `fault-inject` feature) contain no code that reads the variable.
+#[cfg(feature = "fault-inject")]
+pub fn fault_point(domain: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+    static RESTORE: AtomicU64 = AtomicU64::new(0);
+    static CAPTURE: AtomicU64 = AtomicU64::new(0);
+    let Ok(spec) = std::env::var("TORPOR_FAULT") else { return };
+    let Some((d, k)) = spec.split_once(':') else { return };
+    let Ok(k) = k.parse::<u64>() else { return };
+    if d != domain {
+        return;
+    }
+    let n = if domain == "restore" { &RESTORE } else { &CAPTURE }.fetch_add(1, SeqCst) + 1;
+    if k == 0 {
+        eprintln!("fault-step {domain} {n}");
+    } else if n == k {
+        // SAFETY: plain syscall on our own pid; there is nothing to clean up, which is the point.
+        unsafe { libc::kill(libc::getpid(), libc::SIGKILL) };
+    }
+}
+#[cfg(not(feature = "fault-inject"))]
+#[inline(always)]
+pub fn fault_point(_domain: &str) {}

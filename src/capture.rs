@@ -469,7 +469,7 @@ fn load_cached(ws: &Ws, db: &Connection, cache: &mut HashMap<[u8; 32], std::rc::
     Ok(t)
 }
 
-type TreeCache = HashMap<[u8; 32], std::rc::Rc<Vec<TreeEntry>>>;
+pub type TreeCache = HashMap<[u8; 32], std::rc::Rc<Vec<TreeEntry>>>;
 
 fn entry_eq(a: &TreeEntry, b: &TreeEntry) -> bool {
     a.kind == b.kind && a.id == b.id && a.mode == b.mode && a.size == b.size
@@ -872,6 +872,7 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     let new_bytes = AtomicU64::new(0);
     let hctx = HashCtx { root: &ws.root, key: key.as_ref(), deadline: req.budget.map(|b| Instant::now() + b), new_bytes: &new_bytes };
     let outs = hash_all(&hctx, &jobs);
+    fault_point("capture");
     let mut outs = outs.into_iter();
     let written_ns = now_ns();
 
@@ -969,6 +970,7 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
             }
         }
     }
+    fault_point("capture");
     for (path, row) in &cache_rows {
         upsert_cache(db, path, row)?;
     }
@@ -990,10 +992,16 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
         return Ok(out);
     }
 
-    let (rows, note) = match &prev {
+    let (mut rows, note) = match &prev {
         Some(_) => classify(ws, db, req, baseline_at, wm, diff.changes.into_iter().collect())?,
         None => (Vec::new(), None),
     };
+    // What a restore changed is its own class: it is neither the AI's work nor the user's.
+    if req.points.first().is_some_and(|p| p.kind == PointKind::Restored) {
+        for r in &mut rows {
+            r.class = "restore";
+        }
+    }
     out.n_changes = rows.len();
     let now = now_ns();
     let mut parent = prev.as_ref().map(|p| p.id);
@@ -1007,7 +1015,7 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
         db.prepare_cached("INSERT INTO points(kind,visible,session_id,turn_id,tree_id,parent_id,created_at,partial,pinned,dropped,note) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,0,?10)")?.execute(params![
             spec.kind.as_str(),
             spec.kind.visible() as i64,
-            req.session,
+            (!req.session.is_empty()).then_some(req.session),
             spec.turn_id,
             &trees.root[..],
             parent,
@@ -1041,6 +1049,7 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
             nc.execute(params![pid, path, reason, *size as i64])?;
         }
     }
+    fault_point("capture");
     Ok(out)
 }
 

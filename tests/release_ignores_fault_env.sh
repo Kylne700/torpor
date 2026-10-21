@@ -8,10 +8,10 @@ cargo build --release --quiet
 BIN="$PWD/target/release/torpor"
 T="$(mktemp -d "${TMPDIR:-/tmp}/torpor-relcheck.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/proj" "$T/home"
+mkdir -p "$T/proj" "$T/hm"
 echo hello > "$T/proj/a.txt"
 unset CLAUDE_CONFIG_DIR TORPOR_OFF TORPOR_FAULT
-export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" TORPOR_HOME="$T/store" TORPOR_KEY_FILE="$T/home/.config/torpor/key" CLAUDE_PROJECT_DIR="$T/proj"
+export HOME="$T/hm" XDG_CONFIG_HOME="$T/hm/.config" TORPOR_HOME="$T/store" TORPOR_KEY_FILE="$T/hm/.config/torpor/key" CLAUDE_PROJECT_DIR="$T/proj"
 # A panic, a 10 s sleep and an empty disk: a build with fault-inject would print nothing, take 5 s or skip the capture.
 export TORPOR_TEST_PANIC=1 TORPOR_TEST_SLEEP_MS=10000 TORPOR_TEST_FREE_BYTES=0 TORPOR_TEST_NO_GC=1
 P='{"session_id":"s1","cwd":"'"$T"'/proj","hook_event_name":"UserPromptSubmit","prompt":"hi","prompt_id":"p1"}'

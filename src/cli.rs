@@ -3,12 +3,15 @@
 //! Exit codes: 0 done, 1 error, 2 usage, 3 refused for safety, 4 partly done, 5 not found.
 use crate::store::*;
 use crate::util::*;
+use crate::restore::{self, Target};
 use crate::{hook, retention, status};
 use std::io::Write;
 
 pub const HELP: &str = "Torpor keeps save points of your project, so you can go back.\n\
 \n\
   torpor status [--all]    Is Torpor saving this folder? Problems, files it could not save\n\
+  torpor back N            Put the whole folder back to an earlier state (see: torpor log)\n\
+  torpor recover           Finish a restore that was interrupted\n\
   torpor gc                Free space used by old save points\n\
   torpor quiet on|off      Show or hide the line Torpor prints after each turn\n\
   torpor version           Which Torpor this is\n\
@@ -67,6 +70,8 @@ pub fn run(args: Vec<String>) -> i32 {
         // Hook mode never prints anything of its own and never fails (spec 3.1).
         Some("hook") => hook::run(a.get(1).copied().unwrap_or("")),
         Some("status") => status_cmd(&a[1..]),
+        Some("back") => back_cmd(&a[1..]),
+        Some("recover") => recover_cmd(&a[1..]),
         Some("gc") => gc_cmd(&a[1..]),
         Some("quiet") => quiet_cmd(&a[1..]),
         Some("version") | Some("--version") | Some("-V") => {
@@ -181,4 +186,56 @@ fn quiet_cmd(args: &[&str]) -> i32 {
         }
         Err(e) => fail(&e),
     }
+}
+
+fn finish_outcome(r: Result<restore::Outcome>) -> i32 {
+    match r {
+        Ok(o) => {
+            out(&o.text);
+            o.code
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn back_cmd(args: &[&str]) -> i32 {
+    const U: &str = "back N | --turn K | --id P [--with-data] [--dry-run]";
+    let (mut target, mut opts) = (None, restore::Opts::default());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let t = match *a {
+            "--with-data" => {
+                opts.with_data = true;
+                continue;
+            }
+            "--dry-run" => {
+                opts.dry_run = true;
+                continue;
+            }
+            "--turn" => it.next().and_then(|v| v.parse::<i64>().ok()).filter(|k| *k >= 1).map(Target::Turn),
+            "--id" => it.next().and_then(|v| v.parse::<i64>().ok()).filter(|k| *k >= 1).map(Target::Id),
+            n => n.parse::<usize>().ok().filter(|k| *k >= 1).map(Target::Back),
+        };
+        match (t, target) {
+            (Some(t), None) => target = Some(t),
+            _ => return usage(U),
+        }
+    }
+    let Some(target) = target else { return usage(U) };
+    let mut ws = match open_here() {
+        Ok(ws) => ws,
+        Err(e) => return fail(&e),
+    };
+    finish_outcome(restore::back(&mut ws, target, opts))
+}
+
+fn recover_cmd(args: &[&str]) -> i32 {
+    if !args.is_empty() {
+        return usage("recover");
+    }
+    let mut ws = match open_here() {
+        Ok(ws) => ws,
+        Err(e) => return fail(&e),
+    };
+    finish_outcome(restore::recover(&mut ws))
 }
