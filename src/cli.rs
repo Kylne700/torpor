@@ -4,13 +4,14 @@
 use crate::store::*;
 use crate::util::*;
 use crate::restore::{self, Target};
-use crate::{hook, retention, status};
+use crate::{hook, merge, retention, status};
 use std::io::Write;
 
 pub const HELP: &str = "Torpor keeps save points of your project, so you can go back.\n\
 \n\
   torpor status [--all]    Is Torpor saving this folder? Problems, files it could not save\n\
   torpor back N            Put the whole folder back to an earlier state (see: torpor log)\n\
+  torpor undo K            Undo one turn and keep the work after it\n\
   torpor recover           Finish a restore that was interrupted\n\
   torpor gc                Free space used by old save points\n\
   torpor quiet on|off      Show or hide the line Torpor prints after each turn\n\
@@ -71,6 +72,7 @@ pub fn run(args: Vec<String>) -> i32 {
         Some("hook") => hook::run(a.get(1).copied().unwrap_or("")),
         Some("status") => status_cmd(&a[1..]),
         Some("back") => back_cmd(&a[1..]),
+        Some("undo") => undo_cmd(&a[1..]),
         Some("recover") => recover_cmd(&a[1..]),
         Some("gc") => gc_cmd(&a[1..]),
         Some("quiet") => quiet_cmd(&a[1..]),
@@ -238,4 +240,24 @@ fn recover_cmd(args: &[&str]) -> i32 {
         Err(e) => return fail(&e),
     };
     finish_outcome(restore::recover(&mut ws))
+}
+
+fn undo_cmd(args: &[&str]) -> i32 {
+    const U: &str = "undo K [--dry-run]";
+    let (mut turn, mut dry_run) = (None, false);
+    for a in args {
+        match *a {
+            "--dry-run" => dry_run = true,
+            n => match (n.parse::<i64>().ok().filter(|k| *k >= 1), turn) {
+                (Some(k), None) => turn = Some(k),
+                _ => return usage(U),
+            },
+        }
+    }
+    let Some(k) = turn else { return usage(U) };
+    let mut ws = match open_here() {
+        Ok(ws) => ws,
+        Err(e) => return fail(&e),
+    };
+    finish_outcome(merge::undo(&mut ws, k, dry_run))
 }

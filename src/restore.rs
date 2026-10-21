@@ -206,8 +206,8 @@ pub fn live_perm(root: &Path, rel: &str) -> Option<u32> {
     fs::symlink_metadata(root.join(rel)).ok().map(|m| m.mode() & 0o7777)
 }
 
-fn not_saved_text(reason: &str, live_side: bool) -> String {
-    let why = match reason {
+pub(crate) fn not_saved_why(reason: &str) -> &'static str {
+    match reason {
         "too_big" => "it was too big to save",
         "cap" => "it was not saved in time",
         "db_busy" => "its database was busy",
@@ -216,7 +216,11 @@ fn not_saved_text(reason: &str, live_side: bool) -> String {
         "special" => "it is not a regular file",
         "unstable" => "it kept changing while it was saved",
         _ => "it was not saved",
-    };
+    }
+}
+
+pub(crate) fn not_saved_text(reason: &str, live_side: bool) -> String {
+    let why = not_saved_why(reason);
     if live_side { format!("left alone, {why}") } else { format!("nothing to bring back, {why}") }
 }
 
@@ -979,7 +983,8 @@ fn render(job: &Job, counts: &Counts, would: bool, pre_id: i64) -> String {
     for d in &job.detail {
         out.push_str(&format!("{d}\n"));
     }
-    if counts.total() > 0 {
+    // An undo lists its files one by one above; the summary is for `back`.
+    if counts.total() > 0 && job.detail.is_empty() {
         out.push_str(&format!("{}\n", counts.changes_line(would)));
     }
     if let Some(l) = counts.not_touched_line() {

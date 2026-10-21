@@ -2,6 +2,7 @@ pub mod capture;
 pub mod cli;
 pub mod hook;
 pub mod mask;
+pub mod merge;
 pub mod restore;
 pub mod retention;
 pub mod scan;
