@@ -165,8 +165,10 @@ pub fn check_contract(event: &str, o: &Out) {
             assert!(ok.contains(&k.as_str()), "{event}: nested key {k} is not allowed");
         }
         if event == "PreToolUse" {
-            assert_eq!(h.get("permissionDecision").and_then(|x| x.as_str()), Some("deny"), "PreToolUse may only deny");
-            assert!(h.get("permissionDecisionReason").and_then(|x| x.as_str()).is_some_and(|r| r.chars().count() < 10_000));
+            let d = h.get("permissionDecision").and_then(|x| x.as_str());
+            assert!(matches!(d, Some("deny") | Some("ask")), "PreToolUse may only deny or ask, never allow: {d:?}");
+            let r = h.get("permissionDecisionReason").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("PreToolUse: no reason in {}", o.stdout));
+            assert!(r.chars().count() < 10_000 && r.starts_with("Torpor"), "PreToolUse: bad reason {r}");
         } else {
             assert!(h.get("additionalContext").and_then(|x| x.as_str()).is_some_and(|r| r.chars().count() < 10_000));
         }

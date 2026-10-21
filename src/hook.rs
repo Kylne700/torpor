@@ -442,25 +442,38 @@ fn lexical(base: &Path, s: &str) -> PathBuf {
     out
 }
 
-/// Canonical path of the longest existing part, plus the rest as written.
+/// Where a write to `p` would land: the real path of the longest existing part (symlinks and `..` resolved the
+/// way the kernel does), then the rest as written. A dangling symlink is followed: writing through it creates its target.
 fn real(p: &Path) -> PathBuf {
+    use std::path::Component;
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut cur = p.to_path_buf();
+    let mut hops = 0;
     loop {
         if let Ok(c) = std::fs::canonicalize(&cur) {
             let mut out = c;
             for t in tail.iter().rev() {
-                out.push(t);
+                if t == ".." {
+                    out.pop();
+                } else {
+                    out.push(t);
+                }
             }
             return out;
         }
-        match (cur.file_name().map(|s| s.to_owned()), cur.parent().map(|p| p.to_path_buf())) {
-            (Some(n), Some(par)) => {
-                tail.push(n);
-                cur = par;
+        if hops < 16 && std::fs::symlink_metadata(&cur).is_ok_and(|m| m.file_type().is_symlink()) {
+            if let (Ok(t), Some(par)) = (std::fs::read_link(&cur), cur.parent()) {
+                cur = par.join(t);
+                hops += 1;
+                continue;
             }
+        }
+        match cur.components().next_back() {
+            Some(Component::Normal(n)) => tail.push(n.to_owned()),
+            Some(Component::ParentDir) => tail.push("..".into()),
             _ => return p.to_path_buf(),
         }
+        cur.pop();
     }
 }
 
@@ -469,10 +482,15 @@ fn is_protected(abs: &Path) -> bool {
     r.starts_with(real(&home_dir())) || r == real(&key_path())
 }
 
-/// Absolute paths named by an edit-family tool_input (file_path, notebook_path, path).
-fn edit_paths(cx: &Cx) -> Vec<PathBuf> {
+/// Paths named by an edit-family tool_input (file_path, notebook_path, path), joined to the working folder as written.
+fn edit_raw(cx: &Cx) -> Vec<PathBuf> {
     let base = cx.p.s("cwd").map(PathBuf::from).unwrap_or_else(|| cx.ws.root.clone());
-    ["file_path", "notebook_path", "path"].iter().filter_map(|k| cx.p.input_str(k)).filter(|s| !s.is_empty()).map(|s| lexical(&base, &s)).collect()
+    ["file_path", "notebook_path", "path"].iter().filter_map(|k| cx.p.input_str(k)).filter(|s| !s.is_empty()).map(|s| base.join(s)).collect()
+}
+
+/// The same paths with `.` and `..` folded away without looking at the disk.
+fn edit_paths(cx: &Cx) -> Vec<PathBuf> {
+    edit_raw(cx).iter().map(|p| lexical(Path::new("/"), &p.to_string_lossy())).collect()
 }
 
 fn rel_of(root: &Path, abs: &Path) -> Option<String> {
@@ -486,7 +504,8 @@ fn rel_of(root: &Path, abs: &Path) -> Option<String> {
 
 fn pre_tool(cx: &Cx) -> Result<Option<Value>> {
     let tool = cx.p.s("tool_name").unwrap_or_default();
-    if EDIT_TOOLS.contains(&tool.as_str()) && edit_paths(cx).iter().any(|p| is_protected(p)) {
+    // Both readings of the path: with `link/../x` the kernel and a plain text fold land in different places.
+    if EDIT_TOOLS.contains(&tool.as_str()) && edit_raw(cx).iter().chain(edit_paths(cx).iter()).any(|p| is_protected(p)) {
         return Ok(Some(pre_deny(MSG_PROTECTED)));
     }
     begin(cx, false)?;
