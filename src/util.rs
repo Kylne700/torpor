@@ -1,0 +1,140 @@
+//! Small shared helpers: error type, time, hex.
+use std::fmt;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    Db(rusqlite::Error),
+    Json(serde_json::Error),
+    /// A lock or SQLite stayed busy past its wait limit.
+    Busy,
+    /// Free space is below the limit; carries a short text like "0.8 GB free".
+    Disk(String),
+    /// The store was written by a newer Torpor.
+    Newer,
+    /// The workspace root is refused (home folder, `/`, inside the store).
+    Refused(String),
+    NotFound(String),
+    /// Input that is not usable (bad JSON, stdin over the limit).
+    Parse(String),
+    Msg(String),
+}
+
+impl Error {
+    /// The `faults.kind` value for this error.
+    pub fn fault_kind(&self) -> &'static str {
+        match self {
+            Error::Io(_) => "io",
+            Error::Db(_) => "io",
+            Error::Json(_) => "parse",
+            Error::Busy => "busy",
+            Error::Disk(_) => "disk",
+            Error::Newer => "schema",
+            Error::Refused(_) => "io",
+            Error::NotFound(_) => "io",
+            Error::Parse(_) => "parse",
+            Error::Msg(_) => "io",
+        }
+    }
+    pub fn msg(s: impl Into<String>) -> Error {
+        Error::Msg(s.into())
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Io(e) => write!(f, "io: {e}"),
+            Error::Db(e) => write!(f, "db: {e}"),
+            Error::Json(e) => write!(f, "json: {e}"),
+            Error::Busy => write!(f, "busy"),
+            Error::Disk(s) => write!(f, "disk: {s}"),
+            Error::Newer => write!(f, "newer store format"),
+            Error::Refused(s) => write!(f, "refused: {s}"),
+            Error::NotFound(s) => write!(f, "not found: {s}"),
+            Error::Parse(s) => write!(f, "parse: {s}"),
+            Error::Msg(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e)
+    }
+}
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Json(e)
+    }
+}
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        if let rusqlite::Error::SqliteFailure(f, _) = &e {
+            if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) {
+                return Error::Busy;
+            }
+        }
+        Error::Db(e)
+    }
+}
+
+/// Unix time in nanoseconds. Every timestamp Torpor stores is this unit.
+pub fn now_ns() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_nanos() as i64,
+        Err(_) => 0,
+    }
+}
+
+pub const NS_PER_SEC: i64 = 1_000_000_000;
+
+pub fn hex(b: &[u8]) -> String {
+    const H: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(b.len() * 2);
+    for x in b {
+        s.push(H[(x >> 4) as usize] as char);
+        s.push(H[(x & 15) as usize] as char);
+    }
+    s
+}
+
+pub fn unhex32(s: &str) -> Option<[u8; 32]> {
+    let b = s.as_bytes();
+    if b.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let hi = (b[2 * i] as char).to_digit(16)?;
+        let lo = (b[2 * i + 1] as char).to_digit(16)?;
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    Some(out)
+}
+
+/// First `n` characters (not bytes).
+pub fn trunc_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
+/// Local-free day number (UTC) of a ns timestamp.
+pub fn utc_day(ns: i64) -> i64 {
+    ns.div_euclid(NS_PER_SEC * 86_400)
+}
+
+/// Local wall-clock "HH:MM" of a ns timestamp (restore notice).
+pub fn local_hhmm(ns: i64) -> String {
+    let t = (ns / NS_PER_SEC) as libc::time_t;
+    // SAFETY: localtime_r only writes into the zeroed tm we pass.
+    let tm = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        tm
+    };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
