@@ -3,7 +3,7 @@ use crate::util::*;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -184,6 +184,19 @@ pub struct Ws {
     lock: Option<File>,
 }
 
+/// The WAL stays on disk between hooks (the next open reads it back, which is cheap while it is small).
+const WAL_KEEP_BYTES: u64 = 512 * 1024;
+
+impl Drop for Ws {
+    fn drop(&mut self) {
+        // Without this the WAL would grow for ever: a fresh process never restarts a log it had to recover.
+        if fs::metadata(self.dir.join("torpor.db-wal")).map(|m| m.len() > WAL_KEEP_BYTES).unwrap_or(false) {
+            let _ = self.conn.busy_timeout(Duration::from_millis(10));
+            let _ = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        }
+    }
+}
+
 impl Ws {
     /// Open the workspace store for `root`. With `create`, make it (auto-init).
     pub fn open(root: &Path, create: bool) -> Result<Ws> {
@@ -271,6 +284,8 @@ fn open_db(path: &Path, create: bool) -> Result<Connection> {
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // A hook is a short process: the close-time checkpoint costs two fsyncs and about 3 ms every time. `Ws::drop` truncates the WAL once it is big.
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v > SCHEMA_VERSION {
         return Err(Error::Newer);
@@ -624,21 +639,46 @@ pub struct TreeEntry {
     pub size: u64,
 }
 
-#[derive(Serialize)]
-struct TreeDocOut<'a> {
-    v: u32,
-    e: Vec<(&'a str, String, u32, &'a str, u64)>,
-}
 #[derive(Deserialize)]
 struct TreeDocIn {
     v: u32,
     e: Vec<(String, String, u32, String, u64)>,
 }
 
+fn push_json_str(out: &mut Vec<u8>, s: &str) {
+    if s.bytes().all(|b| b >= 0x20 && b != b'"' && b != b'\\') {
+        out.push(b'"');
+        out.extend_from_slice(s.as_bytes());
+        out.push(b'"');
+    } else {
+        serde_json::to_writer(&mut *out, s).expect("string json");
+    }
+}
+
 /// Canonical tree bytes. `entries` must already be sorted by name bytes.
+/// Written by hand, with the bytes serde_json gives (a unit test compares them): this runs for every folder at every scan.
 pub fn encode_tree(entries: &[TreeEntry]) -> Vec<u8> {
-    let doc = TreeDocOut { v: 1, e: entries.iter().map(|e| (e.name.as_str(), e.kind.to_string(), e.mode, e.id.as_str(), e.size)).collect() };
-    serde_json::to_vec(&doc).expect("tree json")
+    let mut out = Vec::with_capacity(16 + entries.iter().map(|e| e.name.len() + e.id.len() + 32).sum::<usize>());
+    out.extend_from_slice(br#"{"v":1,"e":["#);
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.push(b'[');
+        push_json_str(&mut out, &e.name);
+        out.push(b',');
+        let mut k = [0u8; 4];
+        push_json_str(&mut out, e.kind.encode_utf8(&mut k));
+        out.push(b',');
+        out.extend_from_slice(e.mode.to_string().as_bytes());
+        out.push(b',');
+        push_json_str(&mut out, &e.id);
+        out.push(b',');
+        out.extend_from_slice(e.size.to_string().as_bytes());
+        out.push(b']');
+    }
+    out.extend_from_slice(b"]}");
+    out
 }
 
 pub fn decode_tree(bytes: &[u8]) -> Result<Vec<TreeEntry>> {
@@ -691,5 +731,48 @@ pub fn blob_id_from_vec(v: &[u8]) -> Option<[u8; 32]> {
         Some(a)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct TreeDocOut<'a> {
+        v: u32,
+        e: Vec<(&'a str, String, u32, &'a str, u64)>,
+    }
+
+    /// The hand-written encoder must give the bytes serde_json gave, and decode_tree must read them back.
+    #[test]
+    fn encode_tree_matches_serde_json() {
+        let names = ["a.txt", "dir", "we\"ird", "back\\slash", "tab\there", "new\nline", "\u{1}ctl", "caf\u{e9}", "\u{1f600}", "\u{7f}del", "", "x/y"];
+        let ids = ["", "00ff", "too_big", "unreadable", "d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e"];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..300 {
+            let n = (next() % 6) as usize;
+            let entries: Vec<TreeEntry> = (0..n)
+                .map(|_| TreeEntry {
+                    name: names[(next() % names.len() as u64) as usize].to_string(),
+                    kind: ['f', 'l', 's', 'd', 'x'][(next() % 5) as usize],
+                    mode: [644, 755, 0, 123456][(next() % 4) as usize],
+                    id: ids[(next() % ids.len() as u64) as usize].to_string(),
+                    size: [0, 1, 4096, u64::MAX][(next() % 4) as usize],
+                })
+                .collect();
+            let doc = TreeDocOut { v: 1, e: entries.iter().map(|e| (e.name.as_str(), e.kind.to_string(), e.mode, e.id.as_str(), e.size)).collect() };
+            let want = serde_json::to_vec(&doc).unwrap();
+            let got = encode_tree(&entries);
+            assert_eq!(String::from_utf8_lossy(&got), String::from_utf8_lossy(&want), "round {round}");
+            assert_eq!(decode_tree(&got).unwrap(), entries, "round {round}");
+        }
     }
 }

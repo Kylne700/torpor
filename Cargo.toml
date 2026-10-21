@@ -30,13 +30,14 @@ ignore = "0.4"
 globset = "0.4"
 chacha20poly1305 = "0.11"
 getrandom = "0.4"
-regex = "1"
+
 libc = "0.2"
 
 [dev-dependencies]
 # Self dev-dependency: plain `cargo test` builds the binary with fault injection.
 torpor = { path = ".", features = ["fault-inject"] }
 tempfile = "3"
+regex = "1" # only the mask differential test
 inotify = "0.11"
 # Only the P10 test uses the online backup API (spec 5.8 branch: it writes next to WAL databases, so the product reads raw bytes).
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }

@@ -267,6 +267,10 @@ pub struct Sim {
     pub transcript: PathBuf,
     pub extra_env: Vec<(String, String)>,
     pub permission_mode: String,
+    /// Run hooks through this program (the launcher) instead of the built binary.
+    pub program: Option<PathBuf>,
+    /// (event, wall time) of every checked hook call; tool events are labelled `Event(Tool)`.
+    pub timings: Vec<(String, Duration)>,
     prompt_n: u32,
     tool_n: u32,
     pub pid: String,
@@ -281,7 +285,7 @@ impl Sim {
     pub fn with_env(env: Arc<Env>, n: u32) -> Sim {
         let sid = format!("sess-{n:04}-0000-4000-8000-00000000000{n}");
         let transcript = env.home.join(format!("transcript-{n}.jsonl"));
-        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), prompt_n: 0, tool_n: 0, pid: String::new(), n }
+        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n }
     }
 
     /// A second Claude Code session in the same project and store.
@@ -300,7 +304,10 @@ impl Sim {
     }
 
     fn cmd(&self) -> Command {
-        let mut c = base_cmd(&self.env);
+        let mut c = match &self.program {
+            Some(p) => cmd_with(p, &self.env),
+            None => base_cmd(&self.env),
+        };
         for (k, v) in &self.extra_env {
             c.env(k, v);
         }
@@ -311,6 +318,7 @@ impl Sim {
     pub fn hook(&mut self, event: &str, extra: Value) -> Out {
         let o = self.hook_unchecked(event, extra);
         check_contract(event, &o);
+        self.timings.push((event.to_string(), o.elapsed));
         o
     }
 
@@ -394,7 +402,11 @@ impl Sim {
         for (k, v) in Self::agent_fields(agent).as_object().unwrap().iter().chain(more.as_object().unwrap().iter()) {
             e[k] = v.clone();
         }
-        self.hook(event, e)
+        let o = self.hook(event, e);
+        if let Some(t) = self.timings.last_mut() {
+            t.0 = format!("{event}({tool})");
+        }
+        o
     }
 
     /// An edit-family tool call: PreToolUse, the write, PostToolUse. Returns the last answer (the deny, if there was one).

@@ -420,7 +420,14 @@ pub fn build_trees(leaves: Vec<Leaf>) -> Trees {
         if l.e.kind == 'd' {
             map.entry(l.path).or_default();
         } else {
-            map.entry(parent_of(&l.path).to_string()).or_default().push(l.e);
+            let parent = parent_of(&l.path);
+            // Look up first: most leaves land in a folder that exists, and `to_string` per leaf costs.
+            match map.get_mut(parent) {
+                Some(v) => v.push(l.e),
+                None => {
+                    map.insert(parent.to_string(), vec![l.e]);
+                }
+            }
         }
     }
     // Every ancestor folder must exist.
@@ -792,9 +799,17 @@ pub fn timing_scan(ws: &Ws, db: &Connection) -> Result<(usize, u64)> {
 pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     check_disk(&ws.home)?;
     let prev = last_point(db)?;
-    let cache = load_cache(db)?;
     let prev_count = meta_get_i64(db, "file_count").unwrap_or(0).max(0) as usize;
-    let sc = scan::scan(&ws.root, scan::thread_count(prev_count), scan::ENTRY_CAP)?;
+    // The walk never touches the connection, so it runs while the stat cache is read (about 9 ms off the critical path).
+    let root = &ws.root; // Ws holds the connection (not Sync): hand the thread only the path
+    let (sc, cache) = std::thread::scope(|s| {
+        let h = s.spawn(|| scan::scan(root, scan::thread_count(prev_count), scan::ENTRY_CAP));
+        let cache = load_cache(db);
+        // A panic in the walk is re-raised here, inside the hook's catch_unwind, so fail-open holds.
+        let sc = h.join().unwrap_or_else(|p| std::panic::resume_unwind(p));
+        (sc, cache)
+    });
+    let (sc, cache) = (sc?, cache?);
     let file_count = sc.file_count();
 
     // Key: loaded when a secret file exists; created at the first secret that must be stored.
@@ -822,14 +837,14 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                     Dec::X("too_big")
                 } else {
                     let (c, want) = if e.kind == EKind::Link {
-                        ('l', "l".to_string())
+                        ('l', "l")
                     } else if e.secret {
-                        ('s', tag.clone())
+                        ('s', tag.as_str())
                     } else {
-                        ('f', "f".to_string())
+                        ('f', "f")
                     };
                     match cache.get(&e.path) {
-                        Some(row) if !want.is_empty() && cache_trusted(row, e, &want) => Dec::Cached(row.blob_id, c),
+                        Some(row) if !want.is_empty() && cache_trusted(row, e, want) => Dec::Cached(row.blob_id, c),
                         _ => {
                             if e.secret && e.kind == EKind::File {
                                 need_key = true;
