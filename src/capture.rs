@@ -679,8 +679,7 @@ fn detect_rewind(ws: &Ws, db: &Connection, unexplained: &[&RawChange]) -> Result
     Ok(None)
 }
 
-fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, raw: Vec<RawChange>) -> Result<(Vec<ChangeRow>, Option<String>)> {
-    let wm = meta_get_i64(db, "consumed_event_id").unwrap_or(0);
+fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, wm: i64, raw: Vec<RawChange>) -> Result<(Vec<ChangeRow>, Option<String>)> {
     let evs: Vec<Ev> = db
         .prepare_cached("SELECT session_id,turn_id,tool_use_id,tool_name,agent_id,paths_json FROM tool_events WHERE id>?1 ORDER BY id")?
         .query_map([wm], |r| {
@@ -929,6 +928,8 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     let changed = prev.as_ref().is_none_or(|p| p.tree_id != trees.root);
 
     // Event consumption watermark moves at every full scan, even when no point is written.
+    // The old value is what classification reads: it explains changes with the events since the last scan.
+    let wm = meta_get_i64(db, "consumed_event_id").unwrap_or(0);
     let max_ev: i64 = db.query_row("SELECT COALESCE(MAX(id),0) FROM tool_events", [], |r| r.get(0))?;
     let baseline_at = prev.as_ref().map_or(0, |p| p.created_at);
     let mut out = Captured { tree_id: trees.root, changed, partial, not_saved: not_saved.len(), scan_ms: sc.elapsed_ms, file_count, ..Default::default() };
@@ -975,7 +976,7 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     }
 
     let (rows, note) = match &prev {
-        Some(_) => classify(ws, db, req, baseline_at, diff.changes.into_iter().collect())?,
+        Some(_) => classify(ws, db, req, baseline_at, wm, diff.changes.into_iter().collect())?,
         None => (Vec::new(), None),
     };
     out.n_changes = rows.len();

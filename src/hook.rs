@@ -571,32 +571,7 @@ fn read_origin(cx: &Cx, turn: &Turn) -> Result<()> {
 
 /// The one-line summary printed at Stop (spec 3.3). None when the turn changed nothing.
 pub fn stop_line(db: &Connection, turn: &Turn, end_point: i64) -> Result<Option<String>> {
-    let mut st = db.prepare("SELECT path,old_id,new_id,class FROM changes WHERE turn_id=?1 AND class IN ('edit','shell','subagent') ORDER BY point_id,rowid")?;
-    let mut net: std::collections::BTreeMap<String, (Option<String>, Option<String>, String)> = Default::default();
-    let mut rows = st.query([turn.id])?;
-    while let Some(r) = rows.next()? {
-        let (path, old, new, class): (String, Option<String>, Option<String>, String) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-        match net.get_mut(&path) {
-            Some(e) => {
-                e.1 = new;
-                e.2 = class;
-            }
-            None => {
-                net.insert(path, (old, new, class));
-            }
-        }
-    }
-    let (mut edits, mut shell, mut sub) = (0, 0, 0);
-    for (old, new, class) in net.values() {
-        if old == new {
-            continue;
-        }
-        match class.as_str() {
-            "edit" => edits += 1,
-            "shell" => shell += 1,
-            _ => sub += 1,
-        }
-    }
+    let (edits, shell, sub) = crate::turn::net_counts(db, turn.id)?;
     let total = edits + shell + sub;
     if total == 0 {
         return Ok(None);

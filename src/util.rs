@@ -127,14 +127,60 @@ pub fn utc_day(ns: i64) -> i64 {
     ns.div_euclid(NS_PER_SEC * 86_400)
 }
 
-/// Local wall-clock "HH:MM" of a ns timestamp (restore notice).
-pub fn local_hhmm(ns: i64) -> String {
+fn local_tm(ns: i64) -> libc::tm {
     let t = (ns / NS_PER_SEC) as libc::time_t;
     // SAFETY: localtime_r only writes into the zeroed tm we pass.
-    let tm = unsafe {
+    unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
         libc::localtime_r(&t, &mut tm);
         tm
-    };
+    }
+}
+
+/// Local wall-clock "HH:MM" of a ns timestamp (restore notice).
+pub fn local_hhmm(ns: i64) -> String {
+    let tm = local_tm(ns);
     format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}
+
+/// "Oct 20" in local time.
+pub fn local_md(ns: i64) -> String {
+    const M: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let a = local_tm(ns);
+    format!("{} {}", M[(a.tm_mon as usize).min(11)], a.tm_mday)
+}
+
+/// "today 14:02" or "Oct 20 14:02" in local time.
+pub fn local_stamp(ns: i64, now: i64) -> String {
+    let (a, b) = (local_tm(ns), local_tm(now));
+    if (a.tm_year, a.tm_yday) == (b.tm_year, b.tm_yday) {
+        return format!("today {}", local_hhmm(ns));
+    }
+    format!("{} {}", local_md(ns), local_hhmm(ns))
+}
+
+/// "just now", "2 min ago", "3 h ago", "4 days ago".
+pub fn ago(now: i64, then: i64) -> String {
+    let s = ((now - then) / NS_PER_SEC).max(0);
+    match s {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{} min ago", s / 60),
+        3600..=86_399 => format!("{} h ago", s / 3600),
+        _ => format!("{} days ago", s / 86_400),
+    }
+}
+
+/// "38 MB", "1.2 GB", "700 KB".
+pub fn human_bytes(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    let f = n as f64;
+    if f >= KB * KB * KB {
+        format!("{:.1} GB", f / (KB * KB * KB))
+    } else if f >= KB * KB {
+        format!("{:.0} MB", f / (KB * KB))
+    } else if f >= KB {
+        format!("{:.0} KB", f / KB)
+    } else {
+        format!("{n} B")
+    }
 }
