@@ -1,0 +1,48 @@
+#!/bin/sh
+# Torpor launcher (spec 9.3). Hooks never fail and never print: with no binary, `torpor hook ...` exits 0.
+# V must equal "version" in .claude-plugin/plugin.json (a test checks it).
+V=2.0.0
+H=${TORPOR_HOME:-$HOME/.torpor}
+
+# Fast path: the installed copy. No fork, no uname.
+if [ -x "$H/bin/$V/torpor" ]; then
+  exec "$H/bin/$V/torpor" "$@"
+fi
+
+os=$(uname -s 2>/dev/null | tr 'A-Z' 'a-z')
+arch=$(uname -m 2>/dev/null)
+case "$os-$arch" in
+  linux-x86_64 | linux-amd64) t=linux-x64 ;;
+  linux-aarch64 | linux-arm64) t=linux-arm64 ;;
+  darwin-x86_64) t=darwin-x64 ;;
+  darwin-arm64 | darwin-aarch64) t=darwin-arm64 ;;
+  *) t= ;;
+esac
+src=$(dirname "$0")/../dist/$t/torpor
+
+if [ -z "$t" ] || [ ! -f "$src" ]; then
+  [ -d "$H" ] || mkdir -p -m 700 "$H" 2>/dev/null
+  printf '%s000 - - launcher no binary for %s-%s\n' "$(date +%s)" "$os" "$arch" >>"$H/faults.log" 2>/dev/null
+  if [ "$1" = hook ]; then
+    exit 0
+  fi
+  echo "Torpor has no build for this computer ($os $arch)." >&2
+  exit 1
+fi
+
+# Install: copy next to a temp name, then an atomic rename. A stable path outlives plugin updates.
+d=$H/bin/$V
+[ -d "$H" ] || mkdir -p -m 700 "$H" 2>/dev/null
+mkdir -p "$d" 2>/dev/null
+tmp=$d/.torpor-$$.tmp
+if cp "$src" "$tmp" 2>/dev/null && chmod 755 "$tmp" 2>/dev/null && mv -f "$tmp" "$d/torpor" 2>/dev/null; then
+  # The shim `$H/bin/torpor` runs the newest installed version. shortcut: a path with a double quote in it breaks the shim.
+  newest=$(for x in "$H"/bin/*/torpor; do [ -x "$x" ] && basename "$(dirname "$x")"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
+  s=$H/bin/.torpor-shim-$$.tmp
+  printf '#!/bin/sh\nexec "%s/bin/%s/torpor" "$@"\n' "$H" "${newest:-$V}" >"$s" 2>/dev/null && chmod 755 "$s" 2>/dev/null && mv -f "$s" "$H/bin/torpor" 2>/dev/null
+  rm -f "$s" 2>/dev/null
+  exec "$d/torpor" "$@"
+fi
+rm -f "$tmp" 2>/dev/null
+# Could not install (read-only home?): run the shipped binary where it is.
+exec "$src" "$@"

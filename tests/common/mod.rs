@@ -66,7 +66,12 @@ impl Out {
 
 /// Command for the binary with the safe environment every test uses.
 pub fn base_cmd(env: &Env) -> Command {
-    let mut c = Command::new(BIN);
+    cmd_with(Path::new(BIN), env)
+}
+
+/// Same safe environment for any program (the launcher, a copy of the binary).
+pub fn cmd_with(program: &Path, env: &Env) -> Command {
+    let mut c = Command::new(program);
     c.env_remove("CLAUDE_CONFIG_DIR")
         .env_remove("TORPOR_OFF")
         .env_remove("TORPOR_FAULT")
@@ -357,9 +362,15 @@ impl Sim {
         self.prompt_with(text, "human", "typed")
     }
 
-    pub fn prompt_with(&mut self, text: &str, origin: &str, source: &str) -> Out {
+    /// A fresh prompt id (what Claude Code gives every typed prompt); returns it.
+    pub fn next_pid(&mut self) -> String {
         self.prompt_n += 1;
         self.pid = format!("prompt-{}-{}", self.n, self.prompt_n);
+        self.pid.clone()
+    }
+
+    pub fn prompt_with(&mut self, text: &str, origin: &str, source: &str) -> Out {
+        self.next_pid();
         let line = json!({"type": "user", "uuid": format!("u-{}-{}", self.n, self.prompt_n), "promptId": self.pid, "turnOrigin": origin, "promptSource": source, "isSidechain": false});
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
         writeln!(f, "{line}").unwrap();
@@ -615,4 +626,40 @@ pub fn write_files(root: &Path, files: &[(&str, &str)]) {
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(abs, c).unwrap();
     }
+}
+
+// ---------------------------------------------------------------- plugin layout (launcher tests)
+
+pub fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// The launcher's own mapping of uname to a dist folder.
+pub fn dist_target() -> &'static str {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("macos", "aarch64") => "darwin-arm64",
+        _ => "unsupported",
+    }
+}
+
+/// A copy of the plugin layout under `dir`: launcher, manifest, and either a copy of the built binary in
+/// `dist/<target>/` or an empty `dist/`. Returns the plugin root.
+pub fn make_plugin_root(dir: &Path, with_binary: bool) -> PathBuf {
+    let root = dir.join("plugin-root");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+    std::fs::copy(manifest_dir().join("bin/torpor"), root.join("bin/torpor")).unwrap();
+    std::fs::copy(manifest_dir().join(".claude-plugin/plugin.json"), root.join(".claude-plugin/plugin.json")).unwrap();
+    if with_binary {
+        let d = root.join("dist").join(dist_target());
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::copy(BIN, d.join("torpor")).unwrap();
+        std::fs::set_permissions(d.join("torpor"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    } else {
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+    }
+    root
 }
