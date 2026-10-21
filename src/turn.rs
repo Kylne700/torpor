@@ -123,13 +123,17 @@ pub fn add_event(db: &Connection, e: &EventRow, now: i64) -> Result<i64> {
     Ok(db.last_insert_rowid())
 }
 
-/// (edits, shell, subagent): files this turn changed, net per path (first old vs last new), by the last change's class.
+/// (edits, shell, subagent): files this turn changed, net per path (first old vs last new, content and mode), by the last change's class.
 pub fn net_counts(db: &Connection, turn: i64) -> Result<(i64, i64, i64)> {
-    let mut st = db.prepare("SELECT path,old_id,new_id,class FROM changes WHERE turn_id=?1 AND class IN ('edit','shell','subagent') ORDER BY point_id,rowid")?;
-    let mut net: std::collections::BTreeMap<String, (Option<String>, Option<String>, String)> = Default::default();
+    type State = (Option<String>, Option<i64>);
+    let mut st = db.prepare("SELECT path,old_id,old_mode,new_id,new_mode,class FROM changes WHERE turn_id=?1 AND class IN ('edit','shell','subagent') ORDER BY point_id,rowid")?;
+    let mut net: std::collections::BTreeMap<String, (State, State, String)> = Default::default();
     let mut rows = st.query([turn])?;
     while let Some(r) = rows.next()? {
-        let (path, old, new, class): (String, Option<String>, Option<String>, String) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+        let path: String = r.get(0)?;
+        let old: State = (r.get(1)?, r.get(2)?);
+        let new: State = (r.get(3)?, r.get(4)?);
+        let class: String = r.get(5)?;
         match net.get_mut(&path) {
             Some(e) => {
                 e.1 = new;

@@ -187,7 +187,12 @@ pub struct Ws {
 impl Ws {
     /// Open the workspace store for `root`. With `create`, make it (auto-init).
     pub fn open(root: &Path, create: bool) -> Result<Ws> {
-        let home = home_dir();
+        Ws::open_in(&home_dir(), root, create)
+    }
+
+    /// Same, with the store folder given (tests open stores of other processes without touching the environment).
+    pub fn open_in(home: &Path, root: &Path, create: bool) -> Result<Ws> {
+        let home = home.to_path_buf();
         ensure_home(&home, create)?;
         let (dir, id) = pick_ws_dir(&home, root, create)?;
         for sub in ["objects", "journal", "tmp"] {
