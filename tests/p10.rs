@@ -3,6 +3,10 @@
 //! Watches the database directory with inotify and compares content, size and mtime of every entry before and
 //! after (mmap stores to -shm raise no inotify event, so the content comparison is what catches those).
 //! The result decides spec 5.8: backup API (no writes) or raw-copy fallback (any write).
+//! ANSWER (recorded by the asserts below): yes, a read-only open of a WAL database writes next to it, so Torpor never
+//! opens a user's database: it reads the main file as plain bytes and skips it while a -wal or -journal is live.
+mod common;
+use common::*;
 use inotify::{Inotify, WatchMask};
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
@@ -12,6 +16,13 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 type Snap = BTreeMap<String, (u64, i64, String)>; // name -> (len, mtime_ns, blake3)
+
+/// One test at a time: when another thread forks (the Sim tests spawn processes) while a database file is open, the
+/// child holds a copy of the descriptor and the kernel delays that file's CLOSE_WRITE event into the next watch.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn snap(dir: &Path) -> Snap {
     let mut m = Snap::new();
@@ -124,7 +135,8 @@ fn make_wal(db: &Path, rows: i64) -> Connection {
 }
 
 #[test]
-fn p10_readonly_open_and_backup_write_nothing() {
+fn p10_readonly_open_of_a_wal_database_writes_next_to_it() {
+    let _one_at_a_time = serial();
     let root = tempfile::tempdir().unwrap();
     let dest = root.path().join("dest");
     std::fs::create_dir(&dest).unwrap();
@@ -207,4 +219,106 @@ fn p10_readonly_open_and_backup_write_nothing() {
     }
     println!("{report}");
     let _ = std::fs::write(Path::new(env!("CARGO_MANIFEST_DIR")).join("target").join("p10-observations.txt"), &report);
+
+    // The finding. Every scenario still read all 200 rows ...
+    for o in &all {
+        assert_eq!(o.result, "Ok(200)", "{}: the backup itself failed", o.name);
+    }
+    let by = |prefix: &str| all.iter().find(|o| o.name.starts_with(prefix)).unwrap();
+    // ... but for WAL databases the read-only open touched the side files (opened the -wal for writing, created or
+    // changed the -shm) and touched nothing else.
+    // (s2 is allowed to show nothing: SQLite may keep the -wal file open until the writer in this process lets go,
+    // so the close event can come late.)
+    for prefix in ["s1_", "s2_", "s3_", "s4_"] {
+        let o = by(prefix);
+        let touched: Vec<&String> = o.writes.iter().chain(o.events.iter()).collect();
+        assert!(prefix == "s2_" || !touched.is_empty(), "{}: a read-only open of a WAL database wrote nothing, so the backup API would be safe: P10 changed", o.name);
+        assert!(touched.iter().all(|t| t.contains("a.db-wal") || t.contains("a.db-shm")), "{}: touched more than the side files: {touched:?}", o.name);
+    }
+    assert!(by("s3_").writes.iter().any(|w| w.starts_with("created a.db-shm")), "a cleanly closed WAL database got no -shm: {:?}", by("s3_").writes);
+    assert!(by("s3_").writes.iter().any(|w| w.starts_with("created a.db-wal")), "a cleanly closed WAL database got no -wal: {:?}", by("s3_").writes);
+    assert!(by("s4_").writes.iter().any(|w| w.starts_with("created a.db-shm")), "a leftover -wal got no -shm: {:?}", by("s4_").writes);
+    // Rollback-journal databases are not touched.
+    for prefix in ["s5_", "s6_"] {
+        let o = by(prefix);
+        assert!(o.writes.is_empty() && o.events.is_empty(), "{}: a read-only open wrote: {:?} {:?}", o.name, o.writes, o.events);
+    }
+}
+
+/// The idea for S2 (not built): copying main + -wal + -shm byte for byte into a private folder gives a database that
+/// opens with every committed row, and the copy itself writes nothing next to the original.
+#[test]
+fn p10_raw_copy_of_the_three_files_is_a_readable_database() {
+    let _one_at_a_time = serial();
+    let root = tempfile::tempdir().unwrap();
+    for pending in [false, true] {
+        let src = root.path().join(format!("src{pending}"));
+        std::fs::create_dir(&src).unwrap();
+        let w = make_wal(&src.join("a.db"), 200);
+        if pending {
+            w.execute_batch("begin immediate; insert into t values (999,'pending');").unwrap();
+        }
+        assert!(std::fs::metadata(src.join("a.db-wal")).unwrap().len() > 0, "the scenario needs live frames in the -wal");
+        let before = snap(&src);
+        let copy = root.path().join(format!("copy{pending}"));
+        std::fs::create_dir(&copy).unwrap();
+        for f in ["a.db", "a.db-wal", "a.db-shm"] {
+            std::fs::copy(src.join(f), copy.join(f)).unwrap();
+        }
+        assert!(diff(&before, &snap(&src)).is_empty(), "copying wrote next to the original");
+        let c = Connection::open(copy.join("a.db")).unwrap();
+        assert_eq!(c.query_row("select count(*) from t", [], |r| r.get::<_, i64>(0)).unwrap(), 200, "pending={pending}: the copy lost committed rows or shows uncommitted ones");
+        assert_eq!(c.query_row("pragma integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+        if pending {
+            w.execute_batch("rollback").unwrap();
+        }
+    }
+}
+
+/// What Torpor does instead: plain bytes for a database nobody holds, `db_busy` while a -wal or -journal is live,
+/// and nothing written next to any database.
+#[test]
+fn databases_are_saved_as_plain_bytes_and_never_opened() {
+    let _one_at_a_time = serial();
+    let mut sim = Sim::new();
+    let proj = sim.env.proj.clone();
+    write_files(&proj, &[("src/a.rs", "fn a() {}\n")]);
+    std::fs::create_dir_all(proj.join("data")).unwrap();
+    drop(make_wal(&proj.join("data/closed.db"), 50)); // last close checkpoints and removes the side files
+    {
+        let c = Connection::open(proj.join("data/old.sqlite3")).unwrap(); // rollback journal
+        c.execute_batch("create table t(a); insert into t values (1);").unwrap();
+    }
+    assert!(!proj.join("data/closed.db-wal").exists());
+
+    // Phase A: nobody holds a database. Saved byte for byte.
+    sim.session_start();
+    sim.prompt("one");
+    sim.edit("src/a.rs", "fn a() { 1 }\n");
+    sim.stop();
+    sim.verify_last_point();
+    assert!(!proj.join("data/closed.db-wal").exists() && !proj.join("data/closed.db-shm").exists(), "Torpor opened a database: side files appeared");
+
+    // Phase B: a live WAL writer. The hooks must not wake it, wrap it or leave anything next to it.
+    let live = make_wal(&proj.join("data/live.db"), 200);
+    assert!(std::fs::metadata(proj.join("data/live.db-wal")).unwrap().len() > 0);
+    let before = snap(&proj.join("data"));
+    sim.prompt("two");
+    sim.edit("src/a.rs", "fn a() { 2 }\n");
+    sim.stop();
+    let changed = diff(&before, &snap(&proj.join("data")));
+    assert!(changed.is_empty(), "the hooks changed things next to the databases: {changed:?}");
+    let last = sim.last_visible_point();
+    let busy = |path: &str| sim.q_i64(&format!("SELECT COUNT(*) FROM not_captured WHERE point_id={last} AND path='{path}' AND reason='db_busy'"));
+    assert_eq!(busy("data/live.db"), 1, "a database with a live -wal is reported as in use");
+    assert_eq!(busy("data/closed.db") + busy("data/old.sqlite3"), 0, "idle databases are not reported");
+    assert_eq!(sim.q_i64(&format!("SELECT COUNT(*) FROM not_captured WHERE point_id={last}")), 1);
+
+    // Phase C: the writer lets go; the database is now an ordinary file and is saved byte for byte.
+    drop(live);
+    sim.prompt("three");
+    sim.edit("src/a.rs", "fn a() { 3 }\n");
+    sim.stop();
+    sim.verify_last_point();
+    assert!(sim.faults().is_empty(), "faults: {:?}", sim.faults());
 }
