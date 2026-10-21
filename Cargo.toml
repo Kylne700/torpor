@@ -1,0 +1,49 @@
+[package]
+name = "torpor"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Save points for every turn of a Claude Code session, shell edits included. Go back, undo one turn, see what changed."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Kylne700/torpor"
+publish = false
+
+[lib]
+name = "torpor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "torpor"
+path = "src/main.rs"
+
+[features]
+# Fault injection for the tests (spec section 10). Never in release builds.
+fault-inject = []
+
+[dependencies]
+blake3 = "1"
+zstd = "0.14"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ignore = "0.4"
+globset = "0.4"
+chacha20poly1305 = "0.11"
+getrandom = "0.4"
+regex = "1"
+libc = "0.2"
+
+[dev-dependencies]
+# Self dev-dependency: plain `cargo test` builds the binary with fault injection.
+torpor = { path = ".", features = ["fault-inject"] }
+tempfile = "3"
+inotify = "0.11"
+# Only the P10 test uses the online backup API (spec 5.8 branch: it writes next to WAL databases, so the product reads raw bytes).
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
