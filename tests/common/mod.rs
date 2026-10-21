@@ -277,6 +277,9 @@ pub struct Sim {
     tool_n: u32,
     pub pid: String,
     n: u32,
+    /// Called with (false, label) just before and (true, label) just after every hook or command-line run
+    /// (A6 uses it to look at file-system events around each Torpor process, not around the harness's own writes).
+    pub observer: std::cell::RefCell<Option<Box<dyn FnMut(bool, &str)>>>,
 }
 
 impl Sim {
@@ -287,7 +290,7 @@ impl Sim {
     pub fn with_env(env: Arc<Env>, n: u32) -> Sim {
         let sid = format!("sess-{n:04}-0000-4000-8000-00000000000{n}");
         let transcript = env.home.join(format!("transcript-{n}.jsonl"));
-        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n }
+        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n, observer: Default::default() }
     }
 
     /// A second Claude Code session in the same project and store.
@@ -343,18 +346,29 @@ impl Sim {
         p
     }
 
+    fn observed(&self, label: &str, c: Command, stdin: &[u8]) -> Out {
+        if let Some(o) = self.observer.borrow_mut().as_mut() {
+            o(false, label);
+        }
+        let out = run_cmd(c, stdin);
+        if let Some(o) = self.observer.borrow_mut().as_mut() {
+            o(true, label);
+        }
+        out
+    }
+
     pub fn hook_unchecked(&mut self, event: &str, extra: Value) -> Out {
         let p = self.payload(event, extra);
         let mut c = self.cmd();
         c.args(["hook", event]);
-        run_cmd(c, p.to_string().as_bytes())
+        self.observed(event, c, p.to_string().as_bytes())
     }
 
     /// Run the command line (not a hook) in the project folder.
     pub fn cli(&self, args: &[&str]) -> Out {
         let mut c = self.cmd();
         c.args(args);
-        run_cmd(c, b"")
+        self.observed(&format!("torpor {}", args.join(" ")), c, b"")
     }
 
     pub fn status(&self) -> Out {
