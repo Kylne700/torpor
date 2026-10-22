@@ -97,6 +97,11 @@ Measured on the tree at commit db4750a (this file is the only change after it).
 - NOT VERIFIED: the 9-minute budget in real time. The `Late` path is only unit-tested with a prober that says time is up (`nothing_starts_after_the_time_is_up`, src/findbreak.rs).
 - NOT VERIFIED: any run inside a real Claude Code (a10_real is still ignored); the skill text has only been checked by the lint of its example and by its phrases.
 - NOT VERIFIED: the Bash timeout of 600000 ms in the skill against a real find-break on a slow project.
+- B2 caveat (qualification): `a_check_that_fails_one_run_in_three_at_random_never_qualifies` (tests/promise.rs) uses a counter fixture (`/api/flaky` fails on every third request), so it is deterministic and weaker than the spec row (truly random 1 in 3, 20 trials). A throwaway run with a truly random endpoint (the counter replaced by `Math.random() < 1 / 3`; not committed), 60 `promise add` trials in total:
+  - 50 saved as advisory `flaky` (1-4 of the 5 good runs failed);
+  - 9 saved as `unproven live` (all 5 good runs passed, about 13% of attempts by (2/3)^5; no bad version found, so never shadow and never blocking);
+  - 1 not saved (exit 1; the cause was not captured, and 5 of 5 failing has a chance of 0.4% per trial).
+  - So "never qualifies" holds for shadow and blocking, not for being saved as an `unproven` live advisory promise. The 5-pass rule is the spec's and S2a did not change it. S2b: make the 20-trial B2 gate test use a truly random check, and decide how later gate and control runs update `flake_hat` (spec 17 only stores it at qualification), so that such a promise can turn `flaky`.
 - Gap: mutants (spec 17) and the node-coverage dependency lists (`deps_json`) are not built, so no promise can reach shadow or blocking yet.
 - Gap: the search assumes that breakage is monotonic (see shortcuts), and the gallop relies on the hint when the oldest state does not run.
 - If this file should not be public, move it out of the repo before the v2.1.0 tag.
