@@ -154,6 +154,8 @@ fn off_on_forget_retain_are_for_the_user_only() {
         ("~/.torpor/bin/torpor forget --all", "torpor forget"),
         ("sudo torpor retain 90", "torpor retain"),
         ("cd . && TORPOR_HOME=/x torpor forget", "torpor forget"),
+        ("torpor undo 2 --force", "torpor undo --force"),
+        ("bash -c 'cd . && torpor undo --force 2'", "torpor undo --force"),
     ] {
         let want = answer("deny", format!("Torpor: only the user can do this, in their own terminal ({name})."));
         assert_eq!(sim.pre_bash(c).json().unwrap(), want, "{c}");

@@ -25,7 +25,7 @@ Write a check for exactly that thing and save it. Use the Bash tool with timeout
        EOF
 
    It names the turn ("Turn 4 broke it ...") and saves the check as a promise. A change made outside the chat is named too, with a `torpor back --id N` to go before it. "One of turns 2-3 broke it" means Torpor could not separate them.
-3. Tell the user which turn broke it and propose `torpor undo <turn>`. It undoes only that turn and keeps later work, after running the promises that cover those files on the result. Run it only when the user agrees. If it stops because a promise would break, tell the user which one; never add `--force` yourself.
+3. Tell the user which turn broke it and propose `torpor undo <turn>`. It undoes only that turn and keeps later work, after running the promises that cover those files on the result. Run it only when the user agrees. If an undo is refused, tell the user; only they can force it.
 
 ## Rules
 - Never edit Torpor files (its store, hooks or settings). Never weaken a check to make it pass.

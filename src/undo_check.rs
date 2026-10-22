@@ -1,5 +1,5 @@
 //! Undo with checks (spec 20): before `torpor undo K` writes anything, the result is built in a scratch copy of the project and the promises
-//! that watch the undone files run on it. A promise that passes now and fails there stops the undo (exit 3; `--force` goes on anyway).
+//! that watch the undone files run on it. A promise that passes now and fails there stops the undo (exit 3; the user can go on anyway with `--force`).
 //! Unlike the Stop gate this runs inside the undo's store lock and open transaction: the merge was built there and must not change meanwhile.
 //! A deadline bounds it. A check that cannot run, is flaky, ran out of time or already fails now never stops the undo; it is reported.
 use crate::gate;
@@ -126,7 +126,7 @@ pub fn run(ws: &Ws, live: &[u8; 32], plan: &Plan, k: i64, dry_run: bool) -> Chec
                     continue;
                 }
                 let step = c.failed_step.and_then(|n| l.spec.steps.get(n.wrapping_sub(1))).and_then(|s| s.why.clone());
-                let mut text = format!("Undoing turn {k} breaks promise {name}, so nothing was changed. To do it anyway: torpor undo {k} --force");
+                let mut text = format!("Undoing turn {k} breaks promise {name}, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force");
                 if let Some(why) = step {
                     text.push_str(&format!("\nFailing step: {}.", promise::clean(why.trim_end_matches('.'), 160)));
                 }

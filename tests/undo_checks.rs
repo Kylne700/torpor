@@ -1,5 +1,5 @@
 //! Undo with checks (spec 20): the result is built in a scratch copy first and the promises that watch the undone files run on it.
-//! A promise that passes now and fails there stops the undo (exit 3, `--force` goes on); anything else is only reported.
+//! A promise that passes now and fails there stops the undo (exit 3; only the user can go on, with `--force`); anything else is only reported.
 mod common;
 use common::app::*;
 use common::*;
@@ -39,7 +39,7 @@ fn an_undo_that_breaks_a_passing_promise_changes_nothing_and_force_goes_on() {
     assert_eq!(o.code, 3, "{}", why(&o));
     assert_eq!(
         o.stdout,
-        "Undoing turn 2 breaks promise #1 (login works), so nothing was changed. To do it anyway: torpor undo 2 --force\nFailing step: after sign-in the account data shows.\n"
+        "Undoing turn 2 breaks promise #1 (login works), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo 2 --force\nFailing step: after sign-in the account data shows.\n"
     );
     assert_eq!(oracle(s.proj()), before, "a refused undo must not write");
     assert_eq!(s.max_point(), points, "a refused undo must not leave a save point");

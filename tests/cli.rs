@@ -283,7 +283,7 @@ fn user_only_commands_refuse_inside_claude_code() {
     s.session_start();
     s.prompt("one");
     s.stop();
-    for args in [&["off"][..], &["on"], &["retain", "60"], &["forget"], &["forget", "--all"], &["forget", "--before", "2020-01-01"], &["runner", "install"], &["runner", "install", "--yes"]] {
+    for args in [&["off"][..], &["on"], &["retain", "60"], &["forget"], &["forget", "--all"], &["forget", "--before", "2020-01-01"], &["runner", "install"], &["runner", "install", "--yes"], &["undo", "1", "--force"], &["undo", "--force", "1"], &["undo", "1", "--dry-run", "--force"]] {
         let o = s.cli_env(args, &[("CLAUDECODE", "1")]);
         assert_eq!((o.code, o.stdout.as_str()), (3, ""), "{args:?}");
         assert_eq!(o.stderr, format!("Run this in your own terminal: ~/.torpor/bin/torpor {}\n", args.join(" ")), "{args:?}");
@@ -297,8 +297,8 @@ fn user_only_commands_refuse_inside_claude_code() {
         let o = s.cli_env(args, &[("CLAUDECODE", "1")]);
         assert_eq!(o.code, 0, "{args:?}: {}", o.stderr);
     }
-    // The agent may go back and undo; those are not user-only.
-    for args in [&["back", "1"][..], &["undo", "1"], &["recover"]] {
+    // The agent may go back and undo (not with --force); those are not user-only.
+    for args in [&["back", "1"][..], &["undo", "1"], &["undo", "1", "--dry-run"], &["recover"]] {
         let o = s.cli_env(args, &[("CLAUDECODE", "1")]);
         assert!(!o.stderr.contains("own terminal"), "{args:?}: {}", o.stderr);
     }

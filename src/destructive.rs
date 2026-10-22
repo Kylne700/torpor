@@ -558,6 +558,8 @@ pub fn user_only_args<S: AsRef<str>>(args: &[S]) -> Option<String> {
         (s, _) if USER_ONLY.contains(&s) => Some(format!("torpor {s}")),
         // The one download Torpor makes: the AI asks you to run it (spec 24).
         ("runner", Some("install")) => Some("torpor runner install".into()),
+        // `--force` skips the checks of an undo: only the user decides that (the refusal tells the AI to ask).
+        ("undo", _) if args.iter().any(|a| a.as_ref() == "--force") => Some("torpor undo --force".into()),
         ("gate", Some(o @ ("on" | "off"))) => Some(format!("torpor gate {o}")),
         ("promise", Some(o @ ("ok" | "drop" | "block"))) => Some(format!("torpor promise {o}")),
         // Any `--spec...` spelling: the check source stays hidden from the AI (spec 14).
@@ -917,10 +919,15 @@ mod tests {
             ("bash ~/.torpor/bin/torpor forget", "torpor forget"),
             ("bash -c 'torpor off'", "torpor off"),
             ("cd x && torpor -q off", "torpor off"),
+            ("torpor undo 3 --force", "torpor undo --force"),
+            ("torpor undo --force 3", "torpor undo --force"),
+            ("cd x && torpor undo 3 --dry-run --force", "torpor undo --force"),
+            ("bash -c 'torpor undo 3 --force'", "torpor undo --force"),
+            ("~/.torpor/bin/torpor undo 3 --force", "torpor undo --force"),
         ] {
             assert_eq!(j(c), Verdict::UserOnly(name.into()), "{c}");
         }
-        for c in ["torpor status", "torpor back 1", "torpor undo 3", "torpor log", "echo torpor off"] {
+        for c in ["torpor status", "torpor back 1", "torpor undo 3", "torpor undo 3 --dry-run", "torpor undo 3 --forced", "torpor log", "echo torpor off", "echo torpor undo 3 --force"] {
             assert!(matches!(j(c), Verdict::Clear | Verdict::Save), "{c}");
         }
     }
