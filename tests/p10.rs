@@ -5,6 +5,7 @@
 //! The result decides spec 5.8: backup API (no writes) or raw-copy fallback (any write).
 //! ANSWER (recorded by the asserts below): yes, a read-only open of a WAL database writes next to it, so Torpor never
 //! opens a user's database: it reads the main file as plain bytes and skips it while a -wal or -journal is live.
+#![cfg(target_os = "linux")] // inotify
 mod common;
 use common::*;
 use inotify::{Inotify, WatchMask};

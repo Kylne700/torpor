@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux (gnu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      # `cargo test` builds the binary WITH fault injection (a self dev-dependency), also in --release.
+      - name: Tests, debug
+        run: cargo test
+      - name: Tests, release
+        run: cargo test --release
+      # The binary that ships is a plain build (no features) in its own target dir, so it cannot be the test build.
+      - name: Plain release build, the one that ships
+        run: CARGO_TARGET_DIR=target/dist cargo build --release
+      - name: The shipped binary ignores every test variable
+        run: sh tests/release_ignores_fault_env.sh target/dist/release/torpor
+      - name: Size of the shipped binary
+        run: |
+          size=$(wc -c < target/dist/release/torpor)
+          echo "torpor is $size bytes"
+          [ "$size" -lt 12000000 ]
+
+  linux-musl:
+    name: Linux (musl, static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain and musl tools
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl
+          rustup default stable
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Plain release build
+        env:
+          CARGO_TARGET_DIR: target/dist
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: The binary is static and ignores every test variable
+        run: |
+          bin=target/dist/x86_64-unknown-linux-musl/release/torpor
+          file "$bin"
+          file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          sh tests/release_ignores_fault_env.sh "$bin"
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Tests
+        run: cargo test
+      - name: Plain release build
+        run: CARGO_TARGET_DIR=target/dist cargo build --release
+      - name: The shipped binary ignores every test variable
+        run: sh tests/release_ignores_fault_env.sh target/dist/release/torpor
+
+  # Windows is not supported yet (the code uses Unix file APIs). This job shows when that changes; it never fails the run.
+  windows:
+    name: Windows (experimental)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build
+        run: cargo build --release

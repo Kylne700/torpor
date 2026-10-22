@@ -2,6 +2,7 @@
 //! file (once, with its parent folders). Nothing in the project, nothing inside `.git`, nothing else in HOME.
 //! One inotify watch covers the whole project (the real `git init` folder included) and the fake HOME. The harness's
 //! own writes are thrown away just before each Torpor process starts; whatever arrives while it runs is the evidence.
+#![cfg(target_os = "linux")] // inotify
 mod common;
 use common::*;
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};

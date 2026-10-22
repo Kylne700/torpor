@@ -1,0 +1,94 @@
+# Release: on a tag v*, build the plain binary for each target, attest it, and commit it to main under dist/<os>-<arch>/torpor,
+# where the plugin's launcher (bin/torpor) looks for it. Tag a commit whose CI run is green (the tests run there, not here).
+# dist/ stays in .gitignore, so the binaries only ever enter the repo through this workflow (git add -f).
+# No Windows binary: the code does not build on Windows yet (see ci.yml).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.dir }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - { dir: linux-x64, target: x86_64-unknown-linux-musl, os: ubuntu-latest, check: true }
+          - { dir: linux-arm64, target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, check: true }
+          - { dir: darwin-arm64, target: aarch64-apple-darwin, os: macos-latest, check: true }
+          # Cross-built on an arm64 runner, so it cannot be run here.
+          - { dir: darwin-x64, target: x86_64-apple-darwin, os: macos-latest, check: false }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+      - name: musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      # Plain build: no features, its own target dir. Tests build a different binary (with fault injection).
+      - name: Build
+        env:
+          CARGO_TARGET_DIR: target/dist
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: The binary ignores every test variable
+        if: matrix.check
+        run: sh tests/release_ignores_fault_env.sh target/dist/${{ matrix.target }}/release/torpor
+      - name: Size
+        run: |
+          size=$(wc -c < target/dist/${{ matrix.target }}/release/torpor)
+          echo "torpor is $size bytes"
+          [ "$size" -lt 12000000 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: torpor-${{ matrix.dir }}
+          path: target/dist/${{ matrix.target }}/release/torpor
+          if-no-files-found: error
+
+  publish:
+    name: Attest and commit the binaries
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: main is still the tagged commit
+        run: |
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "main moved after $GITHUB_REF_NAME was tagged; tag again"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Put the binaries in dist/
+        run: |
+          for d in linux-x64 linux-arm64 darwin-arm64 darwin-x64; do
+            install -D -m 755 "artifacts/torpor-$d/torpor" "dist/$d/torpor"
+          done
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*/torpor
+      - name: Commit to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f dist
+          if git diff --cached --quiet; then echo "dist/ is unchanged"; exit 0; fi
+          git commit -m "Release binaries for $GITHUB_REF_NAME"
+          git push origin HEAD:main

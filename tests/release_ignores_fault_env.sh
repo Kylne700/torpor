@@ -27,14 +27,14 @@ hook() { # hook <event> <extra json fields, with a leading comma or empty>
 
 # A panic, a 10 s sleep and an empty disk: a build with fault-inject would print nothing, take 5 s or skip the capture.
 export TORPOR_TEST_PANIC=1 TORPOR_TEST_SLEEP_MS=10000 TORPOR_TEST_FREE_BYTES=0 TORPOR_TEST_NO_GC=1
-start=$(date +%s%N)
+start=$(date +%s) # whole seconds: BSD date (macOS) has no %N
 code=0
 out=$(hook UserPromptSubmit ',"prompt":"hi"' 2>"$T/err") || code=$?
-ms=$(( ($(date +%s%N) - start) / 1000000 ))
+secs=$(( $(date +%s) - start ))
 [ "$code" = 0 ] || fail "exit code $code"
 [ -z "$out" ] || fail "stdout not empty: $out"
 [ ! -s "$T/err" ] || fail "stderr not empty"
-[ "$ms" -lt 2000 ] || fail "took $ms ms: TORPOR_TEST_SLEEP_MS was honoured"
+[ "$secs" -lt 5 ] || fail "took $secs s: TORPOR_TEST_SLEEP_MS (10 s) was honoured"
 if [ -f "$T/store/faults.log" ] && grep -Eq 'panic|timeout|disk' "$T/store/faults.log"; then fail "a fault was injected: $(cat "$T/store/faults.log")"; fi
 unset TORPOR_TEST_PANIC TORPOR_TEST_SLEEP_MS TORPOR_TEST_FREE_BYTES
 "$BIN" status --json | grep -q '"points":[1-9]' || fail "the capture did not run (TORPOR_TEST_FREE_BYTES honoured?)"
@@ -51,4 +51,4 @@ code=0
 TORPOR_FAULT=restore:1 "$BIN" back 1 >"$T/out" 2>"$T/err" || code=$?
 [ "$code" = 0 ] || fail "back exited $code with TORPOR_FAULT=restore:1: $(cat "$T/err")"
 [ "$(cat "$T/proj/a.txt")" = hello ] || fail "back did not bring a.txt back (it says: $(cat "$T/proj/a.txt"))"
-echo "ok: $BIN ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore (hook took $ms ms)"
+echo "ok: $BIN ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore (hook took ${secs}s)"

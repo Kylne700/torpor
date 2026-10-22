@@ -39,10 +39,12 @@ diffy = "0.5.2"
 torpor = { path = ".", features = ["fault-inject"] }
 tempfile = "3"
 regex = "1" # only the mask differential test
-inotify = "0.11"
 # Only the P10 test uses the online backup API (spec 5.8 branch: it writes next to WAL databases, so the product reads raw bytes).
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 proptest = "1.12.0"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+inotify = "0.11"
 
 [profile.release]
 opt-level = 3

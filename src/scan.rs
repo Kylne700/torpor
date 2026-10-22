@@ -220,6 +220,8 @@ struct Visitor {
     counter: Arc<AtomicUsize>,
     cap_hit: Arc<AtomicBool>,
     shared: Arc<Mutex<Vec<Acc>>>,
+    /// Lines of the top-level .torporignore: they also drop precious files (.env, *.db ...) that the other ignore files cannot.
+    optout: Arc<ignore::gitignore::Gitignore>,
     acc: Acc,
 }
 
@@ -306,6 +308,9 @@ impl Visitor {
                 continue;
             }
             let rel = if dir_rel.is_empty() { n.to_string() } else { format!("{dir_rel}/{n}") };
+            if self.optout.matched_path_or_any_parents(self.root.join(&rel), false).is_ignore() {
+                continue;
+            }
             if let Ok(md) = de.metadata() {
                 self.acc.extras.push(entry_from_md(rel, &md, None));
             }
@@ -411,6 +416,10 @@ pub fn scan(root: &Path, threads: usize, entry_cap: usize) -> Result<Scan> {
     let shared: Arc<Mutex<Vec<Acc>>> = Arc::new(Mutex::new(Vec::new()));
     let counter = Arc::new(AtomicUsize::new(0));
     let cap_hit = Arc::new(AtomicBool::new(false));
+    // shortcut: only the top-level .torporignore can opt a precious file out; nested ones cannot, add them if somebody asks.
+    let mut ob = ignore::gitignore::GitignoreBuilder::new(root);
+    let _ = ob.add(root.join(".torporignore"));
+    let optout = Arc::new(ob.build().unwrap_or_else(|_| ignore::gitignore::Gitignore::empty()));
     b.build_parallel().run(|| {
         let mut v = Visitor {
             root: root.to_path_buf(),
@@ -418,6 +427,7 @@ pub fn scan(root: &Path, threads: usize, entry_cap: usize) -> Result<Scan> {
             counter: counter.clone(),
             cap_hit: cap_hit.clone(),
             shared: shared.clone(),
+            optout: optout.clone(),
             acc: Acc::default(),
         };
         Box::new(move |res| v.visit(res))
@@ -573,6 +583,21 @@ mod tests {
         }
         let c = scan(r, 1, 20).unwrap();
         assert!(c.cap_hit && c.entries.len() <= 20);
+    }
+
+    #[test]
+    fn torporignore_can_opt_a_precious_file_out_but_only_from_the_top() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        w(r, ".torporignore", "dev.db\n*.sql\n!keep.sql\n");
+        for f in [".env", "dev.db", "dump.sql", "keep.sql", "data/app.sqlite", "data/dump.sql", "sub/x.db"] {
+            w(r, f, "x");
+        }
+        w(r, "sub/.torporignore", "x.db\n");
+        let p = paths(&scan(r, 1, ENTRY_CAP).unwrap());
+        assert!(p.contains(&".env".to_string()) && p.contains(&"data/app.sqlite".to_string()) && p.contains(&"keep.sql".to_string()));
+        assert!(!p.contains(&"dev.db".to_string()) && !p.contains(&"dump.sql".to_string()) && !p.contains(&"data/dump.sql".to_string()));
+        assert!(p.contains(&"sub/x.db".to_string()), "a nested .torporignore does not opt precious files out");
     }
 
     #[test]

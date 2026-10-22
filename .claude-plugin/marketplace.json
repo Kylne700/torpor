@@ -1,6 +1,7 @@
 {
   "name": "kylne700",
   "owner": { "name": "Kylne700" },
+  "description": "Save points for Claude Code: go back, undo one turn, see what changed.",
   "plugins": [
     { "name": "torpor", "source": "./", "description": "Save points for every turn, shell edits included." }
   ]
