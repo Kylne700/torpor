@@ -13,6 +13,7 @@ pub mod push;
 pub mod restore;
 pub mod runner;
 pub mod retention;
+pub mod rewind;
 pub mod scan;
 pub mod scratch;
 pub mod spec;

@@ -602,6 +602,24 @@ pub fn lookup_path(ws: &Ws, db: &Connection, tc: &mut TreeCache, tree: &[u8; 32]
     Ok(None)
 }
 
+/// Of `paths`, those whose state (kind, content, mode) differs between two stored trees; absent in both counts as the same.
+pub fn differing_paths(ws: &Ws, db: &Connection, a: &[u8; 32], b: &[u8; 32], paths: &[String]) -> Result<Vec<String>> {
+    let mut tc: TreeCache = HashMap::new();
+    let mut out = Vec::new();
+    for p in paths {
+        let (x, y) = (lookup_path(ws, db, &mut tc, a, p)?, lookup_path(ws, db, &mut tc, b, p)?);
+        let same = match (&x, &y) {
+            (None, None) => true,
+            (Some(x), y) => same_state(x, y),
+            _ => false,
+        };
+        if !same {
+            out.push(p.clone());
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- classification
 
 struct Ev {

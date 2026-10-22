@@ -60,15 +60,20 @@ pub fn safe_name(p: &str) -> bool {
 
 /// At most 3 names, then "and N more"; a name outside the safe set is counted, never shown.
 pub fn names_phrase(paths: &[String]) -> String {
-    let shown = &paths[..paths.len().min(3)];
+    names_phrase_n(paths, 3)
+}
+
+/// The same with room for `n` names (a tight line asks for fewer).
+pub fn names_phrase_n(paths: &[String], n: usize) -> String {
+    let shown = &paths[..paths.len().min(n)];
     let mut parts: Vec<String> = shown.iter().filter(|p| safe_name(p)).cloned().collect();
     let odd = shown.len() - parts.len();
     if odd > 0 {
         parts.push(format!("{odd} file{} with an unusual name", if odd == 1 { "" } else { "s" }));
     }
     let mut s = parts.join(", ");
-    if paths.len() > 3 {
-        s.push_str(&format!(" and {} more", paths.len() - 3));
+    if paths.len() > n {
+        s.push_str(&format!("{}and {} more", if s.is_empty() { "" } else { " " }, paths.len() - n));
     }
     s
 }

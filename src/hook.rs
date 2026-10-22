@@ -4,7 +4,7 @@ use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
 use crate::destructive::{self, Verdict};
-use crate::{gate, mask, promise, push, restore, retention, scan, transcript, vault};
+use crate::{gate, mask, promise, push, restore, retention, rewind, scan, transcript, vault};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -552,8 +552,15 @@ fn restore_notice(cx: &Cx) -> Result<Option<String>> {
 fn user_prompt(cx: &Cx) -> Result<Option<Value>> {
     let mut notes: Vec<String> = restore_notice(cx)?.into_iter().collect();
     let turn = begin(cx, true)?;
+    // A rewind that left shell or subagent changes standing (spec 22): the person sees the line too.
+    let rewind = guarded(cx, || rewind::line(cx.ws, cx.db, &cx.session, &turn)).flatten();
+    notes.extend(rewind.clone());
     notes.extend(gate_notes(cx, &turn));
-    Ok((!notes.is_empty()).then(|| ups_context(&notes.join("\n"))))
+    let mut out = (!notes.is_empty()).then(|| ups_context(&notes.join("\n")));
+    if let (Some(v), Some(l)) = (out.as_mut(), rewind) {
+        v["systemMessage"] = json!(l);
+    }
+    Ok(out)
 }
 
 /// The model-visible lines about promises (spec 18, 23): the failure the gate found, and a warning when the gate has not run for 3 turns.
