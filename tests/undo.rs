@@ -72,7 +72,7 @@ fn clean_undo_takes_one_turn_out_and_undo_of_undo_comes_back() {
     let id = undo_id(&o);
     assert_eq!(
         o.stdout,
-        format!("Undoing turn 1 only. Later work stays.\n  a.txt: turn 1's changes removed\n  new.txt: removed (turn 1 created it)\nDone. To undo this: torpor back --id {id}\n")
+        format!("Undoing turn 1 only. Later work stays.\n  a.txt: turn 1's changes removed\n  new.txt: removed (turn 1 created it)\nNo checks cover these files, so the result is untested.\nDone. To undo this: torpor back --id {id}\n")
     );
     assert_eq!(read(&s, "a.txt"), "A1\n");
     assert_eq!(read(&s, "b.txt"), "B2\n", "turn 2 stays");
@@ -517,9 +517,9 @@ fn bad_arguments_are_a_usage_error() {
     turn(&mut s, |s| {
         s.edit("a.txt", "A2\n");
     });
-    for args in [&["undo"][..], &["undo", "0"], &["undo", "-1"], &["undo", "abc"], &["undo", "1", "2"], &["undo", "1", "--force"]] {
+    for args in [&["undo"][..], &["undo", "0"], &["undo", "-1"], &["undo", "abc"], &["undo", "1", "2"], &["undo", "1", "--forced"]] {
         let o = s.cli(args);
-        assert_eq!((o.code, o.stdout.as_str(), o.stderr.as_str()), (2, "", "Usage: torpor undo K [--dry-run]\n"), "{args:?}");
+        assert_eq!((o.code, o.stdout.as_str(), o.stderr.as_str()), (2, "", "Usage: torpor undo K [--dry-run] [--force]\n"), "{args:?}");
     }
     assert_eq!(read(&s, "a.txt"), "A2\n");
 }

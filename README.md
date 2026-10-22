@@ -8,13 +8,13 @@ Torpor is built by an AI coding agent team (Claude Code) working for its author,
 
 ## Pre-event declaration
 
-Torpor's engine (save points, undo, find-break, promise checks and page checks in a browser) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo, recovery, find-break, promise checks and page checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
+Torpor's engine (save points, undo with checks, find-break, promise checks and page checks in a browser) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo with checks, recovery, find-break, promise checks and page checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
 
 ## What it does today
 
 - **Save points at both ends of every turn.** Torpor saves the project when you send a prompt and again when Claude stops. After each shell command Claude runs, it also checks what changed. So `sed -i`, `rm`, a formatter or a build step is recorded, not just the files Claude edits with its own edit tools. Changes you make yourself between turns are recorded too, and marked as made outside the chat.
 - **Go back.** `torpor back` puts the whole folder back to an earlier state. The state you left is saved, so going back can be undone too.
-- **Undo one turn.** `torpor undo 7` takes out what turn 7 changed and keeps the work done after it. Text files are merged line by line. If your later work touches the same lines, Torpor lists the files and changes nothing.
+- **Undo one turn.** `torpor undo 7` takes out what turn 7 changed and keeps the work done after it. Text files are merged line by line. If your later work touches the same lines, Torpor lists the files and changes nothing. Before it writes, it builds the result in a scratch copy and runs the promises that cover those files. If one passes now and would fail after the undo, Torpor changes nothing and says which. `torpor undo 7 --force` goes on anyway.
 - **Find the turn that broke it.** Tell Claude that something that worked is broken, then run `torpor find-break`. It lists what changed since the last version that worked. With a check (your AI writes it), Torpor runs the check on older versions and names the turn that made it fail, also when a shell command made the change. A change you made yourself between turns is named too. `torpor undo` then takes out that one turn.
 - **Keep what you said works.** Tell Claude "login works now" and your AI writes a small check for exactly that. Torpor tests the check before it keeps it, and runs it after later turns. When a later turn breaks it, you see a note at the end of that turn. A promise you can trust may also stop the AI (see Promises below).
 - **Page checks.** A check can click and type in a real page, not just call the app's HTTP routes. Torpor runs it in a headless Chromium-family browser that is already on your computer. The browser reaches pages on 127.0.0.1 and nothing else. This needs a small runner that you install yourself (see Install).
@@ -87,7 +87,7 @@ Inside Claude Code the plugin puts `torpor` on the PATH of the Bash tool, so Cla
 | `torpor log` | The turns, newest at the top, and what each one changed (`-n 20` sets how many, `--json` for scripts). |
 | `torpor show 7` | The files of turn 7, with lines added and removed. `torpor show --id 12` shows one save point. |
 | `torpor back 1` | Put the whole folder back one step. `--turn K` goes to the end of turn K, `--id P` to save point P. |
-| `torpor undo 7` | Undo turn 7 alone and keep the work after it. |
+| `torpor undo 7` | Undo turn 7 alone and keep the work after it. The promises that cover those files run on the result before anything is written. |
 | `torpor recover` | Finish a restore that was cut short. |
 | `torpor init` | Report what the initial scan of this folder found: file counts, secret files, files skipped. |
 | `torpor gc` | Free the space used by old save points. |
@@ -101,7 +101,7 @@ Inside Claude Code the plugin puts `torpor` on the PATH of the Bash tool, so Cla
 | `torpor statusline` | One line for Claude Code's status bar (see above). |
 | `torpor version`, `torpor help` | The version, and the list of commands. |
 
-`back` and `undo` take `--dry-run` to show what they would do without touching anything. `back --with-data` also puts database files back (see the limits below).
+`back` and `undo` take `--dry-run` to show what they would do without touching anything (an undo dry run names the checks but does not run them). `undo` also takes `--force`, which skips the checks. `back --with-data` also puts database files back (see the limits below).
 
 These change what Torpor keeps, whether it can stop the AI, or what it downloads, so they refuse to run inside Claude Code and must be typed in your own terminal:
 
@@ -144,6 +144,7 @@ A promise stays advisory when the AI thought of it by itself, when Torpor cannot
 - Torpor is one program written in Rust, plus a Claude Code plugin whose hooks call it. It keeps no service running in the background. It works when Claude Code fires a hook or when you type a command.
 - Promise checks run in a scratch copy of your project, one at a time. Torpor starts your app there on a free port of this computer, sends plain HTTP requests to 127.0.0.1, and removes the copy afterwards. For Node apps it also records which files the app ran, so a turn that touches none of them can skip the check. A skipped check runs again within three turns.
 - A check with page steps runs in a headless Chromium that a small Node program (the runner) drives. In that browser, every address except 127.0.0.1 and localhost is blocked.
+- `torpor undo` runs the checks on its result inside a scratch copy, up to 90 seconds in all, while it holds the project's lock so that nothing changes meanwhile. A promise that passes now and fails on the result stops the undo (exit code 3). A check that is flaky, cannot run, runs out of time or already fails now never stops it: the report says so. When no promise covers the files, the undo goes ahead and says the result is untested.
 - Save points are kept in `~/.torpor/<project id>/`. Files are stored by content, so a file that did not change costs nothing, and the rest is compressed. A small SQLite database holds the history.
 - Files that look like secrets (`.env` files, `*.pem`, `*.key`, `.npmrc`, `credentials*`, `*.tfstate*` and similar) are stored encrypted with a key in `~/.config/torpor/key`. Torpor never prints their content. `torpor show` says "secret file, content not shown".
 - Torpor never writes inside your project's `.git` folder, and never edits Claude Code's settings.
@@ -168,6 +169,7 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **Databases are copied as plain files.** A database that is in use (its `-wal` file is not empty) is not saved. `torpor back` leaves database files alone unless you pass `--with-data`, and `torpor undo` never rewinds them. If a restored folder has a different schema, run your migrations.
 - **Two sessions in one folder** can edit the same file. Torpor marks such changes as shared and `torpor undo` leaves them alone.
 - **Empty folders** that were removed are not brought back by `undo`, unless a saved file lived in them.
+- **The checks of an undo cover part of the result.** The scratch copy takes the changed files, not links, permission changes, secret files, `.env` files, dependency folders or files over 16 MB; the report counts them. Torpor does not run your build command on the result. An undo after which the app no longer starts is reported as "could not run" and goes ahead.
 - **Files outside the project folder are not covered.**
 - **A promise's start command runs on your computer.** At each check, Torpor runs the command written in the check (for example `node server.js`) in a scratch copy of your project, with HOME set to a temporary folder and your `.env` files left out. Treat a check like a test script you approved. Torpor rejects a check whose environment values or step URLs point to a host other than this computer. It does not limit the start command or the app: they can use the network and files outside the scratch copy. The browser of a page check cannot reach another host, but the app it talks to still can.
 - **Network use.** Torpor sends HTTP to 127.0.0.1. It makes one download, `torpor runner install`, after you confirm: playwright-core from the npm registry, and a Chromium from Playwright's servers when none is found on this computer. The Chromium download is NOT VERIFIED: it has never been run. The app and its start command may use the network.

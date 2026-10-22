@@ -4,6 +4,7 @@
 use crate::capture::{join, lookup_path, TreeCache};
 use crate::restore::{self, entry_state, live_perm, not_saved_text, not_saved_why, perm_for, Act, Entry, Job, Opts, Outcome, Plan, Skip, DB_NOTE, LOCK_WAIT_MS};
 use crate::scan;
+use crate::undo_check;
 use crate::store::*;
 use crate::util::*;
 use rusqlite::{Connection, OptionalExtension};
@@ -316,24 +317,24 @@ fn turn_points(db: &Connection, k: i64) -> Result<std::result::Result<(i64, [u8;
     }
 }
 
-/// `torpor undo K [--dry-run]`. Takes the exclusive lock itself.
-pub fn undo(ws: &mut Ws, k: i64, dry_run: bool) -> Result<Outcome> {
+/// `torpor undo K [--dry-run] [--force]`. Takes the exclusive lock itself, and keeps it while the result is checked (spec 20; `force` skips the checks).
+pub fn undo(ws: &mut Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
     ws.lock_exclusive(LOCK_WAIT_MS)?;
-    let r = undo_locked(ws, k, dry_run);
+    let r = undo_locked(ws, k, dry_run, force);
     ws.unlock();
     r
 }
 
-fn undo_locked(ws: &Ws, k: i64, dry_run: bool) -> Result<Outcome> {
+fn undo_locked(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
     let first = restore::recover_locked(ws)?;
-    let mut out = undo_inner(ws, k, dry_run)?;
+    let mut out = undo_inner(ws, k, dry_run, force)?;
     if !first.is_empty() {
         out.text = format!("{}\n{}", first.join("\n"), out.text);
     }
     Ok(out)
 }
 
-fn undo_inner(ws: &Ws, k: i64, dry_run: bool) -> Result<Outcome> {
+fn undo_inner(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
     let prep = restore::prepare(ws, &format!("before undoing turn {k}"))?;
     let (start_point, start, end) = match turn_points(&prep.tx, k)? {
         Ok(t) => t,
@@ -360,10 +361,19 @@ fn undo_inner(ws: &Ws, k: i64, dry_run: bool) -> Result<Outcome> {
     }
     let (mkd, rmd) = u.folders()?;
     let refuse = if u.conflicts.is_empty() { None } else { Some(conflict_text(&u, &prep.tx)?) };
-    let Undo { del, cre, chm, detail, skips, .. } = u;
-    let plan = Plan::finish(del, rmd, mkd, cre, chm, skips, refuse);
+    let Undo { del, cre, chm, mut detail, skips, .. } = u;
+    let mut plan = Plan::finish(del, rmd, mkd, cre, chm, skips, refuse);
+    // Spec 20: the result is checked before anything is written. Nothing to write or a refusal already: nothing to check.
+    let mut checks = undo_check::Checks::default();
+    if !force && plan.refuse.is_none() && !plan.entries.is_empty() {
+        checks = undo_check::run(ws, &prep.live, &plan, k, dry_run);
+        detail.append(&mut checks.notes);
+        plan.refuse = checks.refuse.take();
+    }
     let head = format!("{} turn {k} only. Later work stays.", if dry_run { "Would undo" } else { "Undoing" });
-    restore::go(ws, prep, Job { kind: "undo", target_point: start_point, head, detail, plan }, &Opts { with_data: false, dry_run })
+    let out = restore::go(ws, prep, Job { kind: "undo", target_point: start_point, head, detail, plan }, &Opts { with_data: false, dry_run })?;
+    undo_check::record(ws, &checks.runs);
+    Ok(out)
 }
 
 /// "Can't undo turn 17 cleanly, so nothing was changed." and the way out.

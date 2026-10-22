@@ -354,11 +354,12 @@ fn recover_cmd(args: &[&str]) -> i32 {
 }
 
 fn undo_cmd(args: &[&str]) -> i32 {
-    const U: &str = "undo K [--dry-run]";
-    let (mut turn, mut dry_run) = (None, false);
+    const U: &str = "undo K [--dry-run] [--force]";
+    let (mut turn, mut dry_run, mut force) = (None, false, false);
     for a in args {
         match *a {
             "--dry-run" => dry_run = true,
+            "--force" => force = true,
             n => match (n.parse::<i64>().ok().filter(|k| *k >= 1), turn) {
                 (Some(k), None) => turn = Some(k),
                 _ => return usage(U),
@@ -370,7 +371,7 @@ fn undo_cmd(args: &[&str]) -> i32 {
         Ok(ws) => ws,
         Err(e) => return fail(&e),
     };
-    finish_outcome(merge::undo(&mut ws, k, dry_run))
+    finish_outcome(merge::undo(&mut ws, k, dry_run, force))
 }
 
 // ---------------------------------------------------------------- init

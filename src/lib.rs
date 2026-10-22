@@ -28,6 +28,7 @@ pub mod store;
 pub mod texts;
 pub mod transcript;
 pub mod turn;
+pub mod undo_check;
 pub mod util;
 pub mod vault;
 

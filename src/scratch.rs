@@ -1,5 +1,5 @@
 //! Scratch copies and the app process (spec 16): a saved version runs in its own folder, on its own port, with its own HOME.
-//! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run.
+//! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run (one exception: `torpor undo`
 use crate::capture::{self, Req, flatten_tree};
 use crate::dom;
 use crate::runner::{self, Client, Judged, ReqErr, Verdict};
@@ -585,6 +585,8 @@ fn stop(reason: impl Into<String>) -> Stopped {
 #[derive(Default, Clone)]
 pub struct Opts {
     pub overlay: Vec<(String, Option<Vec<u8>>)>,
+    /// Overlay paths that end up executable even when no executable file was there before (a script an undo brings back).
+    pub exec: Vec<String>,
     pub env: Vec<(String, String)>,
     /// Tests only: a script run by node in place of the installed `run.mjs` (a stand-in that prints protocol lines). No install is needed then.
     pub runner: Option<PathBuf>,
@@ -597,7 +599,7 @@ pub fn overlay_ok(rel: &str) -> bool {
 
 /// Each path is removed and written new, so a link in its place is replaced, never followed; a path that leaves the copy, a dependency
 /// folder (linked to the live project) or an `.env*` file is refused.
-fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)]) -> Result<()> {
+fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)], exec: &[String]) -> Result<()> {
     let root = fs::canonicalize(app)?;
     for (rel, content) in overlay {
         if !overlay_ok(rel) {
@@ -617,6 +619,7 @@ fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)]) -> Result<()
         }
         let mode = match fs::symlink_metadata(&dest) {
             Ok(m) if m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0 => 0o755,
+            _ if exec.contains(rel) => 0o755,
             _ => 0o644,
         };
         match fs::remove_file(&dest) {
@@ -675,7 +678,7 @@ impl Run {
         if let Some(dep) = made.needs_install {
             return Err(stop(format!("needs-install: the saved version's lockfile differs from the one in the project, so {dep} cannot be reused")));
         }
-        apply_overlay(&scratch.app, &opts.overlay).map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
+        apply_overlay(&scratch.app, &opts.overlay, &opts.exec).map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
         let spec_env: BTreeMap<String, String> = spec.env.iter().map(|(k, v)| (k.clone(), spec::subst(v, &rand, port))).collect();
         let (mut env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
         for (k, v) in &opts.env {
@@ -768,6 +771,19 @@ mod tests {
     }
 
     #[test]
+    fn an_overlay_file_is_executable_when_asked_or_when_the_file_it_replaces_was() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path();
+        fs::write(app.join("old.sh"), "old").unwrap();
+        fs::set_permissions(app.join("old.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let put = |p: &str| (p.to_string(), Some(b"x".to_vec()));
+        apply_overlay(app, &[put("old.sh"), put("bin/new.sh"), put("plain.txt")], &["bin/new.sh".to_string()]).unwrap();
+        let exec = |p: &str| fs::metadata(app.join(p)).unwrap().permissions().mode() & 0o111 != 0;
+        assert_eq!([exec("old.sh"), exec("bin/new.sh"), exec("plain.txt")], [true, true, false]);
+    }
+
+    #[test]
     fn the_env_is_empty_plus_the_allowed_names_and_torpors_values_win() {
         let tmp = tempfile::tempdir().unwrap();
         let mut spec_env = BTreeMap::new();
@@ -827,7 +843,7 @@ mod tests {
         assert_eq!(links.map(|(l, _)| present(l)), [false, false, true, true, true, false], "d/b, d/c and bin/up are dropped; the rest stays");
         // Nothing is made below a link that leads out, even one that got through.
         symlink("../../out", app.join("d/o")).unwrap();
-        let r = apply_overlay(&app, &[("d/o/e/f.txt".to_string(), Some(b"x".to_vec()))]);
+        let r = apply_overlay(&app, &[("d/o/e/f.txt".to_string(), Some(b"x".to_vec()))], &[]);
         assert!(matches!(&r, Err(Error::Msg(m)) if m.contains("leaves the copy")), "{r:?}");
         assert!(!out.join("e").exists(), "a folder was made outside the copy");
     }

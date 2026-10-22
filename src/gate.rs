@@ -111,6 +111,13 @@ fn overlap_of(w: &BTreeSet<String>, diff: &[String]) -> usize {
     diff.iter().filter(|x| w.contains(*x) || is_global(x)).count()
 }
 
+/// Does a change to `files` reach this promise (spec 20)? Its watched set holds one of them, or one is a global file. While the files a
+/// promise reads are not known yet, any file that is not a doc or a test may matter.
+pub fn meets(p: &Promise, files: &[String]) -> bool {
+    let watched = watched_set(p);
+    watched.as_ref().is_some_and(|w| overlap_of(w, files) > 0) || (p.deps_json.is_none() && files.iter().any(|f| relevant(f, watched.as_ref())))
+}
+
 // ---------------------------------------------------------------- small readers
 
 pub fn eligible(p: &Promise) -> bool {
@@ -437,7 +444,7 @@ fn flaky_line(p: &Promise) -> String {
     format!("Torpor: promise {} passed and failed on the same version, so it is flaky and advisory only. torpor promise show {}", short_name(p), p.id)
 }
 
-fn short_name(p: &Promise) -> String {
+pub fn short_name(p: &Promise) -> String {
     format!("#{} ({})", p.id, promise::clean(&p.name, 60))
 }
 
@@ -769,6 +776,31 @@ mod tests {
         let w: BTreeSet<String> = ["src/a.ts".to_string()].into();
         assert_eq!(overlap_of(&w, &["src/a.ts".into(), "src/b.ts".into(), "package.json".into()]), 2);
         assert_eq!(overlap_of(&w, &["src/b.ts".into()]), 0);
+    }
+
+    fn promise(deps: Option<&str>, watched: Option<&str>) -> Promise {
+        Promise {
+            id: 1, name: "login works".into(), why: None, source: "agent".into(), tier: "advisory".into(), state: "live".into(), spec_id: String::new(), good_point: None,
+            bad_point: None, created_turn: None, created_at: 0, want_source: None, announced: false, replaces: None, assertions_n: 1, flake_hat: None, mutants_killed: None,
+            mutants_tried: None, deps_json: deps.map(String::from), watched_json: watched.map(String::from), last_pass_point: None, shadow_days: 0, catches: 0, disputes_json: None,
+        }
+    }
+
+    #[test]
+    fn an_undo_meets_the_promises_that_watch_its_files() {
+        let f = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let known = promise(Some(r#"["server.js"]"#), Some(r#"["server.js"]"#));
+        assert!(meets(&known, &f(&["server.js"])));
+        assert!(meets(&known, &f(&["package-lock.json"])), "a global file reaches every promise");
+        assert!(!meets(&known, &f(&["other.js"])), "a file the promise never read does not");
+        assert!(!meets(&known, &f(&["README.md"])));
+        let reads_a_doc = promise(Some(r#"["README.md"]"#), Some("[]"));
+        assert!(meets(&reads_a_doc, &f(&["README.md"])), "a doc it watches counts");
+        // Nothing recorded what it reads yet: anything but a doc or a test may matter.
+        let unknown = promise(None, Some(r#"["server.js"]"#));
+        assert!(meets(&unknown, &f(&["other.js"])));
+        assert!(!meets(&unknown, &f(&["README.md", "tests/a.test.js"])));
+        assert!(meets(&promise(None, None), &f(&["lib/x.js"])));
     }
 
     #[test]
