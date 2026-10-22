@@ -540,6 +540,27 @@ fn databases_are_not_rewound_by_undo() {
 }
 
 #[test]
+fn claude_code_settings_files_are_never_touched_by_undo_and_never_make_it_refuse() {
+    let mut s = start(&[("a.txt", "A1\n"), (".claude/settings.json", "{\"v\":1}\n")]);
+    turn(&mut s, |s| {
+        s.edit("a.txt", "A2\n");
+        s.edit(".claude/settings.json", "{\"v\":2}\n");
+        s.edit(".claude/settings.local.json", "{\"l\":1}\n");
+    });
+    // A later turn changes the settings file again: undoing turn 1 would be a conflict on it.
+    turn(&mut s, |s| {
+        s.edit(".claude/settings.json", "{\"v\":3}\n");
+    });
+    let o = s.cli(&["undo", "1"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    let note = "it is a Claude Code settings file, which Torpor never changes";
+    assert!(o.stdout.contains(&format!("Not touched: .claude/settings.json ({note}), .claude/settings.local.json ({note}).")), "{}", o.stdout);
+    assert_eq!(read(&s, "a.txt"), "A1\n", "the other file was undone");
+    assert_eq!(read(&s, ".claude/settings.json"), "{\"v\":3}\n");
+    assert_eq!(read(&s, ".claude/settings.local.json"), "{\"l\":1}\n", "turn 1 created it, and undo still leaves it");
+}
+
+#[test]
 fn undoing_an_older_turn_after_a_newer_undo_still_works() {
     let mut s = start(&[("a.txt", "A\n"), ("b.txt", "B\n"), ("c.txt", "C\n")]);
     for (f, v) in [("a.txt", "A1\n"), ("b.txt", "B1\n"), ("c.txt", "C1\n")] {

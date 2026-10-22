@@ -203,6 +203,39 @@ fn databases_are_left_alone_unless_asked() {
 }
 
 #[test]
+fn claude_code_settings_files_are_never_rewritten_and_the_report_names_them() {
+    let mut sim = Sim::new();
+    write_files(sim.proj(), &[("a.txt", "A1\n"), (".claude/settings.json", "{\"v\":1}\n"), (".claude/commands/x.md", "X1\n")]);
+    sim.session_start();
+    sim.prompt("one");
+    sim.edit("a.txt", "A2\n");
+    sim.edit(".claude/settings.json", "{\"v\":2}\n");
+    sim.edit(".claude/settings.local.json", "{\"l\":1}\n");
+    sim.edit(".claude/commands/x.md", "X2\n");
+    sim.stop();
+    sim.prompt("two");
+    sim.edit("a.txt", "A3\n");
+    sim.edit(".claude/settings.json", "{\"v\":3}\n");
+    assert_eq!(sim.bash("rm .claude/settings.local.json"), 0);
+    sim.edit(".claude/commands/x.md", "X3\n");
+    sim.stop();
+    let note = "it is a Claude Code settings file, which Torpor never changes";
+    let said = format!("Not touched: .claude/settings.json ({note}), .claude/settings.local.json ({note}).");
+    let before = oracle(sim.proj());
+    let o = sim.cli(&["back", "--turn", "1", "--dry-run"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains(&said) && o.stdout.contains("Would change 2 files"), "{}", o.stdout);
+    assert_eq!(oracle(sim.proj()), before, "a dry run writes nothing");
+    let o = sim.cli(&["back", "--turn", "1"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains(&said), "{}", o.stdout);
+    let read = |p: &str| std::fs::read_to_string(sim.path(p)).unwrap();
+    assert_eq!((read("a.txt"), read(".claude/commands/x.md")), ("A2\n".to_string(), "X2\n".to_string()), "the other files went back");
+    assert_eq!(read(".claude/settings.json"), "{\"v\":3}\n", "the changed settings file was not rewritten");
+    assert!(!sim.path(".claude/settings.local.json").exists(), "the deleted settings file was not brought back");
+}
+
+#[test]
 fn recover_with_nothing_pending() {
     let (sim, _, end2) = two_turns();
     let o = sim.cli(&["recover"]);

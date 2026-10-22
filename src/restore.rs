@@ -20,6 +20,14 @@ const SPARE_BYTES: u64 = 256 << 20;
 const STALE_TMP_NS: i64 = 3600 * NS_PER_SEC;
 pub const LOCK_WAIT_MS: u64 = 5000;
 pub const DB_NOTE: &str = "database content is not rewound; if the schema changed, run your migrations";
+pub const CLAUDE_NOTE: &str = "it is a Claude Code settings file, which Torpor never changes";
+
+/// The project's own Claude Code settings (spec 30: never write a Claude Code file). Case-insensitive like the `.git` check,
+/// because a case-insensitive disk would make `.Claude/Settings.json` the same file.
+pub fn is_claude_settings(rel: &str) -> bool {
+    let low = rel.to_ascii_lowercase();
+    low == ".claude/settings.json" || low == ".claude/settings.local.json"
+}
 
 /// What a command prints (stdout) and its exit code.
 #[derive(Debug)]
@@ -130,6 +138,17 @@ impl Plan {
             e.path.matches('/').count()
         }
         let (mut del, mut rmd, mut mkd, mut cre, mut chm) = (del, rmd, mkd, cre, chm);
+        // Claude Code's settings files stay out of every plan (`undo` and `back` both end here). Said in the report, first in
+        // the list so "and N more" never cuts them off.
+        let mut skips = skips;
+        for l in [&mut del, &mut rmd, &mut mkd, &mut cre, &mut chm] {
+            for e in l.extract_if(.., |e| is_claude_settings(&e.path)) {
+                if !skips.iter().any(|s| s.path == e.path) {
+                    skips.push(Skip { path: e.path, why: CLAUDE_NOTE.to_string(), bad: false });
+                }
+            }
+        }
+        skips.sort_by_key(|s| !is_claude_settings(&s.path)); // stable: the rest keeps its order
         del.sort_by(|a, b| depth(b).cmp(&depth(a)).then_with(|| a.path.cmp(&b.path)));
         rmd.sort_by(|a, b| depth(b).cmp(&depth(a)).then_with(|| a.path.cmp(&b.path)));
         mkd.sort_by(|a, b| depth(a).cmp(&depth(b)).then_with(|| a.path.cmp(&b.path)));
@@ -563,6 +582,7 @@ fn skip_text(code: &str) -> (String, bool) {
         "nodir" => ("its folder is missing".to_string(), true),
         "stage" => ("the saved copy is missing".to_string(), true),
         "unsafe" => ("unsafe path".to_string(), true),
+        "claude" => (CLAUDE_NOTE.to_string(), false),
         c => (format!("could not write it ({})", c.strip_prefix("io:").unwrap_or(c)), true),
     }
 }
@@ -782,6 +802,9 @@ fn do_entry(cx: &Cx, e: &Entry, dst: &Path) -> std::result::Result<(), String> {
 fn apply_entry(cx: &Cx, e: &Entry) -> Res {
     if !safe_rel(&e.path) {
         return Res::Skipped("unsafe".into());
+    }
+    if is_claude_settings(&e.path) {
+        return Res::Skipped("claude".into()); // the plan leaves these out; this is for a journal an older version wrote
     }
     if let Some(p) = parent_problem(cx.root, &e.path) {
         return Res::Skipped(p.into());
@@ -1201,4 +1224,46 @@ pub fn recover(ws: &mut Ws) -> Result<Outcome> {
         return Ok(Outcome::new(0, "Nothing to recover.\n"));
     }
     Ok(Outcome::new(0, format!("{}\n", lines.join("\n"))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, act: Act) -> Entry {
+        Entry::bare(path.to_string(), act, "", "")
+    }
+
+    #[test]
+    fn claude_settings_files_leave_every_plan_and_are_said_first() {
+        let said = |p: &str| Skip { path: p.to_string(), why: "x".into(), bad: false };
+        let plan = Plan::finish(
+            vec![entry(".claude/settings.json", Act::Delete), entry("a.txt", Act::Delete)],
+            vec![entry(".claude/settings.local.json", Act::RmdirIfEmpty)],
+            vec![],
+            vec![entry(".Claude/Settings.JSON", Act::Create), entry("b.txt", Act::Create)],
+            vec![entry(".claude/settings.local.json", Act::Chmod)],
+            vec![said("dev.db"), said(".claude/settings.local.json")],
+            None,
+        );
+        assert_eq!(plan.entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), ["a.txt", "b.txt"]);
+        let skips: Vec<(&str, &str)> = plan.skips.iter().map(|s| (s.path.as_str(), s.why.as_str())).collect();
+        let want = [(".claude/settings.local.json", "x"), (".claude/settings.json", CLAUDE_NOTE), (".Claude/Settings.JSON", CLAUDE_NOTE), ("dev.db", "x")];
+        assert_eq!(skips, want, "each once, first, an earlier reason kept");
+        assert!(plan.skips.iter().all(|s| !s.bad));
+    }
+
+    #[test]
+    fn applying_skips_a_claude_settings_file_even_from_an_old_journal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join(".claude/settings.json");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "keep").unwrap();
+        let mut del = entry(".claude/settings.json", Act::Delete);
+        del.old = live_state(tmp.path(), ".claude/settings.json", None); // exactly what makes a delete go through
+        let cx = Cx { root: tmp.path(), stage: tmp.path(), key: None };
+        assert!(matches!(apply_entry(&cx, &del), Res::Skipped(c) if c == "claude"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        assert_eq!(skip_text("claude"), (CLAUDE_NOTE.to_string(), false));
+    }
 }

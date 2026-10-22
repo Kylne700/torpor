@@ -349,6 +349,10 @@ fn undo_inner(ws: &Ws, k: i64, dry_run: bool) -> Result<Outcome> {
     }
     let mut u = Undo { ws, db: &prep.tx, key: prep.key.as_ref(), k, live: prep.live, start, tc: HashMap::new(), del: vec![], cre: vec![], chm: vec![], detail: vec![], skips: vec![], conflicts: vec![], removed: vec![], created: vec![] };
     for p in &paths {
+        if restore::is_claude_settings(p) {
+            u.skip(p, restore::CLAUDE_NOTE, false); // not compared either: a conflict on a file Torpor will not touch must not stop the undo
+            continue;
+        }
         let base = lookup_path(ws, u.db, &mut u.tc, &end, p)?;
         let theirs = lookup_path(ws, u.db, &mut u.tc, &start, p)?;
         let ours = lookup_path(ws, u.db, &mut u.tc, &prep.live, p)?;
