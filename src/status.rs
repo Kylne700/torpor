@@ -7,7 +7,7 @@ use crate::util::*;
 use crate::{retention, scan, turn};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct LastTurn {
     pub n: i64,
@@ -36,6 +36,8 @@ pub struct Report {
     pub scan_ms: Option<i64>,
     pub file_count: Option<i64>,
     pub retain_days: i64,
+    /// The reach comes from `torpor retain`, not from Claude Code's setting.
+    pub retain_custom: bool,
     pub now: i64,
 }
 
@@ -154,7 +156,73 @@ fn silent_sessions(db: &Connection, now: i64) -> Vec<i64> {
     out
 }
 
-fn why(reason: &str, path: &str, size: Option<i64>) -> String {
+/// Folder of Claude Code's managed (organization) settings: CLAUDE_CODE_MANAGED_SETTINGS_PATH, else the folder of this OS.
+fn managed_dir() -> PathBuf {
+    match std::env::var_os("CLAUDE_CODE_MANAGED_SETTINGS_PATH") {
+        Some(p) if !p.is_empty() => PathBuf::from(p),
+        _ if cfg!(target_os = "macos") => PathBuf::from("/Library/Application Support/ClaudeCode"),
+        _ => PathBuf::from("/etc/claude-code"),
+    }
+}
+
+/// Source 4: the settings files that can stop hooks, read only. Returns (problems, notes).
+/// Later files win, as in Claude Code: user, project, local, managed. Only four keys are looked at; nothing else is read out.
+fn settings_findings(root: &Path) -> (Vec<String>, Vec<String>) {
+    const MANAGED: &str = "your organization's managed settings";
+    let md = managed_dir();
+    let mut files: Vec<(&str, PathBuf)> = vec![
+        ("your user settings", claude_dir().join("settings.json")),
+        ("this project's settings", root.join(".claude").join("settings.json")),
+        ("this project's local settings", root.join(".claude").join("settings.local.json")),
+        (MANAGED, md.join("managed-settings.json")),
+    ];
+    if let Ok(rd) = std::fs::read_dir(md.join("managed-settings.d")) {
+        let mut extra: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+        extra.sort();
+        files.extend(extra.into_iter().take(20).map(|p| (MANAGED, p)));
+    }
+    let (mut off, mut only, mut strict, mut plugin): (Option<(bool, &str)>, Option<(bool, &str)>, Option<(bool, &str)>, Option<(bool, &str)>) = (None, None, None, None);
+    for (scope, path) in &files {
+        let Some(v) = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+        if let Some(b) = v.get("disableAllHooks").and_then(|x| x.as_bool()) {
+            off = Some((b, scope));
+        }
+        if let Some(b) = v.pointer("/enabledPlugins/torpor@kylne700").and_then(|x| x.as_bool()) {
+            plugin = Some((b, scope));
+        }
+        // Claude Code honours these two in managed settings only.
+        if *scope == MANAGED {
+            if let Some(b) = v.get("allowManagedHooksOnly").and_then(|x| x.as_bool()) {
+                only = Some((b, scope));
+            }
+            let locked = match v.get("strictPluginOnlyCustomization") {
+                Some(Value::Bool(b)) => Some(*b),
+                Some(Value::Array(a)) => Some(a.iter().any(|x| x == "hooks")),
+                Some(Value::Object(o)) => Some(!o.is_empty()),
+                _ => None,
+            };
+            if let Some(b) = locked {
+                strict = Some((b, scope));
+            }
+        }
+    }
+    let (mut problems, mut notes) = (Vec::new(), Vec::new());
+    if let Some((true, s)) = off {
+        problems.push(format!("Hooks are turned off by disableAllHooks in {s}, so nothing is being saved."));
+    }
+    if let Some((true, s)) = only {
+        problems.push(format!("Only managed hooks may run, set by allowManagedHooksOnly in {s}, so Torpor's hooks do not run and nothing is being saved."));
+    }
+    if let Some((false, s)) = plugin {
+        problems.push(format!("The Torpor plugin is turned off by enabledPlugins in {s}, so nothing is being saved."));
+    }
+    if let Some((true, s)) = strict {
+        notes.push(format!("strictPluginOnlyCustomization is set in {s}. If no Torpor hooks run, ask whoever manages Claude Code here to allow the Torpor plugin."));
+    }
+    (problems, notes)
+}
+
+pub fn why(reason: &str, path: &str, size: Option<i64>) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     match reason {
         "too_big" => {
@@ -198,6 +266,7 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
     r.file_count = meta_get_i64(db, "file_count");
     let (w, note) = retention::window_days(db);
     r.retain_days = w;
+    r.retain_custom = meta_get_i64(db, "retain_days").is_some_and(|x| x >= w);
     r.notes.extend(note);
 
     // Last turn that exists, with what it changed.
@@ -254,6 +323,10 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
         r.problems.push(format!("No Torpor hooks ran in this session since {}.", local_hhmm(last)));
         r.blocking = true;
     }
+    let (found, notes) = settings_findings(&ws.root);
+    r.blocking |= !found.is_empty();
+    r.problems.extend(found);
+    r.notes.extend(notes);
     if let Some(n) = crate::hook::lost_key_files(db) {
         let before: i64 = match Key::load().ok().flatten() {
             Some(k) => db.query_row("SELECT COALESCE(MIN(created_at),?2) FROM blobs WHERE kind='secret' AND key_id=?1", params![k.id, now], |x| x.get(0)).unwrap_or(now),
@@ -261,16 +334,7 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
         };
         r.problems.push(format!("{n} secret file{} saved before {} can't be restored: their key file is gone.", if n == 1 { "" } else { "s" }, local_md(before)));
     }
-    if let Some(s) = meta_get(db, "deep_check_json") {
-        if let Ok(list) = serde_json::from_str::<Vec<(String, String)>>(&s) {
-            for (file, folder) in list.iter().take(3) {
-                r.problems.push(format!("{file} is inside a folder your .gitignore skips, so it is not saved. To save it, add the line !{folder} to a file named .torporignore."));
-            }
-            if list.len() > 3 {
-                r.problems.push(format!("{} more files are inside folders your .gitignore skips.", list.len() - 3));
-            }
-        }
-    }
+    r.problems.extend(deep_check_lines(db));
     if meta_get_i64(db, "thinned_harder_at").is_some_and(|t| now - t < 14 * retention::DAY_NS) {
         r.notes.push("Torpor reached its 2 GB limit for this project and kept fewer old save points.".to_string());
     }
@@ -288,6 +352,20 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
         })();
     }
     Ok(r)
+}
+
+/// Precious files inside folders `.gitignore` skips, as found by the first scan (up to 3 lines and a count).
+pub fn deep_check_lines(db: &Connection) -> Vec<String> {
+    let list: Vec<(String, String)> = meta_get(db, "deep_check_json").and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let mut out: Vec<String> = list
+        .iter()
+        .take(3)
+        .map(|(file, folder)| format!("{file} is inside a folder your .gitignore skips, so it is not saved. To save it, add the line !{folder} to a file named .torporignore."))
+        .collect();
+    if list.len() > 3 {
+        out.push(format!("{} more files are inside folders your .gitignore skips.", list.len() - 3));
+    }
+    out
 }
 
 /// Faults for a folder that has no store yet (nothing ran there, or only the launcher did): faults.log lines for no folder.
@@ -378,7 +456,11 @@ pub fn render(r: &Report) -> String {
     for n in &r.notes {
         o.push_str(&format!("{n}\n"));
     }
-    o.push_str(&format!("Save points are kept for {} days (your Claude Code cleanup setting).\n", r.retain_days));
+    let by = if r.retain_custom { "set with torpor retain" } else { "your Claude Code cleanup setting" };
+    o.push_str(&format!("Undo and back reach back {} days ({by}).\n", r.retain_days));
+    if let Some(t) = &r.last_turn {
+        o.push_str(&format!("Undo the last turn: torpor undo {}. Go back one step: torpor back 1.\n", t.n));
+    }
     o
 }
 

@@ -73,6 +73,7 @@ pub fn base_cmd(env: &Env) -> Command {
 pub fn cmd_with(program: &Path, env: &Env) -> Command {
     let mut c = Command::new(program);
     c.env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDECODE")
         .env_remove("TORPOR_OFF")
         .env_remove("TORPOR_FAULT")
         .env_remove("TORPOR_TEST_PANIC")
@@ -84,6 +85,7 @@ pub fn cmd_with(program: &Path, env: &Env) -> Command {
         .env("CLAUDE_PROJECT_DIR", &env.proj)
         .env("HOME", &env.home)
         .env("XDG_CONFIG_HOME", env.home.join(".config"))
+        .env("CLAUDE_CODE_MANAGED_SETTINGS_PATH", env.home.join("managed"))
         .env("TORPOR_TEST_NO_GC", "1")
         .current_dir(&env.proj);
     c
@@ -371,14 +373,25 @@ impl Sim {
         self.observed(&format!("torpor {}", args.join(" ")), c, b"")
     }
 
+    /// The command line with something on stdin (the status line gets Claude Code's JSON there).
+    pub fn cli_stdin(&self, args: &[&str], stdin: &str) -> Out {
+        let mut c = self.cmd();
+        c.args(args);
+        self.observed(&format!("torpor {}", args.join(" ")), c, stdin.as_bytes())
+    }
+
     /// The command line with extra environment variables for this one run (fault injection).
     pub fn cli_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Out {
+        self.cli_env_stdin(args, envs, "")
+    }
+
+    pub fn cli_env_stdin(&self, args: &[&str], envs: &[(&str, &str)], stdin: &str) -> Out {
         let mut c = self.cmd();
         c.args(args);
         for (k, v) in envs {
             c.env(k, v);
         }
-        self.observed(&format!("torpor {}", args.join(" ")), c, b"")
+        self.observed(&format!("torpor {}", args.join(" ")), c, stdin.as_bytes())
     }
 
     pub fn status(&self) -> Out {

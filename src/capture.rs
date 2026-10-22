@@ -300,7 +300,7 @@ fn db_is_busy(path: &Path) -> bool {
     wal_live || side("-journal").exists()
 }
 
-fn cap_for(e: &FEntry) -> u64 {
+pub fn cap_for(e: &FEntry) -> u64 {
     if e.secret {
         SECRET_CAP
     } else if e.precious {

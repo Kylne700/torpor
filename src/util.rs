@@ -159,6 +159,23 @@ pub fn local_stamp(ns: i64, now: i64) -> String {
     format!("{} {}", local_md(ns), local_hhmm(ns))
 }
 
+/// Local midnight of a `YYYY-MM-DD` date, in ns; None when the text is not a real date.
+pub fn parse_local_date(s: &str) -> Option<i64> {
+    let mut it = s.split('-');
+    let (y, m, d): (i32, i32, i32) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?);
+    if it.next().is_some() || !(1971..=2100).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // SAFETY: mktime only reads and normalizes the zeroed tm we pass.
+    let (t, tm) = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        (tm.tm_year, tm.tm_mon, tm.tm_mday, tm.tm_isdst) = (y - 1900, m - 1, d, -1);
+        (libc::mktime(&mut tm), tm)
+    };
+    // 31 February would roll over into March.
+    (t >= 0 && tm.tm_mday == d && tm.tm_mon == m - 1).then_some(t as i64 * NS_PER_SEC)
+}
+
 /// "just now", "2 min ago", "3 h ago", "4 days ago".
 pub fn ago(now: i64, then: i64) -> String {
     let s = ((now - then) / NS_PER_SEC).max(0);

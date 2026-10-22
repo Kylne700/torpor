@@ -370,29 +370,30 @@ fn begin(cx: &Cx, ups: bool) -> Result<Turn> {
 
 // ---------------------------------------------------------------- SessionStart
 
-fn auto_init(cx: &Cx) -> Result<()> {
-    let db = cx.db;
+/// First scan of a folder (spec 5.10): time it, choose the checking mode, look for ignored folders that hold real files.
+/// The scan is returned for `torpor init`, which describes what it found.
+pub fn first_scan(ws: &Ws, db: &Connection) -> Result<scan::Scan> {
     let prev = meta_get_i64(db, "file_count").unwrap_or(0).max(0) as usize;
     // Unknown size: time it the way a large project would be scanned (parallel).
     let threads = scan::thread_count(if prev == 0 { usize::MAX } else { prev });
-    let mut sc = scan::scan(&cx.ws.root, threads, scan::ENTRY_CAP)?;
+    let mut sc = scan::scan(&ws.root, threads, scan::ENTRY_CAP)?;
     if sc.elapsed_ms > 40 {
         // The first walk warms the file system cache; the second is what later hooks will see.
-        let again = scan::scan(&cx.ws.root, threads, scan::ENTRY_CAP)?;
+        let again = scan::scan(&ws.root, threads, scan::ENTRY_CAP)?;
         if again.elapsed_ms < sc.elapsed_ms {
             sc.elapsed_ms = again.elapsed_ms;
         }
     }
     capture::update_mode(db, sc.elapsed_ms, sc.file_count())?;
-    let dc = scan::deep_check(&cx.ws.root, &sc.entries, Duration::from_secs(1));
+    let dc = scan::deep_check(&ws.root, &sc.entries, Duration::from_secs(1));
     meta_set(db, "deep_check_json", &serde_json::to_string(&dc)?)?;
-    Ok(())
+    Ok(sc)
 }
 
 fn session_start(cx: &Cx) -> Result<Option<Value>> {
     let db = cx.db;
     if meta_get(db, "mode").is_none() {
-        guarded(cx, || auto_init(cx));
+        guarded(cx, || first_scan(cx.ws, cx.db).map(|_| ()));
     }
     guarded(cx, || retention::thin_if_due(db, cx.now));
     let mut problems: Vec<String> = Vec::new();

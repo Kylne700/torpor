@@ -43,7 +43,7 @@ fn a_healthy_folder_reads_well() {
         "Checks: ",
         "Not saved: video.mp4 (bigger than 2 MB).\n",
         "Problems: none.\n",
-        "Save points are kept for 30 days (your Claude Code cleanup setting).\n",
+        "Undo and back reach back 30 days (your Claude Code cleanup setting).\n",
     ] {
         assert!(t.contains(want), "status lacks {want:?}; it said:\n{t}");
     }
@@ -214,13 +214,13 @@ fn the_reach_follows_the_claude_code_cleanup_setting() {
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
     std::fs::write(&settings, "{\"cleanupPeriodDays\": 14}").unwrap();
     let t = sim.cli(&["status"]).stdout;
-    assert!(t.contains("Save points are kept for 14 days (your Claude Code cleanup setting).\n"), "{t}");
+    assert!(t.contains("Undo and back reach back 14 days (your Claude Code cleanup setting).\n"), "{t}");
     std::fs::write(&settings, "{\"cleanupPeriodDays\": 1}").unwrap();
     let t = sim.cli(&["status"]).stdout;
     assert!(t.contains("Claude Code is set to keep chats for 1 day(s); Torpor keeps save points for at least 2 days.\n"), "{t}");
-    assert!(t.contains("Save points are kept for 2 days"), "{t}");
+    assert!(t.contains("Undo and back reach back 2 days"), "{t}");
     std::fs::write(&settings, "not json at all").unwrap();
-    assert!(sim.cli(&["status"]).stdout.contains("kept for 30 days"), "an unreadable settings file falls back to 30");
+    assert!(sim.cli(&["status"]).stdout.contains("reach back 30 days"), "an unreadable settings file falls back to 30");
 }
 
 #[test]
@@ -237,4 +237,105 @@ fn a_lost_key_file_is_reported() {
     assert_eq!(p.len(), 1, "{p:?}");
     assert!(p[0].starts_with("2 secret files saved before "), "{p:?}");
     assert!(p[0].ends_with(" can't be restored: their key file is gone."), "{p:?}");
+}
+
+// ---------------------------------------------------------------- source 4: settings files that stop hooks
+
+/// A folder that has saved something, so that only the settings files can add problems.
+fn saving_sim() -> Sim {
+    let mut sim = Sim::new();
+    sim.session_start();
+    sim.prompt("one");
+    sim.stop();
+    assert!(problems(&json(&sim)).is_empty());
+    sim
+}
+
+fn put(path: std::path::PathBuf, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn user_settings(sim: &Sim) -> std::path::PathBuf {
+    claude_dir(sim).join("settings.json")
+}
+
+fn managed_file(sim: &Sim, name: &str) -> std::path::PathBuf {
+    sim.env.home.join("managed").join(name)
+}
+
+#[test]
+fn settings_that_turn_hooks_off_are_named_with_their_file() {
+    let sim = saving_sim();
+    let off = |scope: &str| format!("Hooks are turned off by disableAllHooks in {scope}, so nothing is being saved.");
+    put(user_settings(&sim), r#"{"disableAllHooks": true, "model": "x"}"#);
+    let v = json(&sim);
+    assert_eq!(problems(&v), [off("your user settings")]);
+    assert_eq!(v["saving"], false);
+    assert!(sim.cli(&["status"]).stdout.starts_with("Torpor is not saving this project right now.\n"));
+    // A later file wins: the project's local settings say false.
+    put(sim.path(".claude/settings.local.json"), r#"{"disableAllHooks": false}"#);
+    assert!(problems(&json(&sim)).is_empty());
+    // And the other way round: the project turns them off over a user setting that does not.
+    put(user_settings(&sim), r#"{"disableAllHooks": false}"#);
+    put(sim.path(".claude/settings.local.json"), r#"{}"#);
+    put(sim.path(".claude/settings.json"), r#"{"disableAllHooks": true}"#);
+    assert_eq!(problems(&json(&sim)), [off("this project's settings")]);
+    put(sim.path(".claude/settings.local.json"), r#"{"disableAllHooks": true}"#);
+    assert_eq!(problems(&json(&sim)), [off("this project's local settings")]);
+    // Managed settings come last, and several files are read in name order.
+    put(managed_file(&sim, "managed-settings.d/10-a.json"), r#"{"disableAllHooks": false}"#);
+    assert_eq!(problems(&json(&sim)), Vec::<String>::new(), "a managed false wins over the project's true");
+    put(managed_file(&sim, "managed-settings.d/20-b.json"), r#"{"disableAllHooks": true}"#);
+    assert_eq!(problems(&json(&sim)), [off("your organization's managed settings")]);
+    put(managed_file(&sim, "managed-settings.json"), r#"{"disableAllHooks": false}"#);
+    assert_eq!(problems(&json(&sim)).len(), 1, "the .d files come after managed-settings.json");
+}
+
+#[test]
+fn a_turned_off_plugin_and_managed_only_hooks_are_named() {
+    let sim = saving_sim();
+    put(user_settings(&sim), r#"{"enabledPlugins": {"torpor@kylne700": false, "other@x": true}}"#);
+    assert_eq!(problems(&json(&sim)), ["The Torpor plugin is turned off by enabledPlugins in your user settings, so nothing is being saved."]);
+    put(sim.path(".claude/settings.json"), r#"{"enabledPlugins": {"torpor@kylne700": true}}"#);
+    assert!(problems(&json(&sim)).is_empty(), "the project turns it back on");
+    put(user_settings(&sim), "{}");
+    put(sim.path(".claude/settings.json"), "{}");
+    // allowManagedHooksOnly counts in managed settings only; anywhere else Claude Code ignores it.
+    put(user_settings(&sim), r#"{"allowManagedHooksOnly": true}"#);
+    put(sim.path(".claude/settings.local.json"), r#"{"allowManagedHooksOnly": true}"#);
+    assert!(problems(&json(&sim)).is_empty());
+    put(managed_file(&sim, "managed-settings.json"), r#"{"allowManagedHooksOnly": true}"#);
+    let v = json(&sim);
+    assert_eq!(problems(&v), ["Only managed hooks may run, set by allowManagedHooksOnly in your organization's managed settings, so Torpor's hooks do not run and nothing is being saved."]);
+    assert_eq!(v["saving"], false);
+}
+
+#[test]
+fn the_strict_plugin_setting_is_only_a_note_and_bad_files_are_ignored() {
+    let sim = saving_sim();
+    put(managed_file(&sim, "managed-settings.json"), r#"{"strictPluginOnlyCustomization": ["hooks", "skills"]}"#);
+    let v = json(&sim);
+    assert!(problems(&v).is_empty() && v["saving"] == true, "{v}");
+    let notes: Vec<&str> = v["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert_eq!(notes, ["strictPluginOnlyCustomization is set in your organization's managed settings. If no Torpor hooks run, ask whoever manages Claude Code here to allow the Torpor plugin."]);
+    put(managed_file(&sim, "managed-settings.json"), r#"{"strictPluginOnlyCustomization": ["skills"]}"#);
+    assert!(json(&sim)["notes"].as_array().unwrap().is_empty(), "only the hooks setting matters");
+    // Not valid JSON, wrong types, an unreadable name: nothing is claimed.
+    put(user_settings(&sim), "{ not json");
+    put(sim.path(".claude/settings.json"), r#"{"disableAllHooks": "yes", "enabledPlugins": []}"#);
+    put(managed_file(&sim, "managed-settings.d/readme.txt"), r#"{"disableAllHooks": true}"#);
+    assert!(problems(&json(&sim)).is_empty());
+}
+
+#[test]
+fn a8d_hooks_off_and_a_silent_transcript_give_both_reasons() {
+    let sim = saving_sim();
+    put(user_settings(&sim), r#"{"disableAllHooks": true}"#);
+    let f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&sim.transcript).unwrap();
+    f.set_modified(SystemTime::now() + Duration::from_secs(400)).unwrap();
+    let t = sim.cli(&["status"]).stdout;
+    assert!(t.contains("No Torpor hooks ran in this session since "), "{t}");
+    assert!(t.contains("Hooks are turned off by disableAllHooks in your user settings"), "{t}");
+    assert!(t.starts_with("Torpor is not saving this project right now.\n"), "{t}");
 }

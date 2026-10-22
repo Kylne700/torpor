@@ -10,9 +10,8 @@ pub const GRACE_NS: i64 = DAY_NS;
 pub const STORE_CAP: i64 = 2 << 30;
 const QUIET_NS: i64 = 10 * 60 * NS_PER_SEC;
 
-/// W in days: `cleanupPeriodDays` of the user's Claude Code settings (read only), 30 if unset,
-/// at least 2 (with a note), lengthened by `torpor retain <days>`.
-pub fn window_days(db: &Connection) -> (i64, Option<String>) {
+/// Claude Code's own setting: `cleanupPeriodDays` of the user's settings (read only), 30 if unset, at least 2 (with a note).
+pub fn claude_days() -> (i64, Option<String>) {
     let mut w = 30i64;
     let mut note = None;
     if let Ok(s) = std::fs::read_to_string(claude_dir().join("settings.json")) {
@@ -25,6 +24,12 @@ pub fn window_days(db: &Connection) -> (i64, Option<String>) {
             }
         }
     }
+    (w, note)
+}
+
+/// W in days: Claude Code's setting, lengthened by `torpor retain <days>`.
+pub fn window_days(db: &Connection) -> (i64, Option<String>) {
+    let (mut w, note) = claude_days();
     if let Some(r) = meta_get_i64(db, "retain_days") {
         w = w.max(r);
     }
@@ -129,8 +134,14 @@ fn mark(ws: &Ws, db: &Connection) -> Result<HashSet<[u8; 32]>> {
 
 /// Garbage collection. The caller holds no lock; this takes the exclusive one.
 pub fn gc(ws: &mut Ws, if_quiet: bool, now: i64) -> Result<GcOutcome> {
+    gc_opts(ws, if_quiet, now, false)
+}
+
+/// `force` (forget): no quiet check and no grace period, because the user asked for the records to be gone now.
+pub fn gc_opts(ws: &mut Ws, if_quiet: bool, now: i64, force: bool) -> Result<GcOutcome> {
     ws.lock_exclusive(5000)?;
-    let recent: bool = ws.conn.query_row(
+    let grace = if force { 0 } else { GRACE_NS };
+    let recent: bool = !force && ws.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM heartbeat h LEFT JOIN sessions s ON s.id=h.session_id WHERE h.last_at>?1 AND (?2=0 OR s.ended_at IS NULL))",
         params![now - QUIET_NS, if_quiet as i64],
         |r| r.get(0),
@@ -149,7 +160,7 @@ pub fn gc(ws: &mut Ws, if_quiet: bool, now: i64) -> Result<GcOutcome> {
         }
         let live = mark(ws, &tx)?;
         let mut st = tx.prepare("SELECT id,loose,stored_size FROM blobs WHERE created_at<?1")?;
-        let rows: Vec<(Vec<u8>, i64, i64)> = st.query_map([now - GRACE_NS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+        let rows: Vec<(Vec<u8>, i64, i64)> = st.query_map([now - grace], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
         drop(st);
         let mut del = tx.prepare("DELETE FROM blobs WHERE id=?1")?;
         for (id, loose, size) in rows {
@@ -173,12 +184,34 @@ pub fn gc(ws: &mut Ws, if_quiet: bool, now: i64) -> Result<GcOutcome> {
     for f in dead_files {
         let _ = std::fs::remove_file(f);
     }
-    stats.orphan_files = sweep_orphan_files(ws, now);
+    stats.orphan_files = sweep_orphan_files(ws, now - grace);
     Ok(GcOutcome::Done(stats))
 }
 
-/// Loose files that no blob row names (a rolled-back capture, a crash) and temp files, once older than the grace.
-fn sweep_orphan_files(ws: &Ws, now: i64) -> usize {
+/// `torpor forget --before`: drop every point made before `cutoff` (never the newest), the text that names its files and commands, and free the blobs now.
+pub fn forget_before(ws: &mut Ws, cutoff: i64, now: i64) -> Result<(usize, GcStats)> {
+    ws.lock_exclusive(5000)?;
+    let n = {
+        let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
+        let newest: i64 = tx.query_row("SELECT COALESCE(MAX(id),0) FROM points", [], |r| r.get(0))?;
+        let n = tx.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2", params![newest, cutoff])?;
+        for t in ["changes", "not_captured"] {
+            tx.execute(&format!("DELETE FROM {t} WHERE point_id IN (SELECT id FROM points WHERE dropped=1 AND created_at<?1)"), [cutoff])?;
+        }
+        tx.execute("UPDATE turns SET preview=NULL WHERE started_at<?1", [cutoff])?;
+        tx.execute("UPDATE tool_events SET cmd_preview=NULL,paths_json=NULL WHERE at<?1", [cutoff])?;
+        tx.execute("UPDATE points SET note=NULL WHERE id<>?1 AND created_at<?2", params![newest, cutoff])?;
+        tx.commit()?;
+        n
+    };
+    match gc_opts(ws, false, now, true)? {
+        GcOutcome::Done(s) => Ok((n, s)),
+        GcOutcome::NotQuiet => Ok((n, GcStats::default())),
+    }
+}
+
+/// Loose files that no blob row names (a rolled-back capture, a crash) and temp files, once last written before `before`.
+fn sweep_orphan_files(ws: &Ws, before: i64) -> usize {
     let mut n = 0;
     let Ok(top) = std::fs::read_dir(ws.objects_dir()) else { return 0 };
     for d in top.flatten() {
@@ -190,7 +223,7 @@ fn sweep_orphan_files(ws: &Ws, now: i64) -> usize {
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .is_some_and(|d| (d.as_nanos() as i64) < now - GRACE_NS);
+                .is_some_and(|d| (d.as_nanos() as i64) < before);
             if !old {
                 continue;
             }

@@ -123,33 +123,44 @@ pub fn add_event(db: &Connection, e: &EventRow, now: i64) -> Result<i64> {
     Ok(db.last_insert_rowid())
 }
 
-/// (edits, shell, subagent): files this turn changed, net per path (first old vs last new, content and mode), by the last change's class.
-pub fn net_counts(db: &Connection, turn: i64) -> Result<(i64, i64, i64)> {
-    type State = (Option<String>, Option<i64>);
-    let mut st = db.prepare("SELECT path,old_id,old_mode,new_id,new_mode,class FROM changes WHERE turn_id=?1 AND class IN ('edit','shell','subagent') ORDER BY point_id,rowid")?;
-    let mut net: std::collections::BTreeMap<String, (State, State, String)> = Default::default();
+/// One file a turn changed, net: first old against last new (content and mode), with the class of the last change.
+pub struct Net {
+    pub path: String,
+    pub old: (Option<String>, Option<i64>),
+    pub new: (Option<String>, Option<i64>),
+    pub class: String,
+    pub tool_use_id: Option<String>,
+}
+
+/// Files of a turn whose changes have one of `classes` (an SQL list such as `'edit','shell'`), by path, without the ones that ended up as they began.
+pub fn net_changes(db: &Connection, turn: i64, classes: &str) -> Result<Vec<Net>> {
+    let mut st = db.prepare(&format!("SELECT path,old_id,old_mode,new_id,new_mode,class,tool_use_id FROM changes WHERE turn_id=?1 AND class IN ({classes}) ORDER BY point_id,rowid"))?;
+    let mut net: std::collections::BTreeMap<String, Net> = Default::default();
     let mut rows = st.query([turn])?;
     while let Some(r) = rows.next()? {
         let path: String = r.get(0)?;
-        let old: State = (r.get(1)?, r.get(2)?);
-        let new: State = (r.get(3)?, r.get(4)?);
-        let class: String = r.get(5)?;
+        let old = (r.get(1)?, r.get(2)?);
+        let new = (r.get(3)?, r.get(4)?);
+        let (class, tool_use_id): (String, Option<String>) = (r.get(5)?, r.get(6)?);
         match net.get_mut(&path) {
             Some(e) => {
-                e.1 = new;
-                e.2 = class;
+                e.new = new;
+                e.class = class;
+                e.tool_use_id = tool_use_id;
             }
             None => {
-                net.insert(path, (old, new, class));
+                net.insert(path.clone(), Net { path, old, new, class, tool_use_id });
             }
         }
     }
+    Ok(net.into_values().filter(|n| n.old != n.new).collect())
+}
+
+/// (edits, shell, subagent): files this turn changed, net per path, by the last change's class.
+pub fn net_counts(db: &Connection, turn: i64) -> Result<(i64, i64, i64)> {
     let (mut edits, mut shell, mut sub) = (0, 0, 0);
-    for (old, new, class) in net.values() {
-        if old == new {
-            continue;
-        }
-        match class.as_str() {
+    for n in net_changes(db, turn, "'edit','shell','subagent'")? {
+        match n.class.as_str() {
             "edit" => edits += 1,
             "shell" => shell += 1,
             _ => sub += 1,
