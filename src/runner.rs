@@ -391,18 +391,30 @@ fn run_one(c: &mut Client, h: &HttpStep, rand: &str, port: u16) -> Result<Result
     Ok(check_expect(&h.expect, &format!("{} {}", h.method, path), &r, rand, port))
 }
 
+/// Random bytes from the system. Err = it gave none: what needs them cannot run (a fixed value would be a guessable one).
+fn random_bytes(what: &str, b: &mut [u8]) -> std::io::Result<()> {
+    // Tests only (fault-inject builds): `TORPOR_TEST_NO_RANDOM=rand` or `=nonce` makes that one fail.
+    #[cfg(feature = "fault-inject")]
+    if std::env::var("TORPOR_TEST_NO_RANDOM").is_ok_and(|v| v == what) {
+        return Err(std::io::Error::other("none for the test"));
+    }
+    #[cfg(not(feature = "fault-inject"))]
+    let _ = what;
+    getrandom::fill(b).map_err(|e| std::io::Error::other(e.to_string()))
+}
+
 /// 8 random [a-z0-9] (spec 15 {rand}).
-pub fn new_rand() -> String {
+pub fn new_rand() -> std::io::Result<String> {
     let mut b = [0u8; 8];
-    let _ = getrandom::fill(&mut b);
-    b.iter().map(|x| b"abcdefghijklmnopqrstuvwxyz0123456789"[(*x as usize) % 36] as char).collect()
+    random_bytes("rand", &mut b)?;
+    Ok(b.iter().map(|x| b"abcdefghijklmnopqrstuvwxyz0123456789"[(*x as usize) % 36] as char).collect())
 }
 
 /// A fresh hex nonce for one run (the run token of spec 16).
-pub fn new_nonce() -> String {
+pub fn new_nonce() -> std::io::Result<String> {
     let mut b = [0u8; 16];
-    let _ = getrandom::fill(&mut b);
-    crate::util::hex(&b)
+    random_bytes("nonce", &mut b)?;
+    Ok(crate::util::hex(&b))
 }
 
 #[cfg(test)]

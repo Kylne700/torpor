@@ -8,7 +8,7 @@ use crate::store::mkdir_private;
 use crate::util::{Error, Result, trunc_chars};
 use serde_json::{Value, json};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -187,9 +187,21 @@ impl ShortTmp {
     fn new() -> std::io::Result<ShortTmp> {
         let base = std::env::temp_dir();
         let base = if base.as_os_str().len() <= 40 { base } else { PathBuf::from("/tmp") };
-        let p = base.join(format!("tp-{}", runner::new_rand()));
-        mkdir_private(&p)?;
-        Ok(ShortTmp(p))
+        Self::make(&base, || runner::new_rand().map(|r| format!("tp-{r}")))
+    }
+
+    /// A new private folder `<base>/<name>`. A name that is taken (a shared /tmp holds other people's folders, and anyone can plant one) is
+    /// never used: the next name is tried, and after 8 tries it is an error. No random name: no folder (the check cannot run).
+    fn make(base: &Path, mut name: impl FnMut() -> std::io::Result<String>) -> std::io::Result<ShortTmp> {
+        for _ in 0..8 {
+            let p = base.join(name()?);
+            match fs::DirBuilder::new().mode(0o700).create(&p) {
+                Ok(()) => return Ok(ShortTmp(p)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "every name tried was already taken"))
     }
 }
 
@@ -551,6 +563,31 @@ mod tests {
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o700);
         drop(t);
         assert!(!p.exists());
+    }
+
+    #[test]
+    fn a_taken_folder_name_is_never_used_and_no_random_name_means_no_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        // Somebody else's folder (open, with a file in it) and a planted link: neither is used or followed.
+        std::fs::create_dir(base.join("tp-taken")).unwrap();
+        std::fs::set_permissions(base.join("tp-taken"), std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::write(base.join("tp-taken/mine"), "x").unwrap();
+        std::fs::create_dir(base.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(base.join("elsewhere"), base.join("tp-link")).unwrap();
+        let mut names = ["tp-taken", "tp-link", "tp-free"].into_iter();
+        let t = ShortTmp::make(base, || Ok(names.next().unwrap().to_string())).unwrap();
+        assert_eq!(t.0, base.join("tp-free"));
+        assert_eq!(std::fs::metadata(&t.0).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(base.join("tp-taken")).unwrap().permissions().mode() & 0o777, 0o777, "the other folder is as it was");
+        assert!(base.join("tp-taken/mine").is_file() && std::fs::read_dir(base.join("elsewhere")).unwrap().next().is_none());
+        // Every name taken: an error, not a reused folder.
+        let e = ShortTmp::make(base, || Ok("tp-taken".to_string())).err().unwrap();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        // No random name: an error, and nothing was made.
+        let before = std::fs::read_dir(base).unwrap().count();
+        assert!(ShortTmp::make(base, || Err(std::io::Error::other("no random"))).is_err());
+        assert_eq!(std::fs::read_dir(base).unwrap().count(), before);
     }
 
     #[test]

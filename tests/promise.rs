@@ -446,3 +446,22 @@ fn a_hook_is_not_held_up_while_a_check_runs() {
     assert!(String::from_utf8_lossy(&o.stdout).contains("PASS"));
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
+
+/// Without random numbers a check cannot run, and its app is never started (the run token and the {rand} values must not be fixed ones).
+#[test]
+fn a_check_without_random_numbers_is_unrunnable_and_starts_no_app() {
+    let mut s = story();
+    let started = s.env.home.join("started.log");
+    let start = START.replace("node server.js", &format!("echo up >> {} && node server.js", started.display()));
+    let o = add(&mut s, &spec("login works", &start, "{}", LOGIN_STEPS));
+    assert_eq!(o.code, 0, "{}", why(&o));
+    let ups = std::fs::read_to_string(&started).unwrap().lines().count();
+    assert!(ups >= 5, "the app started for each run of the proof");
+    for what in ["rand", "nonce"] {
+        let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_NO_RANDOM", what)]);
+        assert_eq!(c.code, 1, "{what}: {}", why(&c));
+        assert!(c.stdout.contains("UNRUNNABLE") && c.stdout.contains("the system gave no random numbers"), "{what}: {}", why(&c));
+        assert_eq!(std::fs::read_to_string(&started).unwrap().lines().count(), ups, "{what}: no app was started");
+    }
+    assert_eq!(s.cli(&["check", "1"]).code, 0, "with random numbers the same check passes");
+}

@@ -122,7 +122,7 @@ impl Scratch {
     pub fn create(ws: &Ws) -> Result<Scratch> {
         let base = ws.dir.join("scratch");
         mkdir_private(&base)?;
-        let dir = base.join(format!("{}-{}", now_ns(), runner::new_rand()));
+        let dir = base.join(format!("{}-{}", now_ns(), runner::new_rand()?));
         let app = dir.join("app");
         for d in [&app, &dir.join("home"), &dir.join("tmp")] {
             mkdir_private(d)?;
@@ -740,7 +740,10 @@ impl Run {
 
     /// `start`, with files written over the copy and variables added for this run only (a mutant, a dependency-recording run).
     pub fn start_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &Opts) -> std::result::Result<Run, Stopped> {
-        let rand = runner::new_rand();
+        // Before anything starts: without random numbers the check cannot run (the run token must not be a fixed one).
+        let no_random = |e: std::io::Error| stop(format!("the system gave no random numbers ({e})"));
+        let rand = runner::new_rand().map_err(no_random)?;
+        let nonce = runner::new_nonce().map_err(no_random)?;
         for (k, v) in &spec.env {
             // The port is picked later, right before the app starts. No rule here depends on its digits, only on there being two or more.
             if let Some(p) = spec::env_problem(k, &spec::subst(v, &rand, PROVISIONAL_PORT)) {
@@ -765,7 +768,6 @@ impl Run {
             let port = free_port(usize::from(again)).map_err(|e| stop(format!("no free port ({e})")))?;
             match start_app(ws, spec, &scratch, opts, &rand, port) {
                 Ok(app) => {
-                    let nonce = runner::new_nonce();
                     return Ok(Run { port, rand, nonce, app_dir: scratch.app.clone(), app, _scratch: scratch, _lock: lock });
                 }
                 Err(n) if n.retry && !again && !runner::out_of_time() => again = true,
