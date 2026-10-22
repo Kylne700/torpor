@@ -134,6 +134,7 @@ fn a6_torpor_writes_only_inside_its_store_and_the_key_file() {
         ],
     );
     git(&env, &["init", "-q", "-b", "main"]);
+    git(&env, &["config", "maintenance.auto", "false"]); // git runs auto-maintenance in the background after a commit; its lock file would land inside a Torpor step
     git(&env, &["add", "-A"]);
     git(&env, &["commit", "-q", "-m", "first"]);
 
