@@ -2,7 +2,7 @@
 # Torpor day-1 probe (spec section 11). Throwaway, synthetic runs only, never shipped.
 # Saves the stdin of every hook call to $PROBE_OUT/<ns>-<event>.json plus side files.
 ev="$1"
-out="${PROBE_OUT:-/tmp/claude-1000/torpor-probe/out-default}"
+out="${PROBE_OUT:-${TMPDIR:-/tmp}/torpor-probe/out-default}"
 tok="${PROBE_TOKEN:-none}"
 mkdir -p "$out" 2>/dev/null
 n="$(date +%s%N)-$$"
