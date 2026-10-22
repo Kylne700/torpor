@@ -17,7 +17,7 @@ Torpor's engine is written from 2026-10-21 to 2026-10-25, before the Meta hackat
 - **Undo one turn.** `torpor undo 7` takes out what turn 7 changed and keeps the work done after it. Text files are merged line by line. If your later work touches the same lines, Torpor lists the files and changes nothing.
 - **Recover.** If a restore is cut short (power loss, a closed terminal), `torpor recover` finishes it. Restores are journaled, so a cut-short one can be finished.
 - **A save point before risky commands.** Before commands such as `rm`, `mv`, `truncate`, `sqlite3`, `git reset`, `git clean` and `git checkout`, Torpor saves the folder once more.
-- **A question before commands that reach outside.** No save point can bring back data on another machine. For commands such as `terraform destroy`, `kubectl delete`, `DROP TABLE` or `git push --force`, Claude Code asks you before the command runs. In a session that skips permission prompts (bypassPermissions mode), Torpor blocks the command instead and says why.
+- **A question before commands that reach outside.** No save point can bring back data on another machine. For commands such as `terraform destroy`, `kubectl delete`, `DROP TABLE` or `git push --force`, Claude Code asks you before the command runs (in the default, acceptEdits and plan permission modes). In any other mode (bypassPermissions, dontAsk, auto), Torpor blocks the command instead and says why.
 - **One line after each turn:**
 
 ```
