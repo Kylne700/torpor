@@ -134,7 +134,7 @@ fn a_bad_check_is_refused_with_the_lint_lines_and_exit_3() {
 #[test]
 fn a_repeated_check_and_a_fifty_first_promise_are_refused() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     // The same check again (here with the keys in another order and with other spacing) is the same promise.
     let again = format!(r#"{{ "steps": {LOGIN_STEPS}, "env": {{}}, "start": {START}, "why": "login works for the user", "name": "login works", "v": 1 }}"#);
     let o = add(&mut s, &again);
@@ -199,7 +199,7 @@ fn keep_saves_the_version_with_the_words_and_can_make_a_promise() {
 #[test]
 fn promise_decisions_are_the_users_not_the_ais() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     for args in [&["promise", "ok", "1"][..], &["promise", "drop", "1"], &["promise", "block", "1"], &["gate", "on"], &["gate", "off"], &["promise", "show", "1", "--spec"], &["promise", "show", "--specs", "1"]] {
         let o = s.cli_env(args, &[("CLAUDECODE", "1")]);
         assert_eq!((o.code, o.stdout.as_str()), (3, ""), "{args:?}");
@@ -256,7 +256,7 @@ fn torpor_calls_are_noted_before_they_run_and_old_notes_go() {
 #[test]
 fn a_dispute_makes_the_user_decide_and_is_said_once() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     assert!(s.stop().text().starts_with("Torpor: new promise #1"));
     s.prompt("now add a signup page");
     let o = agent(&mut s, &["promise", "dispute", "1", "the login page was renamed, so this check is outdated"], "");
@@ -311,7 +311,7 @@ fn a_background_check_is_said_at_the_next_stop_whether_it_was_saved_or_not() {
 #[test]
 fn a_changed_check_file_is_told_at_session_start_and_once_at_stop() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.stop();
     assert_eq!(s.second_session().session_start().stdout, "", "a clean vault says nothing");
     let id = s.q_str("SELECT spec_id FROM promises").unwrap();
@@ -343,13 +343,13 @@ fn a_changed_check_file_is_told_at_session_start_and_once_at_stop() {
 #[test]
 fn check_finds_the_regression_names_the_step_and_passes_again_after_the_fix() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.stop();
     s.prompt("add dark mode");
     s.edit("server.js", &broken_server());
     let c = s.cli(&["check", "1"]);
     assert_eq!(c.code, 1, "{}", why(&c));
-    assert!(c.stdout.starts_with("Promise #1 login works: FAIL at step 2: after sign-in the account data shows ("), "{}", why(&c));
+    assert!(c.stdout.starts_with("Promise #1 login works: FAIL at step 2: after sign-in the account data shows ("), "{}\n{}", why(&c), runs(&s));
     assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs WHERE kind='check' AND verdict='FAIL' AND failed_step=2"), 3, "3 of 3 fresh runs");
     assert!(s.cli(&["promise", "list"]).stdout.contains("failed "), "{}", s.cli(&["promise", "list"]).stdout);
     s.edit("server.js", SERVER);
@@ -370,7 +370,7 @@ fn check_finds_the_regression_names_the_step_and_passes_again_after_the_fix() {
 fn status_and_the_status_line_count_the_promises() {
     let mut s = story();
     assert!(!s.status().stdout.contains("Promises:"));
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.stop();
     let st = s.status().stdout;
     assert!(st.contains("Promises: 1 (1 advisory) · caught 0\n"), "{st}");
@@ -431,7 +431,7 @@ fn a_hook_is_not_held_up_while_a_check_runs() {
     let mut s = story();
     // The app only starts slowly when slow.flag exists, so saving the promise stays fast.
     let slow = r#"{"cmd":"if [ -f slow.flag ]; then sleep 4; fi; node server.js --port {port}","ready":"/login","timeout_s":30}"#;
-    assert_eq!(add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS)).code, 0);
+    { let o = add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.outside_edit("slow.flag", "x");
     let mut c = cmd_with(std::path::Path::new(BIN), &s.env);
     c.args(["check", "1"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());

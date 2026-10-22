@@ -436,6 +436,21 @@ impl App {
 }
 
 fn free_port() -> Result<u16> {
+    // Tests: one window of ports per test, so two tests starting an app in the same moment never pick the same port (fault-inject builds only).
+    #[cfg(feature = "fault-inject")]
+    if let Some((lo, hi)) = std::env::var("TORPOR_TEST_PORTS").ok().and_then(|s| {
+        let (a, b) = s.split_once('-')?;
+        Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?))
+    }) {
+        let (lo, n, mut r) = (u32::from(lo), u32::from(hi.saturating_sub(lo).max(1)), [0u8; 4]);
+        let _ = getrandom::fill(&mut r);
+        for i in 0..n {
+            let p = (lo + (u32::from_le_bytes(r) % n + i) % n) as u16; // below hi, so it fits
+            if std::net::TcpListener::bind(("127.0.0.1", p)).is_ok() {
+                return Ok(p);
+            }
+        }
+    }
     let l = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(l.local_addr()?.port())
 }

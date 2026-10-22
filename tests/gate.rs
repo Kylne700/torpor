@@ -111,7 +111,7 @@ fn a_dispute_or_the_gate_switch_ends_the_blocking() {
 #[test]
 fn an_advisory_failure_is_told_to_the_user_and_once_to_the_ai() {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.stop();
     s.prompt("add dark mode");
     s.edit("server.js", &broken_server());
@@ -266,7 +266,7 @@ fn an_unproven_promise_that_fails_and_then_passes_on_one_version_turns_flaky() {
     let counter = s.env.home.join("flaky-count");
     let env = json!({"FLAKY_FILE": counter}).to_string();
     let steps = r#"[{"http":{"path":"/api/flaky"},"expect":{"status":200},"why":"the endpoint answers"}]"#;
-    assert_eq!(add(&mut s, &spec("endpoint answers", START, &env, steps)).code, 0);
+    { let o = add(&mut s, &spec("endpoint answers", START, &env, steps)); assert_eq!(o.code, 0, "{}", why(&o)); }
     // Put it where a guard promise would be: live, no earlier version fails it. The next request is the 6th, which fails.
     set(&s, "UPDATE promises SET state='live', tier='unproven', flake_hat=0 WHERE id=1");
     std::fs::write(&counter, "5").unwrap();
@@ -298,7 +298,7 @@ fn a_check_that_cannot_be_read_is_unverified_and_first_in_line_next_time() {
         s.edit("server.js", &(SERVER.to_string() + &format!("// {i}\n")));
         let o = s.stop();
         assert!(blocked(&o).is_none(), "{}", why(&o));
-        assert_eq!(last_receipt(&s), "1/0/unverified");
+        assert_eq!(last_receipt(&s), "1/0/unverified", "{}\n{}", why(&o), common::app::runs(&s));
         assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
         if i < 2 {
             assert!(!o.text().contains("cut short"), "{}", why(&o));
@@ -342,7 +342,7 @@ fn a_slow_check_is_cut_at_the_clock_and_the_stop_is_allowed() {
     let mut s = story();
     // The app only starts slowly when slow.flag exists, so saving the promise stays fast.
     let slow = r#"{"cmd":"if [ -f slow.flag ]; then sleep 40; fi; node server.js --port {port}","ready":"/login","timeout_s":60}"#;
-    assert_eq!(add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS)).code, 0);
+    { let o = add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
     set(&s, "UPDATE promises SET tier='blocking' WHERE id=1");
     s.stop();
     s.prompt("tidy up the server");
@@ -351,7 +351,7 @@ fn a_slow_check_is_cut_at_the_clock_and_the_stop_is_allowed() {
     let o = s.stop();
     assert!(o.elapsed < Duration::from_secs(30), "the hook took {:?}", o.elapsed);
     assert!(blocked(&o).is_none(), "{}", why(&o));
-    assert_eq!(last_receipt(&s), "1/0/unverified");
+    assert_eq!(last_receipt(&s), "1/0/unverified", "{}\n{}", why(&o), common::app::runs(&s));
     assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
     assert_eq!(runs(&s, "gate", "FAIL"), 0, "a run cut by the clock says nothing about the check");
     assert!(s.faults().is_empty(), "{:?}", s.faults());

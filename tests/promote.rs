@@ -45,7 +45,7 @@ fn today() -> u64 {
 /// A login promise saved and put in shadow by hand; its turn ended.
 fn shadow_login() -> Sim {
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     set(&s, "UPDATE promises SET tier='shadow' WHERE id=1");
     s.stop();
     s
@@ -126,7 +126,7 @@ fn shadow_given_on_provisional_words_is_taken_back_when_stop_finds_the_turn_was_
 #[test]
 fn a_would_block_that_is_fixed_is_a_true_catch_and_the_promise_starts_to_block() {
     let mut s = ping_story(PRAISE);
-    assert_eq!(add(&mut s, &ping("the ping route answers")).code, 0);
+    { let o = add(&mut s, &ping("the ping route answers")); assert_eq!(o.code, 0, "{}", why(&o)); }
     assert_eq!(s.q_str("SELECT tier FROM promises").as_deref(), Some("shadow"));
     s.stop();
     // The AI takes the route away: it would have been stopped, and was not.

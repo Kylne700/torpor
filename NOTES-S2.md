@@ -116,3 +116,99 @@ Measured on the tree at commit db4750a (this file is the only change after it).
 6. Undo with checks (spec 20, item 11): after `merge::undo`, run the live promises on the result with `check_tree` (kind `undo`).
 7. README (allowed claims, section 28) and the A10 re-run (the `#[ignore]` tests need a real Claude Code; they already use `CARGO_PKG_VERSION`).
 8. Keep: `cargo test` and `cargo test --release` green, the plain-binary size under 12,000,000 bytes, `sh tests/release_ignores_fault_env.sh <binary>`, the privacy script with tree counts at 0, commit trailers as the brief says.
+
+# S2b: what S2b built, measured, decided and left for S2c
+
+(Appended by the S2b agent. The S2a part above stays as it was, except that its "Stop is 8000 ms" note is outdated: the own deadline of the Stop hook is 30000 ms now and its hook timeout is 45 s; both are pinned in tests/launcher.rs.)
+
+## S2b.1 Status (against "Next steps for S2b" above)
+
+| S2a step | State | Commit | Main files |
+|----------|-------|--------|------------|
+| 1 Gate at Stop, receipts, Stop 45 s / own deadline 30 s | done | e771c23 | src/gate.rs, src/push.rs, src/hook.rs, hooks/hooks.json, tests/gate.rs |
+| 2 PostToolUse targeted line (B8) | done | e771c23 | src/gate.rs (`touched`), src/hook.rs, tests/gate.rs |
+| 3 B10 notice | done | 10bb683 | src/rewind.rs, src/capture.rs, tests/rewind.rs |
+| 3 Rebuild after compaction (B5), coexistence budgets (B6), injection (B9) | done | 7261a4b | src/rebuild.rs, src/constraints.rs, src/errkey.rs, src/transcript.rs, tests/rebuild.rs, tests/budget.rs, tests/inject.rs |
+| 4 Promotion and blocking: oracle rules, up to 3 mutants, shadow days, catches, real `promise block` | done | 3ad3393 | src/shadow.rs, src/promise.rs (`finish`, `promote`), src/gate.rs, src/promise_cmd.rs, src/scratch.rs, tests/promote.rs |
+| 4 `deps_json` (which files the app ran, from V8 coverage) | done | 1b1e077 | src/deps.rs, tests/gate.rs |
+| 5 DOM runner and `torpor runner install` | NOT built (S2c) | | |
+| 6 Undo with checks (spec 20) | NOT built (S2c) | | |
+| 7 README (spec 28) | done | 6860892 | README.md, src/cli.rs (help line), tests/findbreak.rs (shell-made break test) |
+| 7 A10 re-run | done, passed (S2b.3) | this file's commit | tests/a10_real.rs (unchanged) |
+
+Also in S2b: the A6 fix 332447d (a CI race: git's background maintenance wrote a lock file inside the project while a Torpor step ran; `maintenance.auto` is now false in that test's repo) and 401b07a (macOS adds `__CF_USER_TEXT_ENCODING` to every process env, allowed in the B7 env check). Both came from the lead's CI notes.
+
+## S2b.2 How to run the checks, and the latest results
+
+Measured on the working tree that this commit contains: the tree of the previous commit plus the test and `free_port` changes named in S2b.5 and S2b.6, and this file.
+
+| Command | Result |
+|---------|--------|
+| `cargo test` | 286 passed, 0 failed, 3 ignored in 30 test binaries (`--no-fail-fast`, exit 0; about 2.4 min with the build) |
+| `cargo test --release` | 286 passed, 0 failed, 3 ignored in 30 test binaries (`--no-fail-fast`, exit 0; about 2.3 min with the build) |
+| `cargo test --test gate b2_a_check_that_fails -- --nocapture` | ok in 20.2 s: `B2 random flaky: 0 of 20 trials blocked; saved as -> at the end: {"advisory flaky -> advisory flaky": 18, "advisory live -> advisory flaky": 1, "unproven live -> unproven flaky": 1}`; the regression test `b2_the_seeded_regression_blocks_20_of_20` passes in both full runs |
+| `cargo test --test budget -- --nocapture` | ok in 17.8 s: `B6: lines per turn <= 986 tokens (storm turn 986, cap 1000), tokens per cycle [3995, 3990, 3990] (cap 4000), rebuilds [556, 556] tokens (cap 2000), session total 11975` |
+| `CARGO_TARGET_DIR=target/dist cargo build --release` (the plain binary that ships) | 7,621,000 bytes (budget: under 12,000,000; S2a: 7,130,856) |
+| `sh tests/release_ignores_fault_env.sh target/dist/release/torpor` | ok |
+| privacy script | tree files with denylist hits 0; files with a home path 0; history lines 2 (the known two); HEAD message hits 0; 45 commits before this one |
+
+- The 3 ignored tests are the same as in S2a: `a10_real` x2 (real Claude Code) and `a5_latency` (quiet machine).
+- Passed per test binary (debug run): lib unit tests 87, a2_property 4, a3_crash 2, a4_failopen 6, a6_writes 1, a9_destructive 10, budget 1, cli 16, contract 14, findbreak 12, gate 13, inject 1, launcher 7, p10 3, promise 17, promote 9, rebuild 12, restore 9, retention 7, rewind 3, schema_v2 5, scratch_run 6, secrets 3, sim 4, status 13, undo 21 (a10_real and a5_latency run 0: their tests are the ignored ones); the release run has the same numbers
+- Where the spec 25 rows live:
+  - B1 (a blocking promise stops a real regression once per change): tests/gate.rs `b1_a_blocking_promise_stops_a_real_regression_once_per_change`.
+  - B2 gate parts: tests/gate.rs `b2_the_seeded_regression_blocks_20_of_20` and `b2_a_check_that_fails_one_run_in_three_at_random_never_blocks_20_of_20` (a truly random route, `/api/randflaky`, fails 1 request in 3; the qualification-only counter test of S2a stays in tests/promise.rs). Stop timeout 45 s and own deadline 30 s: tests/launcher.rs `hooks_json_matches_the_spec`. A check cut by the clock counts as nothing and the Stop is allowed: tests/gate.rs `a_slow_check_is_cut_at_the_clock_and_the_stop_is_allowed`. Fail-open: tests/a4_failopen.rs and the gate tests.
+  - B5: tests/rebuild.rs (`b5_*`). B6: tests/budget.rs. B8: tests/gate.rs `b8_*`. B9: tests/inject.rs. B10: tests/rewind.rs (`b10_*`). Contract: tests/contract.rs (`check_contract`, now also run on the gate, the targeted line, the rebuild and the B10 notice).
+  - Shadow rules, mutants, catches, shadow days, `promise block`: tests/promote.rs (9 tests); dependency record: unit test in src/deps.rs and tests/gate.rs `the_files_the_app_ran_are_recorded_and_a_change_to_none_of_them_waits_for_the_second_stop`.
+  - Find-break end to end with a break made by a shell command, undo of that one turn: tests/findbreak.rs `a_break_made_by_a_shell_command_is_found_and_undone_alone_and_later_work_stays`.
+- Privacy history lines (2): the same two lines as in S2a (a fake-home `.config` path made inside a temp folder, in old committed test scripts; false positives of the script, not from S2b commits). No other hit; rg found no extra home path, user name or email in the tree.
+
+## S2b.3 A10 re-run (done exactly once)
+
+- Commands (as in the header of tests/a10_real.rs): plain binary built with `CARGO_TARGET_DIR=target/dist cargo build --release`, then `a10_run` and `a10_assert` with `TORPOR_A10_BIN` and `TORPOR_A10_DIR` set to a new temp folder. `claude -p --model haiku --max-budget-usd 0.50 --strict-mcp-config --mcp-config '{"mcpServers":{}}' --plugin-dir <this repo> --allowedTools Bash,Edit,Write,Read`, CLAUDE* variables removed from the environment (the same as `env -u CLAUDECODE`), synthetic project, Max subscription machine, dev testing.
+- Result: PASSED. `a10_run`: claude exit 0 after 11 s; cost 0.0046 USD of the 0.50 cap (3 model turns). `a10_assert`: ok. Session row: permission_mode `auto`, source `startup`. One turn, origin `sdk`; 4 save points (start, pre_bash, tool, end); the turn names a.txt (edit) and keep.txt, old.txt, src/x.txt (shell); no fault rows; all 10 hooks fired in the run as expected (SessionStart, UserPromptSubmit, PreToolUse x2, PostToolUse x2, Stop, SessionEnd); the project's own Stop hook ran next to ours (A8 b); settings.json hash equal before and after; other hooks' errors 0.
+- What it does NOT show: the run had no promise, so the gate at Stop did nothing. The `decision: block` answer, the targeted line and the rebuild after compaction have never met a real Claude Code (NOT VERIFIED, see S2b.6).
+
+## S2b.4 Decisions where the spec was silent (S2b chose; change them only with a reason)
+
+- Gate selection (src/gate.rs `select`): a promise is run when it was left unverified last time, its last verdict was FAIL or UNRUNNABLE, its watched set (`watched_json` plus `deps_json`) meets the files changed since its last PASS, it has no dependency record or no diff to compare, or two Stops have passed since its newest `promise_runs` row (`stops_since_run >= 2`, so a quiet promise runs on every third Stop). A turn that changed nothing but docs and tests selects nothing, except an unverified promise. Order: unverified, failed last time, bigger overlap, shorter run.
+- Blocking (src/gate.rs): 3 of 3 fresh FAIL, then a control run on `last_pass_point` that PASSes. A control FAIL sets the promise aside (`quarantined`) and nothing blocks; a control that was cut leaves the promise unverified (forced at the next Stop). At most 2 blocks per user prompt (`CHAIN_BLOCKS`), the second only if the tree changed since the first. Mixed results on one tree (pass and fail) make the promise `flaky`, advisory, and end any shadow wait. A check cut by the clock counts as nothing.
+- Shadow to blocking (REV "3 clean days" outranks the spec text): the first PASS of a UTC day, while no would-block is open, is one clean day; 3 clean days promote. A would-block stores the failing tree in meta `would:<id>` (the first one is kept); a later PASS on a different tree is a true catch and promotes at once. No confirming rerun of a catch (spec-literal; see S2b.6 for the odds). A dispute, a drop, flaky or quarantine ends the wait (`promise::end_shadow_wait`: days back to 0, meta cleared).
+- `torpor promise block ID` (user only): only tier `shadow`, state `live`, no open dispute, not flaky. It skips only the wait; the check itself is not run again.
+- Oracle rules (src/shadow.rs `oracle`): every assertion's `why` shares a word of 4 or more letters with what the user said; a literal of 4 or more words must be in quotes the user typed; an unverifiable check never reaches shadow; praise written entirely in Hebrew stays advisory; a source other than repro, keep or praise stays advisory. "What the user said" = the prompt of the turn the promise was created in plus that turn's keep constraints, whatever the turn's origin; a provisional source is demoted to advisory at Stop by `upgrade_sources`; a promise made from the CLI by the user uses the newest turn's text.
+- Mutants (src/shadow.rs `plan`, `kill`): up to 3 broken copies of the good version, each one hunk of the bad-to-good change undone (a file the change added is deleted, a file it removed is put back), the largest first; a change of exactly one hunk gives line deletions instead. A copy is killed when the check FAILs at an assertion in 3 of 3 fresh runs on it; the first kill makes the promise shadow. 0 kills of n tried, or no copy could run, or nothing could be undone: advisory with the reason in `promise show`. Skipped (advisory, "oracle untested") when the first good run took over 10 s (`COLD_MS`). Mutant and dependency runs are not stored in `promise_runs`.
+- `promise::finish` is the one place that assesses a proven promise (source and oracle rules, mutants, `watched_json`, dependency record) and writes tier, state and the rest in one UPDATE; `qualify` and find-break `complete` both call it.
+- Dependency record (src/deps.rs): one extra run of the good tree with `NODE_V8_COVERAGE` set and a preload (`--require`) that makes the app exit on SIGTERM, because a Node server killed by SIGTERM writes no coverage without it (measured on node v24.18.0: with the preload the coverage files are written, without it none). Files with an executed function and the sources named in source maps become `deps_json`; node_modules and `.env*` never. Any problem gives no record, and a promise with no record is run at every Stop that changes a relevant file. It runs only when the first good run took 10 s or less and enough time is left.
+
+## S2b.5 Deviations and shortcuts (each one in code also has a `shortcut:` comment)
+
+- Cold start (src/shadow.rs): the rule "a slow cold start skips the mutants" (spec 17) compares the whole time of the first good run, app start included, with `COLD_MS` (10 s). It is not a measured cold start.
+- Source maps (src/deps.rs): `sourceRoot` is ignored when map entries become file names; a project that uses it gets fewer names and falls back to the run-on-every-third-Stop rule.
+- Dependency record: it lists the JS files the app executed. Data files the app read (json, templates) are not in it, so a change to only such a file does not select the promise by overlap; the `stops_since_run >= 2` rule still runs it.
+- Find-break (src/findbreak.rs): still assumes that once broken it stays broken (S2a shortcut); a revert in between can hide the culprit.
+- B2 with a random check: the fixture route `/api/randflaky` fails 1 request in 3 at random, so it practically never reaches shadow (odds in S2b.6); the test shows "never blocks", not "is rejected by the oracle".
+- Tests only: the new knob `TORPOR_TEST_PORTS` (fault-inject builds only; the plain binary does not contain it) and the per-test port windows in tests/common/mod.rs (S2b.6); tests/a10_real.rs `a10_run` now puts a committed `dist/<platform>/torpor` back after the run (the first re-run had overwritten and deleted the tracked 2.0.0 binary; it was restored with `git checkout`, history unchanged).
+- Not done on purpose: no catch-confirm rerun (spec-literal), no new README sentence that compares Torpor with other tools (S2b.6).
+
+## S2b.6 Open problems and NOT VERIFIED
+
+- NOT VERIFIED: the Stop `decision: block` answer, the targeted PostToolUse line and the rebuild after compaction have never met a real Claude Code (A10 had no promise). A real AI following the skill (a user's complaint or confirmation becoming a check) is only simulated by `Sim`.
+- NOT VERIFIED: CI (macOS, musl, Linux gnu) on the S2b commits; node versions other than v24.18.0 (the dependency record needs V8 coverage; tests that start the fixture app need `node`); timing tests (the 20-trial B2 test, the slow-check clock test) on a heavily loaded machine.
+- A Torpor killed with SIGKILL (for example by Claude Code at the hook timeout) cannot stop the app it started: the app has its own process group, so it keeps running. The own deadline (30 s) is below the hook timeout (45 s) to avoid that; the watchdog and `Drop` stop the group in every other case.
+- Intermittent test failures from port collisions: found, fixed in the tests, a residual is left.
+  - Symptoms (each test passed alone, failed now and then in full runs): `add` ended with exit 1 and "run 3 of 5: UNRUNNABLE ... the app did not start (node server.js --port N exited 1)"; a check PASSed on a broken tree, so a promise came out FLAKY and not FAIL; the slow-check test got receipt `1/1/ok` and not `1/0/unverified`.
+  - Cause: `scratch::free_port` binds port 0, reads the port and closes the socket; the app binds it a moment later. The tests of one binary run in parallel and start their apps at nearly the same moment. On Linux `bind(0)` with SO_REUSEADDR (Rust sets it) gives only odd ports from the lower half of the range: 3000 draws on this machine gave 3000 odd ports from 32773 to 46881 and 2457 different ones, which fits a pool of about 7,000 ports. So two tests got the same port now and then. The loser's app died with "address in use" (the UNRUNNABLE case), or, when the other app was already listening, the loser's check talked to the other test's healthy app and got a wrong verdict (the PASS on a broken tree and the `1/1/ok` cases).
+  - Before the fix: the gate and promise test binaries, 2 copies of each at once, 5 rounds = 20 binary runs, 4 of them failed.
+  - Fix, tests only: in fault-inject builds `TORPOR_TEST_PORTS=lo-hi` makes `free_port` pick a random free port inside that window; tests/common/mod.rs gives every test its own window of 100 ports below the system range (220 windows, from a counter and the process id). The product path is unchanged.
+  - After the fix: the same loop, 10 rounds = 40 binary runs, 0 failed (at the old rate of 4 in 20, the chance of 0 in 40 is about 0.01 %). That loop ran the first version of the window pick; I then rewrote its arithmetic in u32 so that no window can overflow, and the full suites in S2b.2 ran with that final version.
+  - Residual in the tests: tests/scratch_run.rs calls `Run::start` inside the test process (6 tests, kernel-picked ports, no window). A collision there is possible; the rate is NOT measured.
+  - Residual in the product: between `free_port()` and the app's bind a foreign process (or a second Torpor) can take the port. Then the app dies (UNRUNNABLE, the Stop is not blocked and the promise is run again at the next Stop), or a healthy server of someone else answers the check, which can give a wrong PASS (a missed catch) or a wrong FAIL (a promise turns flaky and advisory). A wrong block needs 3 of 3 FAIL on three fresh ports plus a control PASS, which this cannot produce in practice. A slow-starting app makes the window longer. Fix for S2c: pick the port late, retry once when the app exits at once, check who owns the port (a start command that daemonizes would break a plain "our child owns it" test, so it needs care).
+- Odds for a check that fails 1 time in 3 at random (computed, not measured, except the 20-trial test): `(2/3)^5` = 13.2 % pass the 5-run proof (state `unproven`); 1 to 4 FAIL of 5 saves it as advisory `flaky` (the usual case, 17 of 20 trials in the B2 test); 5 of 5 FAIL (0.4 %) is not saved. If such a check were at blocking: per gate evaluation 66.7 % show nothing, 29.6 % end mixed (flaky), 2.5 % block (3 of 3 FAIL and a control PASS) and 1.2 % are set aside (control FAIL), so about 7 % of such checks would block once before they are demoted. The protection is the proof, oracle and mutant steps plus the 3-of-3 rule, not a guarantee; no text may say that a flaky check can never block. There is no confirming rerun of a catch (spec-literal): a lucky 3 of 3 FAIL followed by a later PASS counts as a true catch (3.7 % per evaluation for such a check).
+- README comparison left out: the sentence that Torpor turns a user's complaint or confirmation into a check, and that no other tool does, is not in README.md. The first half depends on a real AI following the skill (only simulated, see above) and the second half is the lead's research statement (REV 12), which I cannot verify. The other claims in the README are tested. The lead can add the sentence from spec 28 after a real run.
+
+## S2b.7 Next steps for S2c (in this order; if late, cut from the end)
+
+1. DOM runner (spec 16, S2a item 10) and `torpor runner install` (the one allowed download). It prints the same protocol lines as the http runner so `runner::judge` scores them. Then remove the `http_only` gate in `Run::start_with`, update skills/torpor/SKILL.md and the README limit "Page (browser) steps cannot run yet".
+2. Undo with checks (spec 20, S2a item 11): after `merge::undo`, run the live promises with `check_tree` (kind `undo`).
+3. Port ownership in the product (S2b.6): pick the port late, retry once when the app exits at once, do not trust a ready probe that a process other than the app answered.
+4. Optional: one rerun to confirm a catch; `sourceRoot`; a measured cold start; one real-AI run in real Claude Code with a promise (an extra ignored test next to `a10_real`) to settle the NOT VERIFIED items, then decide on the README comparison.
+5. Keep: `cargo test` and `cargo test --release` green, the plain-binary size under 12,000,000 bytes, `sh tests/release_ignores_fault_env.sh <binary>`, the privacy script with tree counts at 0, the commit trailers from the brief.

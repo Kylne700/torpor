@@ -11,7 +11,7 @@
 //! everything in the folder. `a10_assert` reads that folder, drives the INSTALLED binary (`back`, `back 1`, `undo 1`),
 //! checks every A10 / A8(a) / A8(b) assert, and writes `a10-log.txt` (turn origin and probe fields included) there.
 //! The settings file is only hashed (sha256), never printed. Nothing in this file writes outside the given folder,
-//! except the binary copy under `dist/`, which `a10_run` removes again.
+//! except the binary copy under `dist/`, which `a10_run` removes again (a committed one is put back).
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -84,8 +84,9 @@ fn a10_run() {
     fs::write(proj.join("keep.txt"), "one\n").unwrap();
     fs::write(proj.join("old.txt"), "old\n").unwrap();
     fs::write(proj.join(".claude/settings.json"), STOP_HOOK).unwrap();
-    // The plugin's launcher looks for dist/linux-x64/torpor. dist/ is gitignored, and this copy is removed after the run.
+    // The plugin's launcher looks for dist/linux-x64/torpor. A shipped binary may already be committed there: it is put back after the run.
     let dist = code_dir().join("dist").join("linux-x64");
+    let shipped = fs::read(dist.join("torpor")).ok();
     fs::create_dir_all(&dist).unwrap();
     fs::copy(&bin, dist.join("torpor")).unwrap();
     fs::set_permissions(dist.join("torpor"), fs::Permissions::from_mode(0o755)).unwrap();
@@ -125,9 +126,17 @@ fn a10_run() {
         std::thread::sleep(Duration::from_millis(500));
     };
     std::thread::sleep(Duration::from_secs(3)); // a detached cleanup run may still be finishing
-    let _ = fs::remove_file(dist.join("torpor"));
-    let _ = fs::remove_dir(&dist);
-    let _ = fs::remove_dir(code_dir().join("dist"));
+    match shipped {
+        Some(old) => {
+            fs::write(dist.join("torpor"), old).unwrap();
+            fs::set_permissions(dist.join("torpor"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        None => {
+            let _ = fs::remove_file(dist.join("torpor"));
+            let _ = fs::remove_dir(&dist);
+            let _ = fs::remove_dir(code_dir().join("dist"));
+        }
+    }
     fs::write(t.join("settings.after"), settings_hash()).unwrap();
     fs::write(t.join("git.after-run"), snapshot(&proj.join(".git"))).unwrap();
     fs::write(t.join("run.txt"), format!("exit={:?} seconds={}\n", status.map(|s| s.code()), started.elapsed().as_secs())).unwrap();

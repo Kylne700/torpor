@@ -3,7 +3,7 @@
 //! Every answer also passes `check_contract` inside the harness (allowed keys per event, nested hookEventName,
 //! no `allow`, strings under 10,000 characters, Stop line within 160).
 mod common;
-use common::app::{SERVER, add, broken_server, login, story};
+use common::app::{SERVER, add, broken_server, login, story, why};
 use common::*;
 use rusqlite::params;
 use serde_json::json;
@@ -501,7 +501,7 @@ fn shapes(sim: &Sim) -> std::collections::BTreeSet<String> {
 fn every_s2_answer_kind_is_produced_and_passes_the_contract() {
     // Every answer of the Sim goes through `check_contract` (a bad one panics inside `hook`); here the S2 kinds are made to happen.
     let mut s = story();
-    assert_eq!(add(&mut s, &login()).code, 0);
+    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
     s.stop();
     // Advisory: the edit gets the targeted line, the Stop a note for the person, the next prompt one line for the AI.
     s.prompt("add dark mode");

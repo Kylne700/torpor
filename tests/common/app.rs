@@ -71,3 +71,8 @@ pub fn add(s: &mut Sim, spec: &str) -> Out {
 pub fn why(o: &Out) -> String {
     format!("exit {}\nstdout: {}\nstderr: {}", o.code, o.stdout, o.stderr)
 }
+
+/// Every stored run of a check, one line each, for the message of a failed assertion.
+pub fn runs(s: &Sim) -> String {
+    s.q_str("SELECT group_concat(kind||' '||verdict||' step '||COALESCE(failed_step,'-')||': '||COALESCE(reason,''), char(10)) FROM promise_runs").unwrap_or_default()
+}

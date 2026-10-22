@@ -25,7 +25,11 @@ pub struct Env {
     pub home: PathBuf,
     pub thome: PathBuf,
     pub key: PathBuf,
+    /// The ports this test's apps may use (`TORPOR_TEST_PORTS`): tests that start apps at the same moment must not pick the same port.
+    pub ports: String,
 }
+
+static NEXT_WINDOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl Env {
     pub fn new() -> Env {
@@ -39,7 +43,9 @@ impl Env {
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         let key = home.join(".config").join("torpor").join("key");
-        Env { _tmp: tmp, proj, home, thome, key }
+        // 220 windows of 100 ports below the range the system hands out itself; the pid keeps two test runs at once from sharing the first ones.
+        let w = (NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * 37 + std::process::id()) % 220;
+        Env { _tmp: tmp, proj, home, thome, key, ports: format!("{}-{}", 10_000 + w * 100, 10_100 + w * 100) }
     }
 }
 
@@ -90,6 +96,7 @@ pub fn cmd_with(program: &Path, env: &Env) -> Command {
         .env("XDG_CONFIG_HOME", env.home.join(".config"))
         .env("CLAUDE_CODE_MANAGED_SETTINGS_PATH", env.home.join("managed"))
         .env("TORPOR_TEST_NO_GC", "1")
+        .env("TORPOR_TEST_PORTS", &env.ports)
         .current_dir(&env.proj);
     c
 }
