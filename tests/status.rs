@@ -68,6 +68,7 @@ fn a_healthy_folder_reads_well() {
 }
 
 #[test]
+#[cfg_attr(target_os = "macos", ignore = "APFS refuses file names that are not UTF-8")]
 fn the_not_saved_list_is_short_unless_asked_for() {
     let mut sim = Sim::new();
     for i in 0..7 {

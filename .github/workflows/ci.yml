@@ -70,7 +70,7 @@ jobs:
       - name: Rust toolchain
         run: rustup toolchain install stable --profile minimal && rustup default stable
       - name: Tests
-        run: cargo test
+        run: cargo test --no-fail-fast
       - name: Plain release build
         run: CARGO_TARGET_DIR=target/dist cargo build --release
       - name: The shipped binary ignores every test variable

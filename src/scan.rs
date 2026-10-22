@@ -606,17 +606,25 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
         let bad = std::ffi::OsStr::from_bytes(b"bad\xffname");
-        std::fs::write(r.join(bad), "x").unwrap();
-        std::fs::create_dir(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe"))).unwrap();
-        std::fs::write(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe")).join("in"), "x").unwrap();
+        let names = match std::fs::write(r.join(bad), "x") {
+            Ok(()) => true,
+            Err(e) if e.raw_os_error() == Some(libc::EILSEQ) => false, // APFS (macOS) refuses names that are not UTF-8
+            Err(e) => panic!("{e}"),
+        };
+        if names {
+            std::fs::create_dir(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe"))).unwrap();
+            std::fs::write(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe")).join("in"), "x").unwrap();
+        }
         let fifo = std::ffi::CString::new(r.join("pipe").as_os_str().as_bytes()).unwrap();
         unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
         std::os::unix::fs::symlink("nowhere", r.join("lnk")).unwrap();
         let s = scan(r, 1, ENTRY_CAP).unwrap();
         let by = |n: &str| s.entries.iter().find(|e| e.path.starts_with(n)).unwrap();
-        assert_eq!(by("bad").reason, Some("name"));
-        assert_eq!(by("dir").reason, Some("name"));
-        assert!(!s.entries.iter().any(|e| e.path.ends_with("/in")));
+        if names {
+            assert_eq!(by("bad").reason, Some("name"));
+            assert_eq!(by("dir").reason, Some("name"));
+            assert!(!s.entries.iter().any(|e| e.path.ends_with("/in")));
+        }
         assert_eq!(by("pipe").reason, Some("special"));
         assert_eq!(by("lnk").kind, EKind::Link);
     }
