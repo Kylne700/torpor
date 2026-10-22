@@ -6,6 +6,7 @@ use crate::spec::{self, Spec};
 use crate::store::{TreeEntry, Ws, mkdir_private, user_home};
 use crate::util::{Error, Result, hex, now_ns, trunc_chars, unhex32};
 use rusqlite::{Transaction, TransactionBehavior};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{PipeReader, Read, Write};
@@ -55,20 +56,28 @@ pub fn snapshot(ws: &mut Ws, budget: Duration) -> Result<[u8; 32]> {
 
 // ---------------------------------------------------------------- one run at a time
 
+thread_local! {
+    static HELD: Cell<bool> = const { Cell::new(false) };
+}
+
 /// `<ws>/run.lock`: held for a whole run (and never together with the store lock). Released when dropped.
 pub struct RunLock {
-    _f: File,
+    _f: Option<File>,
 }
 
 impl RunLock {
+    /// Waits at most `wait_ms`, and never past this thread's deadline. Inside `hold_run_lock` the lock is already ours: a no-op.
     pub fn acquire(ws: &Ws, wait_ms: u64) -> Result<RunLock> {
+        if HELD.with(|h| h.get()) {
+            return Ok(RunLock { _f: None });
+        }
         let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(ws.dir.join("run.lock"))?;
         let t = Instant::now();
         loop {
             match f.try_lock() {
-                Ok(()) => return Ok(RunLock { _f: f }),
+                Ok(()) => return Ok(RunLock { _f: Some(f) }),
                 Err(fs::TryLockError::WouldBlock) => {
-                    if t.elapsed() >= Duration::from_millis(wait_ms) {
+                    if t.elapsed() >= Duration::from_millis(wait_ms) || runner::out_of_time() {
                         return Err(Error::Busy);
                     }
                     std::thread::sleep(Duration::from_millis(50));
@@ -76,6 +85,24 @@ impl RunLock {
                 Err(fs::TryLockError::Error(e)) => return Err(e.into()),
             }
         }
+    }
+}
+
+/// The run lock taken once for a series of runs (the Stop gate: the 3 repeats and the control run belong together, spec 18).
+/// While it lives, `RunLock::acquire` on this thread hands out a no-op. The flag is reset before the real lock is released.
+pub struct HeldLock {
+    _lock: RunLock,
+}
+
+pub fn hold_run_lock(ws: &Ws, wait_ms: u64) -> Result<HeldLock> {
+    let _lock = RunLock::acquire(ws, wait_ms)?;
+    HELD.with(|h| h.set(true)); // shortcut: a thread-wide flag, not tied to one workspace; the gate holds exactly one workspace, upgrade if a second can run at once
+    Ok(HeldLock { _lock })
+}
+
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        HELD.with(|h| h.set(false));
     }
 }
 
@@ -283,6 +310,20 @@ struct Tail {
     eof: bool,
 }
 
+/// Process groups of the apps this process started and has not stopped yet. Only the hook watchdog reads it (`kill_live_groups`),
+/// so a hook that ends at its deadline does not leave its own apps running. Never a group id saved by an earlier process.
+static LIVE: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// SIGKILL every app group this process started. For the watchdog thread right before `_exit`.
+pub fn kill_live_groups() {
+    if let Ok(g) = LIVE.try_lock() {
+        for &pg in g.iter().filter(|p| **p > 1) {
+            // SAFETY: the ids are groups this process created and has not yet reaped through App::drop.
+            unsafe { libc::kill(-pg, libc::SIGKILL) };
+        }
+    }
+}
+
 /// The server in its own process group. Dropping it stops the whole group (SIGTERM, then SIGKILL after 3 s).
 pub struct App {
     child: Child,
@@ -315,6 +356,9 @@ impl Drop for App {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Ok(mut g) = LIVE.lock() {
+            g.retain(|p| *p != self.pgid); // only now: until the group is gone the watchdog may still need to kill it
+        }
     }
 }
 
@@ -358,6 +402,9 @@ impl App {
         let t2 = tail.clone();
         std::thread::spawn(move || pump(rd, log, t2));
         let pgid = child.id() as i32;
+        if let Ok(mut g) = LIVE.lock() {
+            g.push(pgid);
+        }
         Ok(App { child, pgid, tail })
     }
 
@@ -432,7 +479,7 @@ impl Run {
         if !spec.http_only() {
             return Err(stop("runner not installed: torpor runner install"));
         }
-        let lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).map_err(|_| stop("another check is still running in this project"))?;
+        let lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).map_err(|_| stop(if runner::out_of_time() { runner::OUT_OF_TIME } else { "another check is still running in this project" }))?;
         gc_scratch(ws);
         let scratch = Scratch::create(ws).map_err(|e| stop(format!("no scratch folder ({e})")))?;
         let made = materialize(ws, tree, &scratch.app).map_err(|e| stop(format!("the saved version could not be copied ({e})")))?;

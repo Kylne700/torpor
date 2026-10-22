@@ -3,6 +3,8 @@
 //! `oracle` is an independent walker (std + blake3) that says what the project really holds.
 #![allow(dead_code)]
 
+pub mod app;
+
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -182,7 +184,9 @@ pub fn check_contract(event: &str, o: &Out) {
     // A block comes with its reason and nothing else; a reason never comes alone.
     assert_eq!(keys.contains("decision"), keys.contains("reason"), "{event}: decision and reason go together: {}", o.stdout);
     if let Some(r) = obj.get("reason") {
-        assert_torpor_lines(event, "reason", r.as_str().expect("reason is a string"));
+        let r = r.as_str().expect("reason is a string");
+        assert_torpor_lines(event, "reason", r);
+        assert!(r.split_whitespace().count() <= 100 && r.lines().count() == 1, "{event}: a block reason is one line of at most 100 words: {r}");
         assert!(!keys.contains("systemMessage"), "{event}: a block carries only its reason: {}", o.stdout);
     }
     if let Some(h) = obj.get("hookSpecificOutput") {

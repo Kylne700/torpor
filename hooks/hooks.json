@@ -94,7 +94,7 @@
               "hook",
               "Stop"
             ],
-            "timeout": 30
+            "timeout": 45
           }
         ]
       }

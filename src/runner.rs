@@ -2,6 +2,7 @@
 //! The browser runner (S2c) prints the same lines; `judge` does not care who wrote them.
 use crate::spec::{Act, HttpExpect, HttpStep, Spec, subst, subst_value};
 use serde_json::{Value, json};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -11,6 +12,37 @@ pub const CHECK_SECS: u64 = 30;
 const WAIT_HTTP_SECS: u64 = 10;
 const BODY_CAP: u64 = 1 << 20;
 const MAX_HOPS: usize = 5;
+
+thread_local! {
+    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// A cooperative deadline for the runs of this thread (the Stop gate, spec 18). Restores the earlier one when dropped.
+/// A run that is cut by it is UNRUNNABLE ("out of time"), never FAIL: running out of time says nothing about the app.
+pub struct Deadline(Option<Instant>);
+
+impl Deadline {
+    pub fn set(at: Instant) -> Deadline {
+        Deadline(DEADLINE.with(|d| d.replace(Some(at))))
+    }
+}
+
+impl Drop for Deadline {
+    fn drop(&mut self) {
+        DEADLINE.with(|d| d.set(self.0));
+    }
+}
+
+/// Time left until the deadline of this thread (None = no deadline).
+pub fn time_left() -> Option<Duration> {
+    DEADLINE.with(|d| d.get()).map(|at| at.saturating_duration_since(Instant::now()))
+}
+
+pub fn out_of_time() -> bool {
+    time_left().is_some_and(|l| l.is_zero())
+}
+
+pub const OUT_OF_TIME: &str = "out of time";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -107,16 +139,15 @@ type UResp = ureq::http::Response<ureq::Body>;
 impl Client {
     /// Only 127.0.0.1:`port`. The environment's proxy is switched off, 4xx/5xx are answers, and redirects are followed by hand.
     pub fn new(port: u16) -> Client {
-        let cfg = ureq::Agent::config_builder()
-            .proxy(None)
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(REQUEST_SECS)))
-            .build();
-        Client { agent: cfg.into(), port, jar: BTreeMap::new() }
+        Client { agent: Self::agent(Duration::from_secs(REQUEST_SECS)), port, jar: BTreeMap::new() }
     }
 
-    fn send(&self, method: &str, url: &str, body: Option<&str>) -> Result<UResp, ureq::Error> {
+    fn agent(timeout: Duration) -> ureq::Agent {
+        let cfg = ureq::Agent::config_builder().proxy(None).http_status_as_error(false).max_redirects(0).timeout_global(Some(timeout)).build();
+        cfg.into()
+    }
+
+    fn send(&self, method: &str, url: &str, body: Option<&str>, agent: &ureq::Agent) -> Result<UResp, ureq::Error> {
         let cookie = self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
         macro_rules! prep {
             ($rb:expr) => {{
@@ -134,12 +165,12 @@ impl Client {
             }};
         }
         match method {
-            "POST" => with_body!(self.agent.post(url)),
-            "PUT" => with_body!(self.agent.put(url)),
-            "PATCH" => with_body!(self.agent.patch(url)),
-            "DELETE" => prep!(self.agent.delete(url)).call(),
-            "HEAD" => prep!(self.agent.head(url)).call(),
-            _ => prep!(self.agent.get(url)).call(),
+            "POST" => with_body!(agent.post(url)),
+            "PUT" => with_body!(agent.put(url)),
+            "PATCH" => with_body!(agent.patch(url)),
+            "DELETE" => prep!(agent.delete(url)).call(),
+            "HEAD" => prep!(agent.head(url)).call(),
+            _ => prep!(agent.get(url)).call(),
         }
     }
 
@@ -184,7 +215,16 @@ impl Client {
         let (mut method, mut path, mut body) = (method.to_string(), path.to_string(), json.map(Value::to_string));
         for _ in 0..=MAX_HOPS {
             let url = format!("http://127.0.0.1:{}{}", self.port, path);
-            let mut r = self.send(&method, &url, body.as_deref()).map_err(|e| match e {
+            // Near a deadline the request gets only the time that is left (a new agent: no kept connection), and what goes wrong then is not the app's fault.
+            let left = time_left();
+            if left.is_some_and(|l| l.is_zero()) {
+                return Err(ReqErr::Unrunnable(OUT_OF_TIME.into()));
+            }
+            let capped = left.filter(|l| *l < Duration::from_secs(REQUEST_SECS));
+            let agent = capped.map_or_else(|| self.agent.clone(), Self::agent);
+            let mut r = self.send(&method, &url, body.as_deref(), &agent).map_err(|e| match e {
+                ureq::Error::Timeout(_) if capped.is_some() => ReqErr::Unrunnable(OUT_OF_TIME.into()),
+                _ if out_of_time() => ReqErr::Unrunnable(OUT_OF_TIME.into()),
                 ureq::Error::Timeout(_) => ReqErr::Down(format!("{method} {path} did not answer within {REQUEST_SECS} s")),
                 ureq::Error::BodyExceedsLimit(_) => ReqErr::Unrunnable("the answer is too large to check".into()),
                 other => ReqErr::Down(format!("{method} {path} could not be reached ({other})")),
@@ -202,6 +242,7 @@ impl Client {
                 }
             }
             let bytes = r.body_mut().with_config().limit(BODY_CAP).read_to_vec().map_err(|e| match e {
+                _ if out_of_time() => ReqErr::Unrunnable(OUT_OF_TIME.into()),
                 ureq::Error::BodyExceedsLimit(_) => ReqErr::Unrunnable("the answer is too large to check".into()),
                 other => ReqErr::Down(format!("{method} {path} broke off ({other})")),
             })?;
@@ -288,6 +329,10 @@ pub fn run_http_steps(spec: &Spec, port: u16, nonce: &str, rand: &str) -> Vec<St
     for (ix, st) in spec.steps.iter().enumerate() {
         let i = ix + 1;
         let fail = |out: &mut Vec<String>, msg: String| out.push(line(json!({"p": "ASSERT_FAIL", "i": i, "msg": msg})));
+        if out_of_time() {
+            out.push(line(json!({"p": "ERROR", "where": "check", "msg": OUT_OF_TIME})));
+            return out;
+        }
         if started.elapsed() > Duration::from_secs(CHECK_SECS) {
             fail(&mut out, format!("the check took more than {CHECK_SECS} s"));
             break;

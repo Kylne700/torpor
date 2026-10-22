@@ -65,6 +65,10 @@ const server = http.createServer((req, res) => {
     if (file) fs.writeFileSync(file, String(n));
     return n % 3 === 0 ? send(res, 500, { error: 'flaked' }) : send(res, 200, { ok: true });
   }
+  if (url.pathname === '/api/randflaky') {
+    // Fails one request in three, at random (the gate tests: a check like this must never block).
+    return Math.random() < 1 / 3 ? send(res, 500, { error: 'flaked' }) : send(res, 200, { ok: true });
+  }
   if (url.pathname === '/api/isolated') {
     // 200 only when no SENTINEL- text is visible: not in the environment, not in the .env files, not in the home folder.
     const leaks = [];

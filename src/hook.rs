@@ -4,10 +4,10 @@ use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
 use crate::destructive::{self, Verdict};
-use crate::{mask, promise, restore, retention, scan, transcript, vault};
+use crate::{gate, mask, promise, push, restore, retention, scan, transcript, vault};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ pub fn own_deadline_ms(event: &str) -> Option<u64> {
         "SessionStart" => 3000,
         "UserPromptSubmit" => 5000,
         "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => 2000,
-        "Stop" => 8000,
+        "Stop" => 30000, // the promise gate (spec 18) may use up to 20 s of it
         "StopFailure" => 5000,
         "SubagentStop" | "PreCompact" => 1000,
         "SessionEnd" => 1200,
@@ -80,6 +80,9 @@ fn sys_message(text: &str) -> Value {
 }
 fn ups_context(text: &str) -> Value {
     json!({ "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": text } })
+}
+fn post_context(text: &str) -> Value {
+    json!({ "hookSpecificOutput": { "hookEventName": "PostToolUse", "additionalContext": text } })
 }
 fn pre_deny(reason: &str) -> Value {
     json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } })
@@ -142,6 +145,8 @@ pub fn run(event: &str) -> i32 {
                 if let Some(v) = sh.fallback.try_lock().ok().and_then(|g| g.clone()) {
                     write_out(&v);
                 }
+                // A check app that the gate started must not outlive the hook.
+                crate::scratch::kill_live_groups();
                 // SAFETY: _exit ends the process at once; nothing was written to stdout.
                 unsafe { libc::_exit(0) }
             }
@@ -226,17 +231,69 @@ fn handle(event: &str, shared: &Shared, t0: Instant, own_ms: u64) -> Result<Opti
     ws.lock_shared(LOCK_WAIT_MS)?;
     let now = now_ns();
     let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
-    let (out, spawn_gc) = {
-        let cx = Cx { ws: &ws, db: &tx, p: &p, event, now, session, t0, own_ms, spawn_gc: Cell::new(false), verdict };
+    let (out, spawn_gc, stop_info) = {
+        let cx = Cx { ws: &ws, db: &tx, p: &p, event, now, session, t0, own_ms, spawn_gc: Cell::new(false), stop: RefCell::new(None), verdict };
         let out = dispatch(&cx)?;
-        (out, cx.spawn_gc.get())
+        (out, cx.spawn_gc.get(), cx.stop.take())
     };
     tx.commit()?;
     drop(ws);
     if spawn_gc {
         spawn_detached_gc(&root);
     }
-    Ok(out)
+    match stop_info {
+        Some(info) => Ok(gate_phase(event, shared, &root, t0, own_ms, now, info, out)),
+        None => Ok(out),
+    }
+}
+
+/// What phase 2 of Stop (the promise gate, spec 18) needs from phase 1.
+pub struct StopInfo {
+    session: String,
+    turn: Turn,
+    end_pt: i64,
+    tree: [u8; 32],
+    /// Phase 1's message lines, and the ones among them that are told only once (a block would lose them).
+    lines: Vec<String>,
+    notices: Vec<String>,
+}
+
+/// Phase 2: the gate runs after phase 1 is saved. If it fails, panics or runs out of time, the answer is phase 1's: the Stop is allowed.
+#[allow(clippy::too_many_arguments)]
+fn gate_phase(event: &str, shared: &Shared, root: &Path, t0: Instant, own_ms: u64, now: i64, info: StopInfo, phase1: Option<Value>) -> Option<Value> {
+    if let Ok(mut g) = shared.fallback.lock() {
+        *g = phase1.clone();
+    }
+    // 20 s at most, and always 7 s before the hook's own deadline for writing the answer.
+    let until = (Instant::now() + Duration::from_secs(20)).min(t0 + Duration::from_millis(own_ms.saturating_sub(7000)));
+    let inp = gate::Input {
+        session: info.session.clone(),
+        turn_id: info.turn.id,
+        turn_n: info.turn.n,
+        prompt_id: info.turn.prompt_id.clone().unwrap_or_default(),
+        end_pt: info.end_pt,
+        tree: info.tree,
+        now,
+        until,
+        notices: info.notices.clone(),
+    };
+    match catch_unwind(AssertUnwindSafe(|| gate::run(root, &inp))) {
+        Ok(Ok(gate::Out::Block(reason))) => Some(json!({ "decision": "block", "reason": reason })),
+        Ok(Ok(gate::Out::Lines(more))) => {
+            let all: Vec<String> = info.lines.iter().cloned().chain(more).collect();
+            Some(sys_message(&all.join("\n")))
+        }
+        Ok(Ok(gate::Out::Nothing)) => phase1,
+        Ok(Err(e)) => {
+            note_fault(event, shared, e.fault_kind(), &e.to_string());
+            phase1
+        }
+        Err(p) => {
+            let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
+            note_fault(event, shared, "panic", &msg);
+            phase1
+        }
+    }
 }
 
 pub struct Cx<'a> {
@@ -249,6 +306,8 @@ pub struct Cx<'a> {
     pub t0: Instant,
     pub own_ms: u64,
     pub spawn_gc: Cell<bool>,
+    /// Set by Stop when the promise gate should run after the transaction.
+    pub stop: RefCell<Option<StopInfo>>,
     /// What spec section 7 says about this call (Clear unless it is a Bash PreToolUse).
     pub verdict: Verdict,
 }
@@ -256,7 +315,9 @@ pub struct Cx<'a> {
 impl Cx<'_> {
     /// Soft time for hashing: about 60% of the event's own deadline, minus what has passed.
     fn budget(&self) -> Duration {
-        let total = Duration::from_millis(self.own_ms * 6 / 10);
+        // Stop keeps an 8 s basis for hashing: the promise gate after it has its own clock (spec 18).
+        let basis = if self.event == "Stop" { self.own_ms.min(8000) } else { self.own_ms };
+        let total = Duration::from_millis(basis * 6 / 10);
         total.saturating_sub(self.t0.elapsed()).max(Duration::from_millis(100))
     }
 }
@@ -411,7 +472,10 @@ fn session_start(cx: &Cx) -> Result<Option<Value>> {
     if let Some(n) = vault_notice(cx, false) {
         return Ok(Some(sys_message(&n)));
     }
-    Ok(problems.first().map(|p| sys_message(&format!("Torpor: {p}"))))
+    if let Some(p) = problems.first() {
+        return Ok(Some(sys_message(&format!("Torpor: {p}"))));
+    }
+    Ok(gate::silent(db).then(|| sys_message(gate::SILENT_NOTICE)))
 }
 
 /// Spec 13: the promise vault against its chain. `once`: a mismatch is told one time (Stop); SessionStart tells it every time.
@@ -486,9 +550,35 @@ fn restore_notice(cx: &Cx) -> Result<Option<String>> {
 }
 
 fn user_prompt(cx: &Cx) -> Result<Option<Value>> {
-    let notice = restore_notice(cx)?;
-    begin(cx, true)?;
-    Ok(notice.map(|t| ups_context(&t)))
+    let mut notes: Vec<String> = restore_notice(cx)?.into_iter().collect();
+    let turn = begin(cx, true)?;
+    notes.extend(gate_notes(cx, &turn));
+    Ok((!notes.is_empty()).then(|| ups_context(&notes.join("\n"))))
+}
+
+/// The model-visible lines about promises (spec 18, 23): the failure the gate found, and a warning when the gate has not run for 3 turns.
+/// Each goes through the push budget; the same line is not repeated within 10 turns.
+fn gate_notes(cx: &Cx, turn: &Turn) -> Vec<String> {
+    let db = cx.db;
+    let mut out: Vec<String> = Vec::new();
+    let mut push_one = |kind: &str, text: &str| {
+        let p = push::Push { session: &cx.session, turn_id: turn.id, turn_n: turn.n, kind, text, window: push::REPEAT_TURNS, must: false };
+        if text.starts_with("Torpor") && guarded(cx, || push::admit(db, &p)) == Some(true) {
+            out.push(text.to_string());
+        }
+    };
+    if let Some(j) = meta_get(db, "ups_line") {
+        guarded(cx, || Ok(db.execute("DELETE FROM meta WHERE key='ups_line'", [])?));
+        if let Ok(v) = serde_json::from_str::<Value>(&j) {
+            if let (Some(k), Some(t)) = (v["kind"].as_str(), v["text"].as_str()) {
+                push_one(k, t);
+            }
+        }
+    }
+    if gate::silent(db) {
+        push_one("silent", "Torpor: the promise checks did not run at the last 3 turn ends. Run torpor check --all.");
+    }
+    out
 }
 
 // ---------------------------------------------------------------- tools
@@ -679,6 +769,12 @@ fn post_tool(cx: &Cx, failed: bool) -> Result<Option<Value>> {
             cx.now,
         )?;
         guarded(cx, || capture::capture_named(cx.ws, db, &rels));
+        if !failed {
+            // Spec 18: tell the AI which promises this edit touches (the push log keeps it to once per promise per turn).
+            if let Some(line) = gate::touched(db, &cx.session, turn.id, turn.n, &rels) {
+                return Ok(Some(post_context(&line)));
+            }
+        }
     } else if tool == "Bash" {
         let cmd = cx.p.input_str("command").map(|c| mask::cmd_preview(&c));
         let exit = if failed { cx.p.v.get("error").and_then(|e| e.as_str()).and_then(exit_code_of) } else { Some(0) };
@@ -716,6 +812,7 @@ fn stop(cx: &Cx, failed: bool) -> Result<Option<Value>> {
     // Promise lines (spec 14) are about the AI's promises, so `quiet` does not hide them and a turn that changed nothing still gets them.
     let mut lines: Vec<String> = Vec::new();
     if !failed {
+        lines.extend(carried(cx));
         lines.extend(vault_notice(cx, true));
         lines.extend(guarded(cx, || promise::stop_notes(db, cx.now)).unwrap_or_default());
         for l in &lines {
@@ -723,12 +820,30 @@ fn stop(cx: &Cx, failed: bool) -> Result<Option<Value>> {
             guarded(cx, || Ok(db.execute("INSERT INTO push_log(session_id,turn_id,kind,chars,tokens,delivered) VALUES(?1,?2,'notice',?3,?4,1)", params![sid, turn.id, chars, (chars + 3) / 4])?));
         }
     }
+    let notices = lines.clone();
     if !failed && end_pt.is_some() && meta_get(db, "quiet").as_deref() != Some("1") {
         if let Some(l) = stop_line(db, &turn, end_pt.unwrap_or(0))? {
             lines.insert(0, l);
         }
     }
+    // Phase 2 (spec 18): the promise gate. A capture that was cut short is not the tree of the folder, so nothing is checked on it.
+    if let (false, Some(c), Some(ep)) = (failed, &cap, end_pt) {
+        if !c.partial {
+            if gate::eligible_count(db) == 0 {
+                guarded(cx, || gate::receipt_none(db, sid, turn.id, cx.now));
+            } else {
+                *cx.stop.borrow_mut() = Some(StopInfo { session: sid.to_string(), turn: turn.clone(), end_pt: ep, tree: c.tree_id, lines: lines.clone(), notices });
+            }
+        }
+    }
     Ok((!lines.is_empty()).then(|| sys_message(&lines.join("\n"))))
+}
+
+/// Notices that the last Stop's block could not print (spec 18): told now, once.
+fn carried(cx: &Cx) -> Vec<String> {
+    let Some(j) = meta_get(cx.db, "stop_carry") else { return Vec::new() };
+    guarded(cx, || Ok(cx.db.execute("DELETE FROM meta WHERE key='stop_carry'", [])?));
+    serde_json::from_str::<Vec<String>>(&j).unwrap_or_default()
 }
 
 fn read_origin(cx: &Cx, turn: &Turn) -> Result<()> {

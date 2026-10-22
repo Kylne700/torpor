@@ -1,6 +1,6 @@
 //! Promises (spec 14, 17, 24): the rows, who ran a command, runs with repeats, qualification, disputes and the lines Stop prints.
 //! No store lock and no transaction is ever held while an app runs: runs come first, rows are written after (`write`).
-use crate::runner::Verdict;
+use crate::runner::{self, Verdict};
 use crate::scratch::{self, RunResult};
 use crate::spec::{self, Linted, Spec};
 use crate::store::*;
@@ -344,12 +344,23 @@ pub struct Checked {
     pub runs: Vec<RunResult>,
 }
 
+/// Under a deadline another run starts only if the longest run so far would still fit.
+fn fits_another(runs: &[RunResult]) -> bool {
+    runner::time_left().is_none_or(|left| left.as_millis() as u64 >= runs.iter().map(|r| r.ms).max().unwrap_or(0) * 5 / 4 + 300)
+}
+
 /// One verdict for `tree` (spec 16): a PASS stands; a FAIL is re-run in up to 2 more fresh scratch copies and is a FAIL only in 3 of 3.
 pub fn check_tree(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Checked {
     let n = Some(spec.assertions());
     let mut runs: Vec<RunResult> = Vec::new();
     let mut call = Call::Fail;
+    let mut cut = false;
     for i in 0..3 {
+        if i > 0 && !fits_another(&runs) {
+            // Under a deadline (the Stop gate) fewer than 3 runs cannot call a FAIL: unverified, not failed.
+            (call, cut) = (Call::Unrunnable, true);
+            break;
+        }
         let r = scratch::run_once(ws, spec, tree, n);
         let v = r.judged.verdict;
         runs.push(r);
@@ -369,7 +380,10 @@ pub fn check_tree(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Checked {
         Call::Flaky => runs.iter().find(|r| r.judged.verdict == Verdict::Fail).unwrap_or(&runs[0]),
         _ => &runs[runs.len() - 1],
     };
-    let (failed_step, reason, assertions) = (pick.judged.failed_step, pick.judged.reason.clone(), pick.judged.assertions);
+    let (failed_step, mut reason, assertions) = (pick.judged.failed_step, pick.judged.reason.clone(), pick.judged.assertions);
+    if cut {
+        reason = format!("{}: only {} of 3 runs fit", runner::OUT_OF_TIME, runs.len());
+    }
     let ms = runs.iter().map(|r| r.ms).sum();
     Checked { call, failed_step, reason, assertions, ms, runs }
 }
@@ -500,8 +514,17 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
         }
     }
     let tier = if bad.is_some() { "advisory" } else { "unproven" };
+    // The files the bad-to-good change touched are what this promise watches (spec 18); docs and tests do not count, lock files and settings do.
+    let watched: Option<String> = bad
+        .and_then(|b| point_tree(&ws.conn, b).ok())
+        .and_then(|bt| crate::findbreak::changed_files_opt(ws, &bt, &gtree))
+        .map(|v| v.into_iter().filter(|p| crate::gate::is_global(p) || !crate::gate::doc_like(p)).collect::<Vec<_>>())
+        .and_then(|v| serde_json::to_string(&v).ok());
     write(ws, |w| {
-        w.conn.execute("UPDATE promises SET tier=?2, state='live', bad_point=?3, flake_hat=0, last_pass_point=?4 WHERE id=?1", params![id, tier, bad, good])?;
+        w.conn.execute(
+            "UPDATE promises SET tier=?2, state='live', bad_point=?3, flake_hat=0, last_pass_point=?4, watched_json=?5 WHERE id=?1",
+            params![id, tier, bad, good, watched],
+        )?;
         Ok(())
     })?;
     Ok(Done::Saved(Saved { tier, state: "live", good_runs: GOOD_RUNS, good_fails: 0, bad_point: bad }))

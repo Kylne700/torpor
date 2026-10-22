@@ -309,18 +309,25 @@ fn state_of(db: &Connection, states: &[State], point: i64) -> Option<usize> {
 
 /// Files (not folders, links' targets or secrets) that differ between two trees, in name order.
 fn changed_files(ws: &Ws, a: &[u8; 32], b: &[u8; 32]) -> Vec<String> {
-    let (Ok(x), Ok(y)) = (capture::flatten_tree(ws, &ws.conn, a), capture::flatten_tree(ws, &ws.conn, b)) else { return Vec::new() };
+    changed_files_opt(ws, a, b).unwrap_or_default()
+}
+
+/// Same, but None when a tree cannot be read (the gate treats that as "unknown", not as "nothing changed").
+pub fn changed_files_opt(ws: &Ws, a: &[u8; 32], b: &[u8; 32]) -> Option<Vec<String>> {
+    let (Ok(x), Ok(y)) = (capture::flatten_tree(ws, &ws.conn, a), capture::flatten_tree(ws, &ws.conn, b)) else { return None };
     let plain = |v: &[(String, TreeEntry)]| -> BTreeMap<String, TreeEntry> { v.iter().filter(|(_, e)| e.kind == 'f' || e.kind == 'l').map(|(p, e)| (p.clone(), e.clone())).collect() };
     let (x, y) = (plain(&x), plain(&y));
     let names: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
-    names
-        .into_iter()
-        .filter(|n| match (x.get(*n), y.get(*n)) {
-            (Some(p), Some(q)) => p.kind != q.kind || p.id != q.id || p.mode != q.mode,
-            _ => true,
-        })
-        .cloned()
-        .collect()
+    Some(
+        names
+            .into_iter()
+            .filter(|n| match (x.get(*n), y.get(*n)) {
+                (Some(p), Some(q)) => p.kind != q.kind || p.id != q.id || p.mode != q.mode,
+                _ => true,
+            })
+            .cloned()
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------- the search on real versions

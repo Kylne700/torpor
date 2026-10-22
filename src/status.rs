@@ -50,6 +50,9 @@ pub struct PromiseStats {
     pub caught: i64,
     /// (label, count) in the order blocking, shadow, advisory, guard only.
     pub tiers: Vec<(&'static str, usize)>,
+    /// The gate left no receipt at the last 3 turn ends / was cut short at each of them (spec 18).
+    pub silent: bool,
+    pub unverified: bool,
 }
 
 fn promise_stats(db: &Connection) -> Result<PromiseStats> {
@@ -64,6 +67,8 @@ fn promise_stats(db: &Connection) -> Result<PromiseStats> {
         }
     }
     s.tiers = ["blocking", "shadow", "advisory", "guard only"].into_iter().zip(counts).filter(|(_, n)| *n > 0).collect();
+    s.silent = crate::gate::silent(db);
+    s.unverified = crate::gate::last_receipts_all_unverified(db);
     Ok(s)
 }
 
@@ -437,6 +442,11 @@ pub fn render(r: &Report) -> String {
     if r.promises.total > 0 {
         let tiers: Vec<String> = r.promises.tiers.iter().map(|(t, n)| format!("{n} {t}")).collect();
         o.push_str(&format!("Promises: {} ({}) · caught {}\n", r.promises.total, tiers.join(", "), r.promises.caught));
+        if r.promises.silent {
+            o.push_str("The promise checks did not run at the last 3 turn ends. Run them: torpor check --all\n");
+        } else if r.promises.unverified {
+            o.push_str("The promise checks were cut short at the last 3 turn ends. Run them: torpor check --all\n");
+        }
     }
     if let Some(t) = &r.last_turn {
         let total = t.edits + t.shell + t.sub;
@@ -517,6 +527,6 @@ pub fn to_json(r: &Report) -> Value {
         "not_saved_total": r.not_saved_total,
         "problems": r.problems,
         "notes": r.notes,
-        "promises": {"total": r.promises.total, "ok": r.promises.ok, "caught": r.promises.caught, "tiers": r.promises.tiers.iter().map(|(t, n)| json!({"tier": t, "n": n})).collect::<Vec<_>>()},
+        "promises": {"total": r.promises.total, "ok": r.promises.ok, "caught": r.promises.caught, "checks_silent": r.promises.silent, "checks_cut_short": r.promises.unverified, "tiers": r.promises.tiers.iter().map(|(t, n)| json!({"tier": t, "n": n})).collect::<Vec<_>>()},
     })
 }

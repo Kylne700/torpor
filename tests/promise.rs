@@ -1,6 +1,7 @@
 //! Promises end to end (spec 14, 17, 24, B2, B7): the real binary, a simulated Claude Code session and the fixture app.
 //! Needs `node`. Every app runs in its own process group inside Torpor's scratch folder and is stopped when its run ends.
 mod common;
+use common::app::*;
 use common::*;
 use rusqlite::params;
 use serde_json::json;
@@ -8,76 +9,7 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-const SERVER: &str = include_str!("fixtures/app/server.js");
 const SENTINEL: &str = "SENTINEL-4f9a1c7e2b60";
-
-const START: &str = r#"{"cmd":"node server.js --port {port}","ready":"/login","timeout_s":30}"#;
-const LOGIN_STEPS: &str = r#"[
-  {"http":{"method":"POST","path":"/api/login","json":{"email":"kim@example.com"}},"expect":{"status":200},"why":"sign-in is accepted"},
-  {"http":{"path":"/api/me"},"expect":{"status":200,"json_has":["email"]},"why":"after sign-in the account data shows"}]"#;
-
-fn spec(name: &str, start: &str, env: &str, steps: &str) -> String {
-    format!(r#"{{"v":1,"name":"{name}","why":"{name} for the user","start":{start},"env":{env},"steps":{steps}}}"#)
-}
-
-fn login() -> String {
-    spec("login works", START, "{}", LOGIN_STEPS)
-}
-
-fn broken_server() -> String {
-    SERVER.replace("const BROKEN = false;", "const BROKEN = true;")
-}
-
-/// Two finished turns: the AI writes the app with the seeded bug, then fixes it. `extra` are files the project already had.
-fn two_turns(extra: &[(&str, &str)]) -> Sim {
-    let mut s = Sim::new();
-    write_files(s.proj(), extra);
-    s.session_start();
-    s.prompt("make a login page");
-    s.write_tool("server.js", &broken_server());
-    s.stop();
-    s.prompt("login does not work, fix it");
-    s.edit("server.js", SERVER);
-    s.stop();
-    s
-}
-
-/// Turn 3 is open: the user has just said it works.
-fn story() -> Sim {
-    let mut s = two_turns(&[]);
-    s.prompt("great, login works now");
-    s
-}
-
-/// A second, writable connection: the harness one is read-only.
-fn rw(s: &Sim) -> rusqlite::Connection {
-    let c = rusqlite::Connection::open(s.ws_dir().join("torpor.db")).unwrap();
-    c.busy_timeout(Duration::from_secs(5)).unwrap();
-    c
-}
-
-/// Poll until `f` holds (a detached Torpor process finished its work); panics after `secs`.
-fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
-    let t = Instant::now();
-    while !f() {
-        assert!(t.elapsed() < Duration::from_secs(secs), "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// What the AI does in a Bash call: Torpor sees the command before it runs (PreToolUse), then the command runs with CLAUDECODE set.
-fn agent(s: &mut Sim, args: &[&str], stdin: &str) -> Out {
-    s.pre_bash(&format!("torpor {}", args.join(" ")));
-    s.cli_env_stdin(args, &[("CLAUDECODE", "1")], stdin)
-}
-
-fn add(s: &mut Sim, spec: &str) -> Out {
-    agent(s, &["promise", "add", "-"], spec)
-}
-
-fn why(o: &Out) -> String {
-    format!("exit {}\nstdout: {}\nstderr: {}", o.code, o.stdout, o.stderr)
-}
 
 // ---------------------------------------------------------------- qualification (B2)
 

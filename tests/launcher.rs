@@ -47,7 +47,7 @@ fn hooks_json_matches_the_spec() {
         ("PreToolUse", 5, true),
         ("PostToolUse", 5, true),
         ("PostToolUseFailure", 5, true),
-        ("Stop", 30, false),
+        ("Stop", 45, false),
         ("StopFailure", 10, false),
         ("SubagentStop", 5, false),
         ("PreCompact", 5, false),
