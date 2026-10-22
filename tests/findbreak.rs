@@ -146,6 +146,35 @@ fn it_finds_the_turn_that_broke_login_saves_the_check_and_can_search_again() {
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
 
+/// The README's one comparative claim, end to end: a check from the user's words, proven to fail on the broken state and pass on the working
+/// one; the turn that broke it found although a shell command broke it; that turn undone alone, later work kept, the check passing again.
+#[test]
+fn a_break_made_by_a_shell_command_is_found_and_undone_alone_and_later_work_stays() {
+    let mut s = Sim::new();
+    s.session_start();
+    s.prompt("make a login page");
+    s.write_tool("server.js", SERVER);
+    s.stop();
+    s.prompt("tidy up the server");
+    assert_eq!(s.bash("perl -pi -e 's/const BROKEN = false;/const BROKEN = true;/' server.js"), 0);
+    s.stop();
+    s.prompt("add a todo list");
+    s.write_tool("todo.txt", "- ship it\n");
+    s.stop();
+    s.prompt("login is broken, what changed?");
+    s.pre_bash("torpor find-break --check -");
+    let o = s.cli_env_stdin(&["find-break", "--check", "-"], &[("CLAUDECODE", "1")], &login());
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(o.stdout.contains("Turn 2 broke it (") && o.stdout.contains("Undo only turn 2: torpor undo 2"), "{}", why(&o));
+    assert!(o.stdout.contains("failed 2 of 2") && o.stdout.contains("passed 5 of 5"), "the check is proven on both sides: {}", why(&o));
+    let o = s.cli(&["undo", "2"]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert_eq!(std::fs::read_to_string(s.path("server.js")).unwrap(), SERVER);
+    assert_eq!(std::fs::read_to_string(s.path("todo.txt")).unwrap(), "- ship it\n", "the work after the broken turn stays");
+    let o = s.cli(&["check", "1"]);
+    assert_eq!(o.code, 0, "the check passes again: {}", why(&o));
+}
+
 #[test]
 fn a_check_that_fails_one_time_in_three_is_refused_before_any_run() {
     let mut s = six_turns();

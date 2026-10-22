@@ -26,7 +26,7 @@ pub const HELP: &str = "Torpor keeps save points of your project, so you can go 
   torpor promise dispute ID \"why\"   Say a promise is wrong; it turns advisory until you decide\n\
   torpor check ID... | --all   Run the checks against the folder as it is now\n\
   torpor find-break [--check -]   Which turn broke it (the AI writes the check; no check: the files changed since the last 'works')\n\
-  torpor promise ok | drop ID    Keep or remove a disputed promise (only you)\n\
+  torpor promise ok | drop | block ID   Keep or remove a disputed promise; block: let a shadow promise stop the AI now (only you)\n\
   torpor gate on | off     Let promises stop the AI, or not (only you)\n\
   torpor off | on          Stop or resume saving this folder (only you, in your own terminal)\n\
   torpor retain DAYS       Keep save points longer than Claude Code keeps chats (only you)\n\
