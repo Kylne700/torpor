@@ -324,7 +324,8 @@ fn on_terminal(mut c: std::process::Command, typed: &str) -> Out {
     let (mut master, mut slave) = (0, 0);
     // SAFETY: openpty fills in two new descriptors, each wrapped in an OwnedFd right away.
     let (master, slave) = unsafe {
-        assert_eq!(libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()), 0);
+        // macOS declares the last two as *mut, Linux as *const: null_mut fits both.
+        assert_eq!(libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), 0);
         (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
     };
     c.stdin(Stdio::from(slave)).stdout(Stdio::piped()).stderr(Stdio::piped());
