@@ -942,7 +942,7 @@ mod tests {
             ("exec torpor gate off", "torpor gate off"),
             ("sh -c 'torpor promise drop 2'", "torpor promise drop"),
             ("bash -lc \"cd x && torpor gate off\"", "torpor gate off"),
-            ("~/.torpor/bin/2.1.0/torpor promise drop 2", "torpor promise drop"),
+            ("~/.torpor/bin/2.2.0/torpor promise drop 2", "torpor promise drop"),
             ("bash ~/.torpor/bin/torpor promise block 3", "torpor promise block"),
             ("torpor -q promise -- drop 2", "torpor promise drop"),
             ("torpor promise drop 2 | cat", "torpor promise drop"),

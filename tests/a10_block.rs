@@ -145,7 +145,7 @@ fn report(base: &Path) {
     println!("promise tier now: {}", qs("SELECT tier FROM promises WHERE id=1"));
     println!("faults: {}", qs("SELECT group_concat(event||':'||kind, ' | ') FROM faults"));
     let blocks = qi("SELECT COALESCE(SUM(blocks),0) FROM gate_chain");
-    let installed = base.join("torpor-home/bin/2.1.0/torpor");
+    let installed = base.join("torpor-home/bin/2.2.0/torpor");
     let shipped = base.join("plugin/dist").join(dist_target()).join("torpor");
     println!("launcher installed the plain binary: {}", installed.is_file() && fs::read(&installed).unwrap() == fs::read(&shipped).unwrap());
     let server = fs::read_to_string(base.join("proj/server.js")).unwrap_or_default();
