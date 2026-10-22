@@ -4,7 +4,8 @@ mod common;
 use common::*;
 use std::time::Duration;
 
-const UPS_DEADLINE: Duration = Duration::from_millis(5000 + 100);
+// macOS CI runners start and stop processes slower (measured +146 ms); hooks.json still leaves 5 s on top.
+const UPS_DEADLINE: Duration = Duration::from_millis(5000 + if cfg!(target_os = "macos") { 400 } else { 100 });
 
 /// A session with a working store and one finished turn, so the fault hits a project that was fine before.
 fn working_sim() -> Sim {

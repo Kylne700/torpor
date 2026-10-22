@@ -28,7 +28,7 @@ fn full_scenario(mode: &str) {
     let mark = sim.max_point();
     sim.write_tool("a.txt", "A2\n");
     sim.edit("b.txt", "B2\n");
-    assert_eq!(sim.bash("sed -i 's/C1/C2/' c.txt"), 0);
+    assert_eq!(sim.bash("perl -pi -e 's/C1/C2/' c.txt"), 0);
     assert_eq!(sim.bash("rm d.txt"), 0);
     assert_eq!(sim.bash("echo x > e.txt"), 0);
     assert_eq!(sim.bash("chmod +x run.sh"), 0);
@@ -131,7 +131,7 @@ fn bash_only(mode: &str) {
     sim.prompt("shell only");
     let mark = sim.max_point();
     for cmd in [
-        "sed -i 's/A1/A9/' a.txt",
+        "perl -pi -e 's/A1/A9/' a.txt", // not sed -i: BSD sed (macOS) needs a suffix argument
         "rm b.txt",
         "echo new > created.txt",
         "mv c.txt moved.txt",

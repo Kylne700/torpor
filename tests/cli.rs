@@ -15,7 +15,7 @@ fn busy() -> Sim {
     s.session_start();
     s.prompt("make the login button blue and then some more words to pass sixty characters in this prompt");
     s.edit("a.txt", "A2\nB\nC\n");
-    s.bash("sed -i s/B1/B2/ b.txt");
+    s.bash("perl -pi -e s/B1/B2/ b.txt"); // not sed -i: BSD sed (macOS) needs a suffix argument
     s.bash("rm -f old.txt");
     s.stop();
     s.outside_edit("notes.md", "hello\nworld\n");
@@ -94,7 +94,7 @@ fn show_names_every_file_of_a_turn() {
     let l = lines(&o);
     assert!(l[0].starts_with("Turn 1 · today ") && l[0].ends_with(" · you: \"make the login button blue and then some more words to pass…\""), "{}", l[0]);
     assert_eq!(l[1].split_whitespace().collect::<Vec<_>>(), ["edit", "a.txt", "+2", "-1"]);
-    assert_eq!(l[2].split_whitespace().collect::<Vec<_>>(), ["shell", "b.txt", "+1", "-1", "(sed", "-i", "s/B1/B2/", "b.txt)"]);
+    assert_eq!(l[2].split_whitespace().collect::<Vec<_>>(), ["shell", "b.txt", "+1", "-1", "(perl", "-pi", "-e", "s/B1/B2/", "b.txt)"]);
     assert_eq!(l[3].split_whitespace().collect::<Vec<_>>(), ["shell", "old.txt", "deleted", "(rm", "-f", "old.txt)"]);
     let re = regex::Regex::new(r"^Save points: \d+ start · \d+ before rm -f old\.txt · \d+ end$").unwrap();
     assert!(re.is_match(&l[4]), "{}", l[4]);
