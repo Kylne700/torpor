@@ -5,7 +5,7 @@ description: Use when the user says something works now, or that something which
 
 # Torpor: promises and find-break
 
-Torpor saves the project after every turn. A promise is a small check that proves one thing works. Torpor makes no model calls: you write the checks, Torpor lints them and runs them in a scratch copy of the project. It has no keyword lists: you judge the user's words.
+Torpor saves the project after every turn. A promise is a small check that tests one thing. Torpor makes no model calls: you write the checks, Torpor lints them and runs them in a scratch copy of the project. It has no keyword lists: you judge the user's words.
 
 ## The user says something works now
 Write a check for exactly that thing and save it. Use the Bash tool with timeout 600000, because the proof runs the check 7 times:
