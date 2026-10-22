@@ -5,7 +5,7 @@ description: Use when the user says something works now, or that something which
 
 # Torpor: promises and find-break
 
-Torpor saves the project after every turn. A promise is a small check that tests one thing. Torpor makes no model calls: you write the checks, Torpor lints them and runs them in a scratch copy of the project. It has no keyword lists: you judge the user's words.
+Torpor saves the project after every turn. A promise is a small check. It checks that one thing works. Torpor makes no model calls: you write the checks, Torpor lints them and runs them in a scratch copy of the project. It has no keyword lists: you judge the user's words.
 
 ## The user says something works now
 Write a check for exactly that thing and save it. Use the Bash tool with timeout 600000, because the proof runs the check 7 times:
@@ -49,4 +49,6 @@ Write a check for exactly that thing and save it. Use the Bash tool with timeout
 - `expect` holds one or more of: `status`, `status_in` [..], `json_has` ["email","user.id","items[0]"], `json_type` {"email":"string"} (string, number, boolean, array, object, null), `body_contains` "text", `length_range` [min, max] in bytes.
 - `{rand}` in a text becomes 8 random letters or digits, the same within one run. Use it for new emails and names.
 - Rejected: absolute URLs, expected values that look like ids, dates, UUIDs or numbers of 5 or more digits, JS, CSS selectors, timed waits.
-- Page steps (goto, click, fill, expect_visible) pass the lint but cannot run in this version, so such a check is not saved. Test the same thing through the app's http routes.
+- Page steps run in a headless browser and need the runner. Steps: `{"goto":"/path"}`, `{"click":LOC}`, `{"fill":LOC,"value":"text"}`, `{"press":LOC,"key":"Enter"}`, `{"select":LOC,"value":"x"}`, `{"check":LOC}`, `{"uncheck":LOC}`, `{"wait_http":"/path"}`. Assertions, each with a `why`: `{"expect_visible":LOC}`, `{"expect_hidden":LOC}`, `{"expect_text":LOC,"contains":"text"}`, `{"expect_url":{"path":"/home"}}` (or `path_re`), `{"expect_count":LOC,"n":3}` (or `min` and `max`), `{"expect_console_clean":true}`.
+- LOC is one of `{"role":"button","name":"Sign in"}`, `{"label":"Email"}`, `{"text":"Welcome"}`, `{"text_re":"Welcome.*"}`, `{"testid":"save"}`. The browser reaches 127.0.0.1 only. A page step and an http step can be in one check. Example: `{"goto":"/account"}`, `{"fill":{"label":"Email"},"value":"u{rand}@example.test"}`, `{"click":{"role":"button","name":"Sign in"}}`, `{"expect_text":{"role":"status"},"contains":"Signed in","why":"the page says the user is signed in"}`.
+- A check with page steps that comes back "runner not installed: torpor runner install" means the runner is missing. You cannot install it: it downloads files, so only the user can run `torpor runner install` in their own terminal. Tell the user. Until then, test the same thing through the app's http routes.

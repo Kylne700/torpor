@@ -8,7 +8,7 @@ Torpor is built by an AI coding agent team (Claude Code) working for its author,
 
 ## Pre-event declaration
 
-Torpor's engine (save points, undo, find-break and promise checks) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo, recovery, find-break and promise checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
+Torpor's engine (save points, undo, find-break, promise checks and page checks in a browser) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo, recovery, find-break, promise checks and page checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
 
 ## What it does today
 
@@ -17,6 +17,7 @@ Torpor's engine (save points, undo, find-break and promise checks) is written fr
 - **Undo one turn.** `torpor undo 7` takes out what turn 7 changed and keeps the work done after it. Text files are merged line by line. If your later work touches the same lines, Torpor lists the files and changes nothing.
 - **Find the turn that broke it.** Tell Claude that something that worked is broken, then run `torpor find-break`. It lists what changed since the last version that worked. With a check (your AI writes it), Torpor runs the check on older versions and names the turn that made it fail, also when a shell command made the change. A change you made yourself between turns is named too. `torpor undo` then takes out that one turn.
 - **Keep what you said works.** Tell Claude "login works now" and your AI writes a small check for exactly that. Torpor tests the check before it keeps it, and runs it after later turns. When a later turn breaks it, you see a note at the end of that turn. A promise you can trust may also stop the AI (see Promises below).
+- **Page checks.** A check can click and type in a real page, not just call the app's HTTP routes. Torpor runs it in a headless Chromium-family browser that is already on your computer. The browser reaches pages on 127.0.0.1 and nothing else. This needs a small runner that you install yourself (see Install).
 - **Recover.** If a restore is cut short (power loss, a closed terminal), `torpor recover` finishes it. Restores are journaled, so a cut-short one can be finished.
 - **A save point before risky commands.** Before commands such as `rm`, `mv`, `truncate`, `sqlite3`, `git reset`, `git clean` and `git checkout`, Torpor saves the folder once more.
 - **A question before commands that reach outside.** No save point can bring back data on another machine. For commands such as `terraform destroy`, `kubectl delete`, `DROP TABLE` or `git push --force`, Claude Code asks you before the command runs (in the default, acceptEdits and plan permission modes). In any other mode (bypassPermissions, dontAsk, auto), Torpor blocks the command instead and says why.
@@ -64,6 +65,18 @@ It shows `torpor · 5 save points · saved just now`. If you already have a stat
 
 Torpor runs the old command through `sh -c` and waits up to 2 seconds for it. If the old command uses pipes or quotes, put it in a script file and pass the script.
 
+### Optional: page checks (a browser)
+
+A check with page steps needs a small runner. Install it in your own terminal:
+
+```
+~/.torpor/bin/torpor runner install
+```
+
+It needs Node.js 20 or newer. It tells you what it will download and asks you to confirm (`[y/N]`; `--yes` answers for you). It installs playwright-core 1.64.1 from the npm registry into `~/.torpor/runner/1.64.1/`. The package is checked against its published hash before it is unpacked, and no npm and no install script runs. If Torpor finds no Chromium, Chrome, Brave or Edge on this computer, it also downloads a Chromium (about 150 MB) from Playwright's servers. That download has not been tested (NOT VERIFIED).
+
+Without the runner, a page check is reported as unrunnable (it could not run). It never blocks anything.
+
 ## Commands
 
 Inside Claude Code the plugin puts `torpor` on the PATH of the Bash tool, so Claude can run these for you. In your own terminal, use `~/.torpor/bin/torpor` (or add `~/.torpor/bin` to your PATH).
@@ -90,7 +103,7 @@ Inside Claude Code the plugin puts `torpor` on the PATH of the Bash tool, so Cla
 
 `back` and `undo` take `--dry-run` to show what they would do without touching anything. `back --with-data` also puts database files back (see the limits below).
 
-These change what Torpor keeps, or whether it can stop the AI, so they refuse to run inside Claude Code and must be typed in your own terminal:
+These change what Torpor keeps, whether it can stop the AI, or what it downloads, so they refuse to run inside Claude Code and must be typed in your own terminal:
 
 | Command | What it does |
 |---|---|
@@ -100,6 +113,7 @@ These change what Torpor keeps, or whether it can stop the AI, so they refuse to
 | `torpor promise block 2` | Let a promise that is in shadow stop the AI now, without waiting. It refuses for any other promise. |
 | `torpor gate on` / `off` | Let promises stop the AI, or not. |
 | `torpor promise show 2 --spec` | Print the stored check itself. |
+| `torpor runner install` | Install the runner that page checks need. It says what it downloads and asks you to confirm (`--yes` answers for you). |
 | `torpor retain 90` | Keep save points for 90 days, even if Claude Code deletes old chats sooner. |
 | `torpor forget` | Delete the records of this folder. `--all` deletes every folder's records, and `--before 2026-10-01` deletes older ones. Each asks you to type a confirmation. |
 
@@ -129,6 +143,7 @@ A promise stays advisory when the AI thought of it by itself, when Torpor cannot
 
 - Torpor is one program written in Rust, plus a Claude Code plugin whose hooks call it. It keeps no service running in the background. It works when Claude Code fires a hook or when you type a command.
 - Promise checks run in a scratch copy of your project, one at a time. Torpor starts your app there on a free port of this computer, sends plain HTTP requests to 127.0.0.1, and removes the copy afterwards. For Node apps it also records which files the app ran, so a turn that touches none of them can skip the check. A skipped check runs again within three turns.
+- A check with page steps runs in a headless Chromium that a small Node program (the runner) drives. In that browser, every address except 127.0.0.1 and localhost is blocked.
 - Save points are kept in `~/.torpor/<project id>/`. Files are stored by content, so a file that did not change costs nothing, and the rest is compressed. A small SQLite database holds the history.
 - Files that look like secrets (`.env` files, `*.pem`, `*.key`, `.npmrc`, `credentials*`, `*.tfstate*` and similar) are stored encrypted with a key in `~/.config/torpor/key`. Torpor never prints their content. `torpor show` says "secret file, content not shown".
 - Torpor never writes inside your project's `.git` folder, and never edits Claude Code's settings.
@@ -154,11 +169,11 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **Two sessions in one folder** can edit the same file. Torpor marks such changes as shared and `torpor undo` leaves them alone.
 - **Empty folders** that were removed are not brought back by `undo`, unless a saved file lived in them.
 - **Files outside the project folder are not covered.**
-- **A promise's start command runs on your computer.** At each check, Torpor runs the command written in the check (for example `node server.js`) in a scratch copy of your project, with HOME set to a temporary folder and your `.env` files left out. Treat a check like a test script you approved. Torpor rejects a check whose environment values or step URLs point to a host other than this computer. It does not limit the start command or the app: they can use the network and files outside the scratch copy.
-- **Network use.** Torpor itself sends HTTP to 127.0.0.1 and to no other host. The app and its start command may use the network.
+- **A promise's start command runs on your computer.** At each check, Torpor runs the command written in the check (for example `node server.js`) in a scratch copy of your project, with HOME set to a temporary folder and your `.env` files left out. Treat a check like a test script you approved. Torpor rejects a check whose environment values or step URLs point to a host other than this computer. It does not limit the start command or the app: they can use the network and files outside the scratch copy. The browser of a page check cannot reach another host, but the app it talks to still can.
+- **Network use.** Torpor sends HTTP to 127.0.0.1. It makes one download, `torpor runner install`, after you confirm: playwright-core from the npm registry, and a Chromium from Playwright's servers when none is found on this computer. The Chromium download is NOT VERIFIED: it has never been run. The app and its start command may use the network.
 - **If Torpor is killed during a check, the app it started may keep running.** Torpor does not look for it on a later run.
 - **Find-break assumes that once a check breaks, it stays broken.** If a turn in between made the app work again, the answer can be wrong, or Torpor says it could not decide.
-- **Page (browser) steps cannot run yet.** A check made of clicks and typing is not saved. Checks use the app's own HTTP routes.
+- **Page checks need the runner and a browser.** They need `torpor runner install`, Node.js 20 or newer, and a Chromium-family browser (chromium, google-chrome, brave-browser, microsoft-edge, or an app in /Applications on macOS). They run headless against pages of the app on 127.0.0.1, and a whole check gets 30 seconds. A page that sends the browser to another host makes the check unrunnable. The real browser run has been tried with Chromium on Linux. Other browsers and macOS are not tested.
 - **A passing check does not prove the app is right.** It says that one thing worked when it ran.
 - **Torpor cannot know what a check was meant to test.** It checks that the check uses words from yours and that it fails when part of the fix is undone. A check that fails at random can pass its proof by luck, and Torpor calls a check flaky (advisory, never stops the AI) when it has seen it pass and fail on the same version, not before. To stop the AI, a check must fail 3 fresh runs in a row while it still passes on the last version that worked. That makes a false stop rare, not impossible.
 - **Slow apps cannot stop the AI.** At the end of a turn Torpor has 30 seconds, and its checks get up to 20 of them. An app that starts or answers slower than that has its check cut off, and the turn ends.
@@ -171,7 +186,7 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 
 Torpor stores its records on this computer and never uploads them. Your AI agent still sends your prompts and files to its provider, as before.
 
-Torpor makes no AI model calls. Its network use is plain HTTP to 127.0.0.1 (this computer), to run your promise checks against your app in a scratch copy. The command wrapped by `torpor statusline --` is your own command, and it does what it did before.
+Torpor makes no AI model calls. Its network use is plain HTTP to 127.0.0.1 (this computer), to run your promise checks against your app in a scratch copy. In a page check, the browser reaches this computer and nothing else. Torpor makes one download, `torpor runner install`, after you confirm. It fetches public files (the playwright-core package, and a Chromium when none is found) and uploads nothing of your project. The command wrapped by `torpor statusline --` is your own command, and it does what it did before.
 
 ## License
 

@@ -3,6 +3,7 @@ pub mod cli;
 pub mod constraints;
 pub mod deps;
 pub mod destructive;
+pub mod dom;
 pub mod errkey;
 pub mod findbreak;
 pub mod gate;

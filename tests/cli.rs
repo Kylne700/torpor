@@ -2,9 +2,6 @@
 mod common;
 use common::*;
 use serde_json::Value;
-use std::io::Write;
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::process::Stdio;
 use std::time::Duration;
 
 /// Two finished turns with an outside change between them, then a third turn that changes a secret file
@@ -286,7 +283,7 @@ fn user_only_commands_refuse_inside_claude_code() {
     s.session_start();
     s.prompt("one");
     s.stop();
-    for args in [&["off"][..], &["on"], &["retain", "60"], &["forget"], &["forget", "--all"], &["forget", "--before", "2020-01-01"]] {
+    for args in [&["off"][..], &["on"], &["retain", "60"], &["forget"], &["forget", "--all"], &["forget", "--before", "2020-01-01"], &["runner", "install"], &["runner", "install", "--yes"]] {
         let o = s.cli_env(args, &[("CLAUDECODE", "1")]);
         assert_eq!((o.code, o.stdout.as_str()), (3, ""), "{args:?}");
         assert_eq!(o.stderr, format!("Run this in your own terminal: ~/.torpor/bin/torpor {}\n", args.join(" ")), "{args:?}");
@@ -318,25 +315,6 @@ fn help_lists_every_command() {
 }
 
 // ---------------------------------------------------------------- forget
-
-/// Run the command with its standard input on a pseudo terminal that has `typed` already typed.
-fn on_terminal(mut c: std::process::Command, typed: &str) -> Out {
-    let (mut master, mut slave) = (0, 0);
-    // SAFETY: openpty fills in two new descriptors, each wrapped in an OwnedFd right away.
-    let (master, slave) = unsafe {
-        // macOS declares the last two as *mut, Linux as *const: null_mut fits both.
-        assert_eq!(libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), 0);
-        (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
-    };
-    c.stdin(Stdio::from(slave)).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let t0 = std::time::Instant::now();
-    let child = c.spawn().unwrap();
-    drop(c);
-    let mut keys = std::fs::File::from(master);
-    keys.write_all(format!("{typed}\n").as_bytes()).unwrap();
-    let o = child.wait_with_output().unwrap();
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), elapsed: t0.elapsed() }
-}
 
 fn forget_cmd(s: &Sim, args: &[&str]) -> std::process::Command {
     let mut c = base_cmd(&s.env);

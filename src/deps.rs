@@ -22,7 +22,7 @@ pub fn record(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Option<Vec<String>> {
         return None;
     }
     let env = vec![("NODE_V8_COVERAGE".to_string(), cov_s.to_string()), ("NODE_OPTIONS".to_string(), format!("--require \"{exit_s}\""))];
-    let r = scratch::run_once_with(ws, spec, tree, None, &Opts { overlay: Vec::new(), env });
+    let r = scratch::run_once_with(ws, spec, tree, None, &Opts { env, ..Opts::default() });
     if r.judged.verdict != Verdict::Pass {
         return None;
     }

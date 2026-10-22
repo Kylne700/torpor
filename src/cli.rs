@@ -3,13 +3,12 @@
 use crate::restore::{self, Target};
 use crate::store::*;
 use crate::util::*;
-use crate::{capture, destructive, history, hook, merge, promise_cmd, retention, scan, status};
+use crate::{capture, destructive, dom, history, hook, merge, promise_cmd, retention, scan, status};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub const HELP: &str = "Torpor keeps save points of your project, so you can go back.\n\
-\n\
   torpor status [--all]    Is Torpor saving this folder? Problems, files it could not save\n\
   torpor log [-n 20]       The turns, newest first, and what each one changed\n\
   torpor show K            The files of turn K (torpor show --id P: of one save point)\n\
@@ -30,6 +29,7 @@ pub const HELP: &str = "Torpor keeps save points of your project, so you can go 
   torpor gate on | off     Let promises stop the AI, or not (only you)\n\
   torpor off | on          Stop or resume saving this folder (only you, in your own terminal)\n\
   torpor retain DAYS       Keep save points longer than Claude Code keeps chats (only you)\n\
+  torpor runner install    Install the browser runner that page checks need; asks first (only you)\n\
   torpor forget            Delete the records of this folder; or --all, or --before YYYY-MM-DD (only you)\n\
   torpor version, torpor help   Which Torpor this is; this screen\n";
 
@@ -102,6 +102,7 @@ pub fn run(args: Vec<String>) -> i32 {
         Some("off") => off_on_cmd(&a[1..], true),
         Some("on") => off_on_cmd(&a[1..], false),
         Some("retain") => retain_cmd(&a[1..]),
+        Some("runner") => runner_cmd(&a[1..]),
         Some("forget") => forget_cmd(&a[1..]),
         Some("gc") => gc_cmd(&a[1..]),
         Some("quiet") => quiet_cmd(&a[1..]),
@@ -613,6 +614,65 @@ fn confirmed(prompt: &str, word: &str) -> bool {
     let _ = std::io::stdout().flush();
     let mut line = String::new();
     std::io::stdin().lock().read_line(&mut line).is_ok() && line.trim() == word
+}
+
+/// `torpor runner install [--yes]` (spec 24): the one download Torpor makes, and only after you say yes.
+fn runner_cmd(args: &[&str]) -> i32 {
+    const U: &str = "runner install [--yes]";
+    let yes = match args {
+        ["install"] => false,
+        ["install", "--yes"] => true,
+        _ => return usage(U),
+    };
+    let Some(node) = dom::find_node() else {
+        err("Node.js is not installed, and the browser runner needs version 20 or newer.\n");
+        return 1;
+    };
+    if let Err(m) = dom::node_ok(&node) {
+        err(&format!("{m}\n"));
+        return 1;
+    }
+    let dir = dom::runner_dir(&home_dir());
+    let (need_package, need_browser) = (!dom::installed(&dir), dom::find_chromium().is_none() && !dom::own_browser(&dir));
+    if !need_package && !need_browser {
+        return match dom::refresh_script(&dir) {
+            Ok(_) => {
+                out(&format!("The browser runner is already installed in {}.\n", dir.display()));
+                0
+            }
+            Err(e) => fail(&Error::Io(e)),
+        };
+    }
+    let question = dom::prompt(&dir, need_package, need_browser);
+    if yes {
+        out(&format!("{question} y (--yes)\n"));
+    } else if !stdin_is_tty() {
+        // Nothing is downloaded without a person's answer: a script says yes with --yes.
+        out(&format!("{question}\n"));
+        err("Nothing was installed. Torpor needs your answer in a terminal; to say yes without one, run: torpor runner install --yes\n");
+        return 3;
+    } else if !confirmed_yes(&format!("{question} ")) {
+        err("Nothing was installed.\n");
+        return 3;
+    }
+    match dom::install(&dir, &node, need_package, need_browser) {
+        Ok(said) => {
+            out(&said);
+            out("Page checks can run now.\n");
+            0
+        }
+        Err(e) => {
+            err(&format!("The browser runner was not installed: {e}\n"));
+            1
+        }
+    }
+}
+
+fn confirmed_yes(prompt: &str) -> bool {
+    out(prompt);
+    let _ = std::io::stdout().flush();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).is_ok() && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn forget_cmd(args: &[&str]) -> i32 {

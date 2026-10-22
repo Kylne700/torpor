@@ -1,6 +1,7 @@
 //! Scratch copies and the app process (spec 16): a saved version runs in its own folder, on its own port, with its own HOME.
 //! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run.
 use crate::capture::{self, Req, flatten_tree};
+use crate::dom;
 use crate::runner::{self, Client, Judged, ReqErr, Verdict};
 use crate::spec::{self, Spec};
 use crate::store::{TreeEntry, Ws, mkdir_private, user_home};
@@ -391,6 +392,7 @@ pub struct App {
     child: Child,
     pgid: i32,
     tail: Arc<Mutex<Tail>>,
+    stopped: bool,
 }
 
 fn group_alive(pgid: i32) -> bool {
@@ -400,25 +402,7 @@ fn group_alive(pgid: i32) -> bool {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if self.pgid > 1 {
-            // SAFETY: pgid is the process group this struct started (pgid > 1 is checked), nothing else is signalled.
-            unsafe { libc::kill(-self.pgid, libc::SIGTERM) };
-            let end = Instant::now() + Duration::from_millis(GRACE_MS);
-            loop {
-                let _ = self.child.try_wait(); // reaps the leader, so the group id can empty out
-                if !group_alive(self.pgid) || Instant::now() >= end {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if group_alive(self.pgid) {
-                // SAFETY: same group as above.
-                unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
-            }
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        live_del(&LIVE, self.pgid); // only now: until the group is gone the watchdog may still need to kill it
+        self.stop();
     }
 }
 
@@ -453,23 +437,89 @@ fn pump(mut r: PipeReader, log: PathBuf, tail: Arc<Mutex<Tail>>) {
 impl App {
     /// `sh -c cmd` in `cwd` with exactly `env`, stdin closed, stdout and stderr into `log` (first 1 MiB) and a short tail.
     pub fn spawn(cmd: &str, cwd: &Path, env: &[(String, String)], log: PathBuf) -> Result<App> {
-        let (rd, wr) = std::io::pipe()?;
         let mut c = Command::new("sh");
-        c.arg("-c").arg(cmd).current_dir(cwd).env_clear().envs(env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(wr.try_clone()?).stderr(wr).process_group(0);
+        c.arg("-c").arg(cmd);
+        App::launch(c, cwd, env, log, None)
+    }
+
+    /// `c` in `cwd` with exactly `env`, in its own process group, stdout and stderr into `log` (first 1 MiB) and a short tail.
+    /// stdin is closed, or carries `input` (the browser runner reads its spec there, never from argv or the environment).
+    pub fn launch(mut c: Command, cwd: &Path, env: &[(String, String)], log: PathBuf, input: Option<Vec<u8>>) -> Result<App> {
+        let (rd, wr) = std::io::pipe()?;
+        let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+        c.current_dir(cwd).env_clear().envs(env.iter().map(|(k, v)| (k, v))).stdin(stdin).stdout(wr.try_clone()?).stderr(wr).process_group(0);
         let spawning = Spawning::begin(&SPAWNING);
-        let child = c.spawn()?;
+        let mut child = c.spawn()?;
         let pgid = child.id() as i32;
         let registered = live_add(&LIVE, pgid);
         drop(spawning);
+        let to_child = child.stdin.take();
         // From here on `app` owns the group: every way out below (an error, a panic) drops it, and that stops the group.
-        let app = App { child, pgid, tail: Arc::new(Mutex::new(Tail::default())) };
+        let app = App { child, pgid, tail: Arc::new(Mutex::new(Tail::default())), stopped: false };
         if !registered {
             return Err(Error::msg("too many apps are running at once"));
         }
         drop(c); // closes our copies of the write end, so the reader sees the end when the group is gone
         let t2 = app.tail.clone();
         std::thread::Builder::new().spawn(move || pump(rd, log, t2))?;
+        if let (Some(mut w), Some(bytes)) = (to_child, input) {
+            // A thread, so a spec bigger than the pipe cannot block us; it ends when the child has read it (or is gone).
+            std::thread::Builder::new().spawn(move || {
+                let _ = w.write_all(&bytes);
+            })?;
+        }
         Ok(app)
+    }
+
+    /// SIGTERM to the group, SIGKILL after 3 s, and the leader reaped. Safe to call twice.
+    pub fn stop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
+        if self.pgid > 1 {
+            // SAFETY: pgid is the process group this struct started (pgid > 1 is checked), nothing else is signalled.
+            unsafe { libc::kill(-self.pgid, libc::SIGTERM) };
+            let end = Instant::now() + Duration::from_millis(GRACE_MS);
+            loop {
+                let _ = self.child.try_wait(); // reaps the leader, so the group id can empty out
+                if !group_alive(self.pgid) || Instant::now() >= end {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if group_alive(self.pgid) {
+                // SAFETY: same group as above.
+                unsafe { libc::kill(-self.pgid, libc::SIGKILL) };
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        live_del(&LIVE, self.pgid); // only now: until the group is gone the watchdog may still need to kill it
+    }
+
+    /// Wait for the leader to end. False when `limit` or the deadline of this thread passes first (the caller then stops the group).
+    pub fn wait_end(&mut self, limit: Duration) -> bool {
+        let end = Instant::now() + limit;
+        loop {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            if Instant::now() >= end || runner::out_of_time() {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    /// Wait up to 2 s for the reader to have written everything the group printed.
+    pub fn wait_eof(&self) {
+        for _ in 0..200 {
+            if self.tail.lock().map(|t| t.eof).unwrap_or(true) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// The exit text if the leader has ended.
@@ -536,6 +586,8 @@ fn stop(reason: impl Into<String>) -> Stopped {
 pub struct Opts {
     pub overlay: Vec<(String, Option<Vec<u8>>)>,
     pub env: Vec<(String, String)>,
+    /// Tests only: a script run by node in place of the installed `run.mjs` (a stand-in that prints protocol lines). No install is needed then.
+    pub runner: Option<PathBuf>,
 }
 
 /// May a changed copy write this path? Not one that leaves the copy, not an `.env*` file, not inside a dependency folder.
@@ -594,6 +646,11 @@ impl Run {
         self.app.tail()
     }
 
+    /// The run's own folder (the app's copy, home and temp folders are inside it).
+    pub fn dir(&self) -> &Path {
+        &self._scratch.dir
+    }
+
     /// Everything up to "the app answers its ready path" (spec 16). Err = UNRUNNABLE with the reason.
     pub fn start(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> std::result::Result<Run, Stopped> {
         Run::start_with(ws, spec, tree, &Opts::default())
@@ -609,7 +666,7 @@ impl Run {
             }
         }
         if !spec.http_only() {
-            return Err(stop("runner not installed: torpor runner install"));
+            dom::preflight(&ws.home, opts).map_err(stop)?;
         }
         let lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).map_err(|_| stop(if runner::out_of_time() { runner::OUT_OF_TIME } else { "another check is still running in this project" }))?;
         gc_scratch(ws);
@@ -679,8 +736,13 @@ pub fn run_once_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>
     match Run::start_with(ws, spec, tree, opts) {
         Err(s) => RunResult { judged: s.judged, ms: ms(t0), tail: s.tail },
         Ok(run) => {
-            let mut lines = vec![serde_json::json!({"p": "SETUP_OK"}).to_string()];
-            lines.extend(runner::run_http_steps(spec, run.port, &run.nonce, &run.rand));
+            let lines = if spec.http_only() {
+                let mut l = vec![serde_json::json!({"p": "SETUP_OK"}).to_string()];
+                l.extend(runner::run_http_steps(spec, run.port, &run.nonce, &run.rand));
+                l
+            } else {
+                dom::run_steps(&ws.home, spec, &run, opts)
+            };
             let judged = runner::judge(&lines, &run.nonce, min_n);
             let tail = run.tail();
             drop(run);

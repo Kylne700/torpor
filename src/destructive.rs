@@ -556,6 +556,8 @@ pub fn user_only_args<S: AsRef<str>>(args: &[S]) -> Option<String> {
     let sub = words.next()?;
     match (sub, words.next()) {
         (s, _) if USER_ONLY.contains(&s) => Some(format!("torpor {s}")),
+        // The one download Torpor makes: the AI asks you to run it (spec 24).
+        ("runner", Some("install")) => Some("torpor runner install".into()),
         ("gate", Some(o @ ("on" | "off"))) => Some(format!("torpor gate {o}")),
         ("promise", Some(o @ ("ok" | "drop" | "block"))) => Some(format!("torpor promise {o}")),
         // Any `--spec...` spelling: the check source stays hidden from the AI (spec 14).

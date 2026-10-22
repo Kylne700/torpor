@@ -33,11 +33,26 @@ function session(req) {
 const LOGIN = '<!doctype html><title>Sign in</title><form><label for="email">Email</label>' +
   '<input id="email" name="email"><button type="button">Sign in</button></form>';
 
+// A page that needs a browser: the form signs in through /api/login and /api/me with script. It also names two addresses outside
+// 127.0.0.1 (an image and a link), which the browser runner must never reach. With ?err in the address it logs a console error.
+const DOM =
+  '<!doctype html><title>Account</title><h1>Account</h1><form id="f"><label for="who">Email</label><input id="who" name="who">' +
+  '<button type="submit">Sign in</button></form><p id="out" role="status"></p><a href="http://elsewhere.invalid/x">Leave</a>' +
+  '<img alt="" src="http://pixel.invalid/p.png"><script>' +
+  'if (/[?&]err/.test(location.search)) console.error("fixture error");' +
+  'document.getElementById("f").addEventListener("submit", async (ev) => {' +
+  'ev.preventDefault();' +
+  'await fetch("/api/login", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({email: document.getElementById("who").value})});' +
+  'const r = await fetch("/api/me");' +
+  'document.getElementById("out").textContent = r.ok ? "Signed in as " + (await r.json()).email : "Sign in failed";' +
+  '});</script>';
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname !== '/api/hits') hits += 1;
   if (url.pathname === '/') return send(res, 200, '<h1>Fixture app</h1>', 'text/html');
   if (url.pathname === '/login') return send(res, 200, LOGIN, 'text/html');
+  if (url.pathname === '/dom') return send(res, 200, DOM, 'text/html');
   if (url.pathname === '/api/login' && req.method === 'POST') {
     let body = '';
     req.on('data', (c) => (body += c));

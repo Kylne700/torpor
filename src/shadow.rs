@@ -258,7 +258,7 @@ fn kill(ws: &Ws, spec: &Spec, good: &[u8; 32], mutants: &[Mutant], until: Instan
         if Instant::now() >= until {
             break;
         }
-        let opts = Opts { overlay: vec![(m.path.clone(), m.content.clone())], env: Vec::new() };
+        let opts = Opts { overlay: vec![(m.path.clone(), m.content.clone())], ..Opts::default() };
         let c = promise::check_tree_with(ws, spec, good, &opts);
         let what = match (c.call, c.runs.iter().all(promise::fails_at_assertion)) {
             (Call::Unrunnable, _) => "could not run",

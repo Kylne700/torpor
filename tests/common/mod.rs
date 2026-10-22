@@ -8,6 +8,7 @@ pub mod app;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -875,4 +876,23 @@ pub fn assert_store_sound(env: &Env) {
             }
         }
     }
+}
+
+/// Run the command with its standard input on a pseudo terminal that has `typed` already typed.
+pub fn on_terminal(mut c: Command, typed: &str) -> Out {
+    let (mut master, mut slave) = (0, 0);
+    // SAFETY: openpty fills in two new descriptors, each wrapped in an OwnedFd right away.
+    let (master, slave) = unsafe {
+        // macOS declares the last two as *mut, Linux as *const: null_mut fits both.
+        assert_eq!(libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), 0);
+        (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
+    };
+    c.stdin(Stdio::from(slave)).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let t0 = std::time::Instant::now();
+    let child = c.spawn().unwrap();
+    drop(c);
+    let mut keys = std::fs::File::from(master);
+    keys.write_all(format!("{typed}\n").as_bytes()).unwrap();
+    let o = child.wait_with_output().unwrap();
+    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), elapsed: t0.elapsed() }
 }

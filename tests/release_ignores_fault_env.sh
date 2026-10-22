@@ -51,4 +51,17 @@ code=0
 TORPOR_FAULT=restore:1 "$BIN" back 1 >"$T/out" 2>"$T/err" || code=$?
 [ "$code" = 0 ] || fail "back exited $code with TORPOR_FAULT=restore:1: $(cat "$T/err")"
 [ "$(cat "$T/proj/a.txt")" = hello ] || fail "back did not bring a.txt back (it says: $(cat "$T/proj/a.txt"))"
-echo "ok: $BIN ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore (hook took ${secs}s)"
+# `torpor runner install` has one source for its download. A plain build carries no code that reads the registry, hash or browser overrides
+# of the tests (the strings are not in the file), and without --yes and without a terminal it asks, says so and downloads nothing.
+for v in TORPOR_TEST_REGISTRY TORPOR_TEST_INTEGRITY TORPOR_TEST_NO_BROWSER; do
+  if grep -aq "$v" "$BIN"; then fail "$v is in this build: it can be read"; fi
+done
+if command -v node >/dev/null 2>&1; then
+  code=0
+  TORPOR_TEST_REGISTRY=http://127.0.0.1:1 "$BIN" runner install </dev/null >"$T/out" 2>"$T/err" || code=$?
+  [ "$code" = 3 ] || fail "runner install without --yes exited $code, not 3: $(cat "$T/err")"
+  grep -q 'npm registry' "$T/out" || fail "the question does not name the npm registry: $(cat "$T/out")"
+  grep -q '127.0.0.1' "$T/out" && fail "the question names 127.0.0.1: $(cat "$T/out")"
+  [ ! -e "$T/store/runner" ] || fail "runner install wrote into the runner folder before an answer"
+fi
+echo "ok: $BIN ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore, and carries no registry override for runner install (hook took ${secs}s)"
