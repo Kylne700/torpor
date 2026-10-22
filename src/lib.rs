@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod cli;
+pub mod destructive;
 pub mod hook;
 pub mod mask;
 pub mod merge;

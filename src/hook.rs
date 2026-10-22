@@ -3,6 +3,7 @@ use crate::capture::{self, Captured, Mode, PointKind, PointSpec, Req};
 use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
+use crate::destructive::{self, Verdict};
 use crate::{mask, restore, retention, scan, transcript};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
@@ -83,6 +84,9 @@ fn ups_context(text: &str) -> Value {
 fn pre_deny(reason: &str) -> Value {
     json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } })
 }
+fn pre_ask(reason: &str) -> Value {
+    json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "ask", "permissionDecisionReason": reason } })
+}
 
 // ---------------------------------------------------------------- run
 
@@ -90,6 +94,17 @@ struct Shared {
     out_started: AtomicBool,
     /// (store home, workspace folder if known, workspace id if known)
     ws: Mutex<(PathBuf, Option<PathBuf>, String)>,
+    /// Printed when everything else fails (error, panic, no time left): the question or deny for a command that reaches outside.
+    fallback: Mutex<Option<Value>>,
+}
+
+fn write_out(v: &Value) {
+    let mut s = serde_json::to_string(v).unwrap_or_default();
+    s.push('\n');
+    let out = std::io::stdout();
+    let mut l = out.lock();
+    let _ = l.write_all(s.as_bytes());
+    let _ = l.flush();
 }
 
 fn emit(shared: &Shared, v: &Value) {
@@ -99,12 +114,14 @@ fn emit(shared: &Shared, v: &Value) {
             std::thread::sleep(Duration::from_secs(60));
         }
     }
-    let mut s = serde_json::to_string(v).unwrap_or_default();
-    s.push('\n');
-    let out = std::io::stdout();
-    let mut l = out.lock();
-    let _ = l.write_all(s.as_bytes());
-    let _ = l.flush();
+    write_out(v);
+}
+
+fn emit_fallback(shared: &Shared) {
+    let v = shared.fallback.lock().ok().and_then(|g| g.clone());
+    if let Some(v) = v {
+        emit(shared, &v);
+    }
 }
 
 /// Entry point for `torpor hook <Event>`. Always returns 0.
@@ -112,7 +129,7 @@ pub fn run(event: &str) -> i32 {
     std::panic::set_hook(Box::new(|_| {}));
     let Some(own_ms) = own_deadline_ms(event) else { return 0 };
     let t0 = Instant::now();
-    let shared = Arc::new(Shared { out_started: AtomicBool::new(false), ws: Mutex::new((home_dir(), None, String::new())) });
+    let shared = Arc::new(Shared { out_started: AtomicBool::new(false), ws: Mutex::new((home_dir(), None, String::new())), fallback: Mutex::new(None) });
     {
         let sh = shared.clone();
         let ev = event.to_string();
@@ -121,6 +138,9 @@ pub fn run(event: &str) -> i32 {
             if sh.out_started.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
                 if let Ok(g) = sh.ws.lock() {
                     log_fault_line(&g.0, &g.2, &ev, "timeout", &format!("no answer within {own_ms} ms"));
+                }
+                if let Some(v) = sh.fallback.try_lock().ok().and_then(|g| g.clone()) {
+                    write_out(&v);
                 }
                 // SAFETY: _exit ends the process at once; nothing was written to stdout.
                 unsafe { libc::_exit(0) }
@@ -131,10 +151,14 @@ pub fn run(event: &str) -> i32 {
     match res {
         Ok(Ok(Some(v))) => emit(&shared, &v),
         Ok(Ok(None)) => {}
-        Ok(Err(e)) => note_fault(event, &shared, e.fault_kind(), &e.to_string()),
+        Ok(Err(e)) => {
+            note_fault(event, &shared, e.fault_kind(), &e.to_string());
+            emit_fallback(&shared);
+        }
         Err(p) => {
             let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
             note_fault(event, &shared, "panic", &msg);
+            emit_fallback(&shared);
         }
     }
     0
@@ -168,6 +192,15 @@ fn inject_faults() {}
 fn handle(event: &str, shared: &Shared, t0: Instant, own_ms: u64) -> Result<Option<Value>> {
     let p = read_payload()?;
     let session = p.s("session_id").unwrap_or_else(|| "unknown".to_string());
+    let verdict = bash_verdict(&p, event);
+    // Torpor's own files and the user-only commands are protected whatever fails below.
+    if let Some(deny) = verdict_deny(&verdict) {
+        return Ok(Some(deny));
+    }
+    // A command that reaches outside is asked about (or denied) even if saving fails.
+    if let (Verdict::Remote(rule), Ok(mut g)) = (&verdict, shared.fallback.lock()) {
+        *g = Some(remote_answer(rule, p.s("permission_mode").as_deref()));
+    }
     let root = match resolve_root(p.s("cwd").as_deref()) {
         Ok(r) => r,
         Err(Error::Refused(why)) => {
@@ -194,7 +227,7 @@ fn handle(event: &str, shared: &Shared, t0: Instant, own_ms: u64) -> Result<Opti
     let now = now_ns();
     let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
     let (out, spawn_gc) = {
-        let cx = Cx { ws: &ws, db: &tx, p: &p, event, now, session, t0, own_ms, spawn_gc: Cell::new(false) };
+        let cx = Cx { ws: &ws, db: &tx, p: &p, event, now, session, t0, own_ms, spawn_gc: Cell::new(false), verdict };
         let out = dispatch(&cx)?;
         (out, cx.spawn_gc.get())
     };
@@ -216,6 +249,8 @@ pub struct Cx<'a> {
     pub t0: Instant,
     pub own_ms: u64,
     pub spawn_gc: Cell<bool>,
+    /// What spec section 7 says about this call (Clear unless it is a Bash PreToolUse).
+    pub verdict: Verdict,
 }
 
 impl Cx<'_> {
@@ -237,7 +272,8 @@ fn dispatch(cx: &Cx) -> Result<Option<Value>> {
     let pm = cx.p.s("permission_mode");
     if off_switch(db) {
         turn::heartbeat(db, &cx.session, cx.event, cx.now)?;
-        return Ok(None);
+        // Paused: no save points and no questions, but Torpor's own files stay protected.
+        return Ok(if cx.event == "PreToolUse" { protected_edit(cx) } else { None });
     }
     turn::touch_session(
         db,
@@ -507,14 +543,78 @@ fn rel_of(root: &Path, abs: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s.to_string()) }
 }
 
-fn pre_tool(cx: &Cx) -> Result<Option<Value>> {
+/// What spec section 7 says about this Bash command (Clear for any other call).
+fn bash_verdict(p: &P, event: &str) -> Verdict {
+    if event != "PreToolUse" || p.s("tool_name").as_deref() != Some("Bash") {
+        return Verdict::Clear;
+    }
+    match p.input_str("command") {
+        Some(cmd) => destructive::judge(&cmd, &destructive::script_dirs(p.s("cwd").as_deref())),
+        None => Verdict::Clear,
+    }
+}
+
+/// The deny-only protection for Bash: Torpor's files and the user-only commands.
+fn verdict_deny(v: &Verdict) -> Option<Value> {
+    match v {
+        Verdict::Store => Some(pre_deny(MSG_PROTECTED)),
+        Verdict::UserOnly(c) => Some(pre_deny(&format!("Torpor: only the user can do this, in their own terminal ({c})."))),
+        _ => None,
+    }
+}
+
+/// The deny-only protection for the edit tools: Torpor's files.
+fn protected_edit(cx: &Cx) -> Option<Value> {
     let tool = cx.p.s("tool_name").unwrap_or_default();
     // Both readings of the path: with `link/../x` the kernel and a plain text fold land in different places.
-    if EDIT_TOOLS.contains(&tool.as_str()) && edit_raw(cx).iter().chain(edit_paths(cx).iter()).any(|p| is_protected(p)) {
-        return Ok(Some(pre_deny(MSG_PROTECTED)));
+    let hit = EDIT_TOOLS.contains(&tool.as_str()) && edit_raw(cx).iter().chain(edit_paths(cx).iter()).any(|p| is_protected(p));
+    hit.then(|| pre_deny(MSG_PROTECTED))
+}
+
+/// Sessions where the user is asked before commands run. Anything else (or no mode at all) cannot ask.
+fn can_ask(mode: Option<&str>) -> bool {
+    matches!(mode, Some("default" | "acceptEdits" | "plan"))
+}
+
+/// A command that reaches outside gets a question where somebody can answer it, else a deny. Never an allow.
+fn remote_answer(rule: &str, mode: Option<&str>) -> Value {
+    if can_ask(mode) {
+        pre_ask(&format!("Torpor: this command can delete data outside this computer ({rule}). Save points cannot bring that back. Approve only if you meant it."))
+    } else {
+        pre_deny(&format!(
+            "Torpor stopped this because this session skips permission prompts and the command can delete data outside this computer ({rule}). Save points cannot undo it. If the user wants it, they can run it in their own terminal."
+        ))
     }
-    begin(cx, false)?;
-    // S1b: Bash destructive rules (pre_bash point, ask/deny) go here.
+}
+
+/// A save point before the command, noted with the command.
+fn pre_bash_point(cx: &Cx, turn: &Turn) {
+    let note = cx.p.input_str("command").map(|c| mask::cmd_preview(&c));
+    guarded_capture(
+        cx,
+        Req { session: &cx.session, points: vec![PointSpec { kind: PointKind::PreBash, turn_id: Some(turn.id), note }], turn: Some(turn.id), only_if_changed: false, budget: Some(cx.budget()) },
+    );
+}
+
+fn pre_tool(cx: &Cx) -> Result<Option<Value>> {
+    if let Some(deny) = protected_edit(cx) {
+        return Ok(Some(deny));
+    }
+    if let Verdict::Remote(rule) = &cx.verdict {
+        let mode = cx.p.s("permission_mode");
+        // Where nobody can be asked the command is denied, so nothing changes and nothing is saved.
+        if can_ask(mode.as_deref()) {
+            // The question is the point: a save point that fails must not lose it.
+            if let Some(turn) = guarded(cx, || begin(cx, false)) {
+                pre_bash_point(cx, &turn);
+            }
+        }
+        return Ok(Some(remote_answer(rule, mode.as_deref())));
+    }
+    let turn = begin(cx, false)?;
+    if cx.verdict == Verdict::Save {
+        pre_bash_point(cx, &turn);
+    }
     Ok(None)
 }
 

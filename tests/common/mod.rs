@@ -484,6 +484,12 @@ impl Sim {
         self.bash_tool(cmd, None)
     }
 
+    /// Only the PreToolUse of a Bash call: what Torpor answers before the command would run. Nothing is run.
+    pub fn pre_bash(&mut self, cmd: &str) -> Out {
+        let id = self.tool_id();
+        self.tool_event("PreToolUse", "Bash", &json!({"command": cmd}), &id, None, json!({}))
+    }
+
     pub fn subagent_bash(&mut self, agent: &str, cmd: &str) -> i32 {
         self.bash_tool(cmd, Some(agent))
     }

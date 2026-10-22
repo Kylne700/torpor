@@ -25,7 +25,8 @@ fn two_turns() -> (Sim, std::collections::BTreeMap<String, OEnt>, std::collectio
 #[test]
 fn back_one_then_back_again() {
     let (sim, end1, end2) = two_turns();
-    let o = sim.cli(&["back", "1"]);
+    // Turn two ran `rm b.txt`, which has its own save point, so the end of turn 1 is asked for by turn.
+    let o = sim.cli(&["back", "--turn", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     assert_eq!(oracle(sim.proj()), end1, "the folder is the end of turn 1");
     assert!(o.stdout.starts_with("Going back to save point "), "{}", o.stdout);

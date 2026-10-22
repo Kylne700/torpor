@@ -14,7 +14,7 @@ struct Fixture {
     sim: Sim,
     pristine_proj: PathBuf,
     pristine_home: PathBuf,
-    /// The folder before `back 1` (the live state) and the end of turn 1 (where `back 1` goes).
+    /// The folder before `back 1` (the live state) and the end of turn 1 (where `back --turn 1` goes).
     pre: Tree,
     target: Tree,
 }
@@ -116,11 +116,11 @@ struct Tally {
     ended_post: usize,
 }
 
-/// One crash: reset, run `back 1` with the fault, optionally crash `recover` once, run `recover`, check everything.
+/// One crash: reset, run `back --turn 1` with the fault, optionally crash `recover` once, run `recover`, check everything.
 fn crash_run(f: &Fixture, fault: &str, recover_fault: Option<String>, tally: &mut Tally) {
     let sim = &f.sim;
     reset(f);
-    let o = sim.cli_env(&["back", "1"], &[("TORPOR_FAULT", fault)]);
+    let o = sim.cli_env(&["back", "--turn", "1"], &[("TORPOR_FAULT", fault)]);
     tally.runs += 1;
     if o.code == -1 {
         tally.killed += 1;
@@ -165,7 +165,7 @@ fn a3_killed_restores_end_before_or_after_never_mixed() {
     let f = fixture();
     // Count the steps of one clean run.
     reset(&f);
-    let o = f.sim.cli_env(&["back", "1"], &[("TORPOR_FAULT", "restore:0")]);
+    let o = f.sim.cli_env(&["back", "--turn", "1"], &[("TORPOR_FAULT", "restore:0")]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     let s = steps(&o, "restore");
     let post_clean = oracle(f.sim.proj());
@@ -196,7 +196,7 @@ fn a3_killed_restores_end_before_or_after_never_mixed() {
 fn a3_kills_during_capture() {
     let f = fixture();
     reset(&f);
-    let o = f.sim.cli_env(&["back", "1"], &[("TORPOR_FAULT", "capture:0")]);
+    let o = f.sim.cli_env(&["back", "--turn", "1"], &[("TORPOR_FAULT", "capture:0")]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     let c = steps(&o, "capture");
     assert!(c >= 6, "two captures with three steps each ({c})");

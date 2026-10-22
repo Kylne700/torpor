@@ -51,7 +51,7 @@ fn full_scenario(mode: &str) {
     let stop = sim.stop();
     assert_eq!(sim.changes_since(mark), want(&t1), "turn 1 ({mode})");
     let line = stop.text();
-    assert!(line.starts_with("Torpor: save point ") && line.contains(&format!("turn 1 changed {} files", t1.len())) && line.ends_with("undo it: torpor undo 1"), "stop line: {line}");
+    assert!(line.starts_with("Torpor: save point ") && line.contains(&format!("turn 1 changed {} files", t1.len())) && line.contains("undo it: torpor undo 1") && line.ends_with(" · saved before rm d.txt"), "stop line: {line}");
     sim.verify_last_point();
     let tool_points = sim.q_i64("SELECT COUNT(*) FROM points WHERE kind='tool'");
     if mode == "fast" {
