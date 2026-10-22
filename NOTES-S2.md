@@ -367,7 +367,7 @@ Fix agent: S2c-fix (Sonnet), started at 385af5a, branch main, nothing pushed, no
 
 ## S2c-fix.1 Status per step
 
-| Step | Finding | State | Commit | Tests (each failed before the change and passes after) |
+| Step | Finding | State | Commit | Tests |
 |------|---------|-------|--------|-------|
 | 1 | 3: `undo --force` is user-only | DONE | 617b673 | `user_only_args` arm in destructive.rs; rows in tests/cli.rs `user_only_commands_refuse_inside_claude_code`, tests/a9_destructive.rs `off_on_forget_retain_are_for_the_user_only` and the destructive.rs unit table. Refusal text "To do it anyway, run this in your own terminal: torpor undo K --force" (tests/undo_checks.rs follows); SKILL.md "If an undo is refused, tell the user; only they can force it." |
 | 2 | 1, part 1: the README undo line is true | DONE | c826c9a | docs only: "so that nothing changes meanwhile" is gone; a Limits bullet said what the lock did until step 7 replaced it |
@@ -379,6 +379,8 @@ Fix agent: S2c-fix (Sonnet), started at 385af5a, branch main, nothing pushed, no
 | 8 | 2: an undo after which the app does not start is refused | DONE | 0b2d4a0 | tests/undo_checks.rs `an_undo_after_which_the_app_does_not_start_is_refused_and_force_goes_ahead` (the old test turned around: exit 3 with the refusal text, nothing written, `--force` exits 0) and `an_undo_after_which_the_app_does_not_start_either_way_is_reported_and_goes_ahead` (exit 0 and a note; refusing without the control run makes it fail). README (undo bullet, Limits) and spec 16, 18, 20 say it |
 | 9 | 4: page checks are judged from memory | DONE | 9b5c52e | `Tail` keeps the first 1 MiB of runner output in memory (`App::head`); `run_steps` judges from it and never reads runner.log back. tests/dom_run.rs `an_app_that_rewrites_the_runner_log_after_the_done_line_cannot_turn_a_failure_into_a_pass`: before, the verdict was Pass; now it is Fail at step 2 "the form is missing", and a mark file proves the forgery ran |
 | 10 | 10: `node` is resolved once with the person's environment | DONE | fc1c90c | `find_node()` asks the `node` found on PATH for `process.execPath` (`node -p`, 5 s, the person's environment) and runs that file; every caller gets it. tests/runner_install.rs `a_node_that_is_a_version_manager_shim_is_asked_for_its_real_path_and_that_one_runs` (before: exit 1 "Node.js 20 or newer is needed (this one says nothing)") and src/dom.rs `a_version_manager_shim_is_replaced_by_the_node_it_finds_with_the_environment_it_gets`. The fallback README line ("needs a real node binary on PATH") was not needed; the README says that a shim works |
+
+Every code step (1, 3, 5 to 10) has at least one test that failed before the change and passes now; steps 2 and 4 are docs only, and the merged-file test of step 7 passes on the old code too (it guards the new flow). Each was seen failing by hand, either before the fix was written or with the fix taken out for a moment (the source was restored afterwards).
 
 Not done, on purpose (out of scope in the brief, or optional): the build-command step of spec 20; tests for the 90 s deadline and the 5 s run-lock wait of an undo; a tarball test with `..`, absolute or link entries (finding 12; moot while the hash is pinned); the sweep of old `/tmp/tp-*` folders (finding 9, optional).
 
@@ -400,7 +402,7 @@ All from the repo folder, on the code of fc1c90c (the commit of these notes chan
 ## S2c-fix.3 The two real runs (network: 1 npm download in this stage; no Chromium download; no model call)
 
 - Real install (the one npm download of this stage, a fresh folder): `env -u CLAUDECODE HOME=<repo>/target/real-runner-fix/hm TORPOR_HOME=<repo>/target/real-runner-fix PATH=/usr/bin:/bin:<folder of node> timeout 240 target/dist/release/torpor runner install --yes` printed "installed playwright-core 1.64.1 (3.0 MB)", exit 0, 1.2 s, runner folder 14 MB. It used the plain dist binary, so no test knob could work. The question named only the 3 MB: /usr/bin/chromium was found, so no Chromium was fetched. `env -u CLAUDECODE` is needed because the command is user-only.
-- Real DOM run, on the final code (fc1c90c; no network, headless, /usr/bin/chromium, /usr/bin/node 20.19.2, a real binary and not a shim): `TORPOR_REAL_RUNNER=<repo>/target/real-runner-fix/runner/1.64.1 timeout 280 cargo test --test dom_run -- --ignored --nocapture`, run through the wrapper of S2c-fix.2 (it also unsets DISPLAY and WAYLAND_DISPLAY). Exit 0, 1 passed in 18.47 s. Good page: Pass in 1.5 s, 6 assertions. Seeded regression: Fail at step 5 (status does not contain "Signed in as kim-the-tester"). Missing test id: Fail at step 2. Page console error: Fail at step 2. Link to another host: Unrunnable ("non-loopback: the page went to elsewhere.invalid"). Afterwards the test found no browser process and no `/tmp/tp-*` folder left. This run goes through the new in-memory judging (step 9), the `node` lookup (step 10) and the short temp folder (step 6).
+- Real DOM run, on the final code (fc1c90c; no network, headless, /usr/bin/chromium, /usr/bin/node 20.19.2, an ELF binary and not a shim): `TORPOR_REAL_RUNNER=<repo>/target/real-runner-fix/runner/1.64.1 timeout 280 cargo test --test dom_run -- --ignored --nocapture`, run through the wrapper of S2c-fix.2 (it also unsets DISPLAY and WAYLAND_DISPLAY). Exit 0, 1 passed in 18.47 s. Good page: Pass in 1.5 s, 6 assertions. Seeded regression: Fail at step 5 (status does not contain "Signed in as kim-the-tester"). Missing test id: Fail at step 2. Page console error: Fail at step 2. Link to another host: Unrunnable ("non-loopback: the page went to elsewhere.invalid"). Afterwards the test found no browser process and no new `/tmp/tp-*` folder (it counts them before and after). This run goes through the new in-memory judging (step 9), the `node` lookup (step 10) and the short temp folder (step 6).
 - `target/real-runner-fix` (14 MB, inside the ignored target/) was left in place; `rm -r` it when it is not needed.
 
 ## S2c-fix.4 Decisions, deviations and shortcuts
@@ -421,7 +423,7 @@ All from the repo folder, on the code of fc1c90c (the commit of these notes chan
 
 - The Chromium download (`install --no-shell chromium`) was never run. The half-finished-download test uses a stand-in browser folder.
 - The shim test uses a stand-in script. A real asdf, mise or volta shim is NOT VERIFIED.
-- The new tests ran on Linux only. macOS CI will run them: the start commands the tests build are under 300 characters, but nothing checked them on macOS.
+- The new tests ran on Linux only. macOS CI will run them. The start commands they build were measured: `slow_promised` 148 characters (`$D` reaches the shell through the check's env), the step 6 test 123 with an 80-character temp path (243 with a 200-character one); the limit is 300. The step 10 tests compare no resolved paths, so a symlinked `node` (Homebrew) should not matter. Nothing was run on macOS.
 - Item 5 above (one run decides a no-start) and item 6 are the risks the lead may want to look at in the diff.
 - The 90 s limit and the 5 s run-lock wait of an undo still have no test of their own (out of scope in the brief).
 
