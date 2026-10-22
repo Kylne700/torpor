@@ -13,7 +13,11 @@ const NAME = 'playwright-core';
 
 async function main() {
   fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
-  const res = await fetch(`${registry}/${NAME}/-/${NAME}-${version}.tgz`, { signal: AbortSignal.timeout(180000) });
+  // No redirects: the one host the question named is the only host asked, whatever it answers.
+  const res = await fetch(`${registry}/${NAME}/-/${NAME}-${version}.tgz`, { redirect: 'error', signal: AbortSignal.timeout(180000) }).catch((e) => {
+    if (e && e.cause && e.cause.message === 'unexpected redirect') throw new Error('the registry sent a redirect, so nothing was installed');
+    throw e;
+  });
   if (!res.ok) throw new Error(`the registry answered ${res.status}`);
   const chunks = [];
   let size = 0;

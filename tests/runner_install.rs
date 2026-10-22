@@ -40,7 +40,7 @@ fn package(dir: &Path) -> (Vec<u8>, String) {
     (bytes, String::from_utf8(out.stdout).unwrap().trim().to_string())
 }
 
-/// Answers `GET /playwright-core/-/playwright-core-1.64.1.tgz` with `body`, and writes down every request line it gets.
+/// Answers `GET /playwright-core/-/playwright-core-1.64.1.tgz` with `body` (or with a 302 to `redirect`), and writes down every request line it gets.
 struct Registry {
     port: u16,
     hits: Arc<Mutex<Vec<String>>>,
@@ -49,6 +49,13 @@ struct Registry {
 
 impl Registry {
     fn start(body: Vec<u8>) -> Registry {
+        Registry::start_as(body, None)
+    }
+    /// A registry that answers the package request with a 302 to `to` and serves nothing itself.
+    fn redirecting(to: String) -> Registry {
+        Registry::start_as(Vec::new(), Some(to))
+    }
+    fn start_as(body: Vec<u8>, redirect: Option<String>) -> Registry {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         let (hits, stop) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)));
@@ -64,9 +71,11 @@ impl Registry {
                 let line = String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_string();
                 let ok = line.starts_with("GET /playwright-core/-/playwright-core-1.64.1.tgz ");
                 h2.lock().unwrap().push(line);
-                let head = if ok { format!("HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()) } else { "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string() };
+                let head = if let (true, Some(to)) = (ok, &redirect) {
+                    format!("HTTP/1.1 302 Found\r\nlocation: {to}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                } else if ok { format!("HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()) } else { "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string() };
                 let _ = c.write_all(head.as_bytes());
-                if ok {
+                if ok && redirect.is_none() {
                     let _ = c.write_all(&body);
                 }
             }
@@ -176,6 +185,21 @@ fn a_download_that_does_not_match_its_published_hash_installs_nothing() {
     assert_eq!(o.code, 1, "{}{}", o.stdout, o.stderr);
     assert!(o.stderr.contains("does not match the published hash"), "{}", o.stderr);
     assert_eq!(fx.reg.requests().len(), 1);
+    fx.nothing_installed();
+}
+
+#[test]
+fn a_registry_that_redirects_installs_nothing_and_the_other_host_is_never_asked() {
+    // The real package waits on a second host; the registry Torpor is pointed at only sends the install there.
+    let fx = Fx::new(false, true);
+    let hop = Registry::redirecting(format!("http://127.0.0.1:{}/playwright-core/-/playwright-core-1.64.1.tgz", fx.reg.port));
+    let mut c = fx.cmd(&["install", "--yes"]);
+    c.env("TORPOR_TEST_REGISTRY", format!("http://127.0.0.1:{}", hop.port));
+    let o = run_cmd(c, b"");
+    assert_eq!(o.code, 1, "{}{}", o.stdout, o.stderr);
+    assert!(o.stderr.contains("the registry sent a redirect, so nothing was installed"), "{}", o.stderr);
+    assert_eq!(hop.requests().len(), 1, "{:?}", hop.requests());
+    assert!(fx.reg.requests().is_empty(), "the redirect was followed: {:?}", fx.reg.requests());
     fx.nothing_installed();
 }
 
