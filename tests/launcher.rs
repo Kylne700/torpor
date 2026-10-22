@@ -107,3 +107,60 @@ fn launcher_hook_through_installed_copy_records_save_points() {
     assert_eq!(sim.q_i64("SELECT COUNT(*) FROM points"), 1, "the launcher ran the real hook");
     assert_eq!(sim.q_i64("SELECT COUNT(*) FROM turns"), 1);
 }
+
+/// A8(c): the plugin folder can be deleted and replaced (an update, a reinstall) without losing save points,
+/// because they live in the Torpor home and not in the plugin folder.
+#[test]
+fn a8c_a_fresh_plugin_copy_still_lists_every_save_point() {
+    let mut sim = Sim::new();
+    write_files(sim.proj(), &[("a.txt", "A1\n")]);
+    let tmp = sim.env._tmp.path().to_path_buf();
+    let ids = |sim: &Sim| -> Vec<i64> {
+        let c = sim.conn();
+        let mut st = c.prepare("SELECT id FROM points WHERE visible=1 AND dropped=0 ORDER BY id").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+    };
+    let log_turns = |sim: &Sim| -> Vec<i64> {
+        let o = sim.cli(&["log", "--json"]);
+        assert_eq!(o.code, 0, "{}", o.stderr);
+        let v: Vec<Value> = serde_json::from_str(o.stdout.trim()).unwrap();
+        v.iter().filter_map(|r| r["turn"].as_i64()).collect()
+    };
+
+    let root = make_plugin_root(&tmp, true);
+    sim.program = Some(root.join("bin/torpor"));
+    sim.session_start();
+    sim.prompt("one");
+    sim.edit("a.txt", "A2\n");
+    sim.stop();
+    let first = ids(&sim);
+    assert!(first.len() >= 2);
+    assert_eq!(log_turns(&sim), [1]);
+
+    // The plugin copy is deleted and a fresh one put in its place; the installed binary is still there.
+    std::fs::remove_dir_all(&root).unwrap();
+    let root = make_plugin_root(&tmp, true);
+    sim.program = Some(root.join("bin/torpor"));
+    sim.prompt("two");
+    sim.edit("a.txt", "A3\n");
+    sim.stop();
+    // Everything is deleted but the store: the fresh copy has to install its binary again.
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_dir_all(sim.env.thome.join("bin")).unwrap();
+    let root = make_plugin_root(&tmp, true);
+    sim.program = Some(root.join("bin/torpor"));
+    sim.prompt("three");
+    sim.edit("a.txt", "A4\n");
+    sim.stop();
+
+    assert_eq!(log_turns(&sim), [3, 2, 1]);
+    let now = ids(&sim);
+    assert!(first.iter().all(|i| now.contains(i)), "every old save point is still listed: {first:?} vs {now:?}");
+    assert!(now.len() >= first.len() + 4);
+    assert!(sim.env.thome.join("bin").join(env!("CARGO_PKG_VERSION")).join("torpor").exists(), "installed again");
+    assert!(sim.status().stdout.starts_with("Torpor is saving this project.\n"));
+    // And the oldest turn can still be gone back to.
+    let o = sim.cli(&["back", "--turn", "1"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert_eq!(std::fs::read_to_string(sim.path("a.txt")).unwrap(), "A2\n");
+}

@@ -1,25 +1,36 @@
 #!/bin/sh
-# The plain release build (no `fault-inject` feature) must ignore every TORPOR_TEST_* variable.
-# Run from the torpor/ folder: sh tests/release_ignores_fault_env.sh
-# Note: `cargo test --release` builds the same target/release/torpor WITH fault-inject, so this script builds first.
+# The plain release build (no `fault-inject` feature) must ignore every TORPOR_TEST_* and TORPOR_FAULT variable.
+# Usage, from the torpor/ folder:
+#   sh tests/release_ignores_fault_env.sh [path-to-binary]
+# With no argument it builds `cargo build --release` and checks target/release/torpor. CI and the release workflow pass
+# the binary they ship (built plain, in its own target dir), so the check runs on exactly that file.
+# Note: `cargo test --release` builds the same target/release/torpor WITH fault-inject, which is why the argument exists.
 set -eu
 cd "$(dirname "$0")/.."
-cargo build --release --quiet
-BIN="$PWD/target/release/torpor"
+if [ $# -ge 1 ]; then
+  BIN=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+else
+  cargo build --release --quiet
+  BIN="$PWD/target/release/torpor"
+fi
+[ -x "$BIN" ] || { echo "FAIL: $BIN is not an executable file"; exit 1; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/torpor-relcheck.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/proj" "$T/hm"
 echo hello > "$T/proj/a.txt"
-unset CLAUDE_CONFIG_DIR TORPOR_OFF TORPOR_FAULT
-export HOME="$T/hm" XDG_CONFIG_HOME="$T/hm/.config" TORPOR_HOME="$T/store" TORPOR_KEY_FILE="$T/hm/.config/torpor/key" CLAUDE_PROJECT_DIR="$T/proj"
+unset CLAUDE_CONFIG_DIR CLAUDECODE TORPOR_OFF TORPOR_FAULT
+export HOME="$T/hm" XDG_CONFIG_HOME="$T/hm/.config" TORPOR_HOME="$T/store" TORPOR_KEY_FILE="$T/hm/.config/torpor/key" CLAUDE_PROJECT_DIR="$T/proj" CLAUDE_CODE_MANAGED_SETTINGS_PATH="$T/managed"
+fail() { echo "FAIL: $1"; exit 1; }
+hook() { # hook <event> <extra json fields, with a leading comma or empty>
+  printf '%s' '{"session_id":"s1","cwd":"'"$T"'/proj","hook_event_name":"'"$1"'","prompt_id":"p1","permission_mode":"default"'"$2"'}' | "$BIN" hook "$1"
+}
+
 # A panic, a 10 s sleep and an empty disk: a build with fault-inject would print nothing, take 5 s or skip the capture.
 export TORPOR_TEST_PANIC=1 TORPOR_TEST_SLEEP_MS=10000 TORPOR_TEST_FREE_BYTES=0 TORPOR_TEST_NO_GC=1
-P='{"session_id":"s1","cwd":"'"$T"'/proj","hook_event_name":"UserPromptSubmit","prompt":"hi","prompt_id":"p1"}'
 start=$(date +%s%N)
-out=$(printf '%s' "$P" | "$BIN" hook UserPromptSubmit 2>"$T/err")
-code=$?
+code=0
+out=$(hook UserPromptSubmit ',"prompt":"hi"' 2>"$T/err") || code=$?
 ms=$(( ($(date +%s%N) - start) / 1000000 ))
-fail() { echo "FAIL: $1"; exit 1; }
 [ "$code" = 0 ] || fail "exit code $code"
 [ -z "$out" ] || fail "stdout not empty: $out"
 [ ! -s "$T/err" ] || fail "stderr not empty"
@@ -27,4 +38,17 @@ fail() { echo "FAIL: $1"; exit 1; }
 if [ -f "$T/store/faults.log" ] && grep -Eq 'panic|timeout|disk' "$T/store/faults.log"; then fail "a fault was injected: $(cat "$T/store/faults.log")"; fi
 unset TORPOR_TEST_PANIC TORPOR_TEST_SLEEP_MS TORPOR_TEST_FREE_BYTES
 "$BIN" status --json | grep -q '"points":[1-9]' || fail "the capture did not run (TORPOR_TEST_FREE_BYTES honoured?)"
-echo "ok: plain release build ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS and TORPOR_TEST_FREE_BYTES (hook took $ms ms)"
+
+# A second state, saved with a kill-at-the-first-capture-step request that a plain build must ignore.
+echo changed > "$T/proj/a.txt"
+code=0
+TORPOR_FAULT=capture:1 hook Stop ',"stop_hook_active":false,"last_assistant_message":"done"' >/dev/null 2>"$T/err" || code=$?
+[ "$code" = 0 ] || fail "Stop exited $code with TORPOR_FAULT=capture:1: the variable was honoured"
+"$BIN" status --json | grep -q '"points":[2-9]' || fail "the second save point is missing"
+
+# Going back must really restore the first state, with a kill-at-the-first-restore-step request that a plain build must ignore.
+code=0
+TORPOR_FAULT=restore:1 "$BIN" back 1 >"$T/out" 2>"$T/err" || code=$?
+[ "$code" = 0 ] || fail "back exited $code with TORPOR_FAULT=restore:1: $(cat "$T/err")"
+[ "$(cat "$T/proj/a.txt")" = hello ] || fail "back did not bring a.txt back (it says: $(cat "$T/proj/a.txt"))"
+echo "ok: $BIN ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore (hook took $ms ms)"
