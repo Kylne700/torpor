@@ -12,13 +12,13 @@ use std::io::Read;
 use std::time::Duration;
 
 /// A command either goes on or has already said why it stopped and gives its exit code.
-type Code<T> = std::result::Result<T, i32>;
+pub(crate) type Code<T> = std::result::Result<T, i32>;
 
 const LINT_LINES_MAX: usize = 12;
 const KEEP_WORDS_MAX: usize = 200;
 
 /// `fail`, but a promise, save point or turn that does not exist is named.
-fn fail_p(e: &Error) -> i32 {
+pub(crate) fn fail_p(e: &Error) -> i32 {
     if let Error::NotFound(w) = e {
         if ["promise ", "save point", "turn ", "check "].iter().any(|p| w.starts_with(p)) {
             err(&format!("Torpor has no {w}.\n"));
@@ -29,7 +29,7 @@ fn fail_p(e: &Error) -> i32 {
 }
 
 /// "3" or "#3".
-fn num(s: &str) -> Option<i64> {
+pub(crate) fn num(s: &str) -> Option<i64> {
     s.trim_start_matches('#').parse::<i64>().ok().filter(|n| *n >= 1)
 }
 
@@ -37,7 +37,7 @@ fn say(s: &str) {
     out(&format!("{s}\n"));
 }
 
-fn get_live(db: &Connection, id: i64) -> Code<Promise> {
+pub(crate) fn get_live(db: &Connection, id: i64) -> Code<Promise> {
     match promise::get(db, id) {
         Ok(Some(p)) if p.state != "dropped" => Ok(p),
         Ok(_) => Err(fail_p(&Error::NotFound(format!("promise {id}")))),
@@ -62,7 +62,7 @@ pub fn promise_cmd(a: &[&str]) -> i32 {
 // ---------------------------------------------------------------- reading a check
 
 /// The check on standard input, linted. Lint lines go to stderr and the exit code is 3 (spec 14).
-fn read_check() -> Code<Linted> {
+pub(crate) fn read_check() -> Code<Linted> {
     if stdin_is_tty() {
         return Err(usage("... - (the check is read from standard input, e.g. with <<'EOF')"));
     }
@@ -98,7 +98,8 @@ struct Opts {
 struct Plan {
     source: String,
     want: Option<String>,
-    good: i64,
+    /// None for `--repro`: find-break supplies the good point.
+    good: Option<i64>,
     bad: Option<i64>,
     turn: Option<i64>,
     replaces: Option<i64>,
@@ -124,13 +125,19 @@ fn plan(db: &Connection, l: &Linted, who: &Who, want: &str, o: &Opts, good: Opti
         return Err(3);
     }
     let inherited = old.as_ref().and_then(|p| p.good_point).filter(|g| promise::point_tree(db, *g).is_ok());
-    let good = match (o.good.or(good), o.turn, inherited) {
-        (Some(p), _, _) => promise::pick_good(db, who, Some(p), None),
-        (None, Some(k), _) => promise::pick_good(db, who, None, Some(k)),
-        (None, None, Some(g)) => Ok(g),
-        (None, None, None) => promise::pick_good(db, who, None, None),
-    }
-    .map_err(|e| fail_p(&e))?;
+    let good = if o.repro {
+        None
+    } else {
+        Some(
+            match (o.good.or(good), o.turn, inherited) {
+                (Some(p), _, _) => promise::pick_good(db, who, Some(p), None),
+                (None, Some(k), _) => promise::pick_good(db, who, None, Some(k)),
+                (None, None, Some(g)) => Ok(g),
+                (None, None, None) => promise::pick_good(db, who, None, None),
+            }
+            .map_err(|e| fail_p(&e))?,
+        )
+    };
     if let Some(b) = o.bad {
         promise::point_tree(db, b).map_err(|e| fail_p(&e))?;
     }
@@ -167,8 +174,8 @@ fn after_saved(ws: &mut Ws, p: &Promise) {
 }
 
 /// Qualify in the foreground and say the result. 0 saved, 1 not saved.
-fn finish_foreground(ws: &mut Ws, id: i64, not_saved_code: i32) -> i32 {
-    let r = promise::qualify(ws, id, &say);
+fn finish_foreground(ws: &mut Ws, id: i64, not_saved_code: i32, repro: bool) -> i32 {
+    let r = if repro { crate::findbreak::prove(ws, id, &say) } else { promise::qualify(ws, id, &say) };
     match r {
         Ok(Done::Saved(s)) => {
             let Ok(Some(p)) = promise::get(&ws.conn, id) else { return 1 };
@@ -190,10 +197,11 @@ fn finish_foreground(ws: &mut Ws, id: i64, not_saved_code: i32) -> i32 {
 }
 
 /// `--background`: the same qualification in a detached process (its own process group, so the end of this command does not stop it).
-fn spawn_qualify(id: i64) -> std::io::Result<()> {
+fn spawn_qualify(id: i64, repro: bool) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
-    Command::new(std::env::current_exe()?).args(["promise", "qualify", &id.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(|_| ())
+    let flag: &[&str] = if repro { &["--repro"] } else { &[] };
+    Command::new(std::env::current_exe()?).args(["promise", "qualify", &id.to_string()]).args(flag).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(|_| ())
 }
 
 fn add(args: &[&str]) -> i32 {
@@ -217,36 +225,23 @@ fn add(args: &[&str]) -> i32 {
     if !dash || [o.good, o.turn, o.bad, o.replace].contains(&Some(0)) || (o.good.is_some() && o.turn.is_some()) {
         return usage(U);
     }
+    if o.repro && (o.good.is_some() || o.turn.is_some() || o.bad.is_some()) {
+        return usage(U);
+    }
     let l = match read_check() {
         Ok(l) => l,
         Err(c) => return c,
     };
-    if o.repro {
-        return crate::findbreak::add_repro(&l, o.background, o.replace);
-    }
     let mut ws = match open_here() {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
     };
-    let now = now_ns();
-    let who = match promise::who(&ws.conn, "promise add", now) {
-        Ok(w) => w,
-        Err(e) => return fail_p(&e),
-    };
-    let p = match plan(&ws.conn, &l, &who, "praise", &o, None) {
-        Ok(p) => p,
+    let id = match propose(&mut ws, &l, &o, if o.repro { "repro" } else { "praise" }, "promise add") {
+        Ok(i) => i,
         Err(c) => return c,
     };
-    let key = match Key::load_or_create() {
-        Ok(k) => k,
-        Err(e) => return fail_p(&e),
-    };
-    let id = match insert(&mut ws, &key, &l, &p, now) {
-        Ok(i) => i,
-        Err(e) => return fail_p(&e),
-    };
     if o.background {
-        return match spawn_qualify(id) {
+        return match spawn_qualify(id, o.repro) {
             Ok(()) => {
                 say(&format!("Promise #{id} \"{}\" is being checked in the background. The result shows in the next Torpor line.", promise::clean(&l.spec.name, spec::NAME_MAX)));
                 0
@@ -257,13 +252,32 @@ fn add(args: &[&str]) -> i32 {
             }
         };
     }
-    finish_foreground(&mut ws, id, 1)
+    finish_foreground(&mut ws, id, 1, o.repro)
+}
+
+/// The `proposed` row for a new check, after the cap, the repeated check and the source have been settled (spec 14). `sub` names the
+/// command for the "who ran it" test.
+fn propose(ws: &mut Ws, l: &Linted, o: &Opts, want: &str, sub: &str) -> Code<i64> {
+    let now = now_ns();
+    let who = promise::who(&ws.conn, sub, now).map_err(|e| fail_p(&e))?;
+    let p = plan(&ws.conn, l, &who, want, o, None)?;
+    let key = Key::load_or_create().map_err(|e| fail_p(&e))?;
+    insert(ws, &key, l, &p, now).map_err(|e| fail_p(&e))
+}
+
+/// A repro check from `find-break --check -`: the same row `promise add --repro -` makes.
+pub(crate) fn propose_repro(ws: &mut Ws, l: &Linted) -> Code<i64> {
+    propose(ws, l, &Opts { repro: true, ..Opts::default() }, "repro", "find-break")
 }
 
 /// The detached half of `promise add --background` (not in the help text).
 fn qualify_cmd(args: &[&str]) -> i32 {
-    let [id] = args else { return usage("promise qualify ID") };
-    let Some(id) = num(id) else { return usage("promise qualify ID") };
+    let (id, repro) = match args {
+        [id] => (id, false),
+        [id, "--repro"] => (id, true),
+        _ => return usage("promise qualify ID [--repro]"),
+    };
+    let Some(id) = num(id) else { return usage("promise qualify ID [--repro]") };
     let mut ws = match open_here() {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
@@ -273,7 +287,8 @@ fn qualify_cmd(args: &[&str]) -> i32 {
         Ok(_) => return 0,
         Err(e) => return fail_p(&e),
     }
-    match promise::qualify(&mut ws, id, &|_| {}) {
+    let r = if repro { crate::findbreak::prove(&mut ws, id, &|_| {}) } else { promise::qualify(&mut ws, id, &|_| {}) };
+    match r {
         Ok(Done::Saved(_)) => {
             if let Ok(Some(p)) = promise::get(&ws.conn, id) {
                 after_saved(&mut ws, &p);
@@ -372,7 +387,7 @@ pub fn keep(args: &[&str]) -> i32 {
         Err(e) => return fail_p(&e),
     };
     match insert(&mut ws, &key, &l, &pl, now) {
-        Ok(id) => finish_foreground(&mut ws, id, 4),
+        Ok(id) => finish_foreground(&mut ws, id, 4, false),
         Err(e) => fail_p(&e),
     }
 }

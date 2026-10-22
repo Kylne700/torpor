@@ -247,7 +247,7 @@ pub fn point_name(db: &Connection, id: i64) -> String {
     }
 }
 
-fn good_name(db: &Connection, id: i64) -> String {
+pub(crate) fn good_name(db: &Connection, id: i64) -> String {
     let n = point_name(db, id);
     if n.starts_with("the start") || n.starts_with("the end") { format!("the version from {n}") } else { n }
 }
@@ -374,13 +374,13 @@ pub fn check_tree(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Checked {
     Checked { call, failed_step, reason, assertions, ms, runs }
 }
 
-/// One `promise_runs` row. Kinds follow the spec: create, gate, control, check, bisect, undo, all.
-pub fn record(db: &Connection, promise: i64, kind: &str, tree: Option<&[u8; 32]>, r: &RunResult, now: i64) -> Result<()> {
+/// One `promise_runs` row (`promise` None: a search with a check that was not saved). Kinds follow the spec: create, gate, control, check, bisect, undo, all.
+pub fn record(db: &Connection, promise: impl Into<Option<i64>>, kind: &str, tree: Option<&[u8; 32]>, r: &RunResult, now: i64) -> Result<()> {
     let j = &r.judged;
     let reason = (!j.reason.is_empty()).then(|| clean(&j.reason, 300));
     db.execute(
         "INSERT INTO promise_runs(promise_id,tree_id,kind,verdict,failed_step,reason,assertions_n,token_ok,ms,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![promise, tree.map(|t| t.to_vec()), kind, j.verdict.as_str(), j.failed_step.map(|x| x as i64), reason, j.assertions as i64, j.token_ok as i64, r.ms as i64, now],
+        params![promise.into(), tree.map(|t| t.to_vec()), kind, j.verdict.as_str(), j.failed_step.map(|x| x as i64), reason, j.assertions as i64, j.token_ok as i64, r.ms as i64, now],
     )?;
     Ok(())
 }
@@ -427,7 +427,7 @@ pub enum Done {
     NotSaved(String),
 }
 
-fn not_saved(ws: &mut Ws, id: i64, why: String) -> Result<Done> {
+pub fn not_saved(ws: &mut Ws, id: i64, why: String) -> Result<Done> {
     let at = now_ns();
     write(ws, |w| {
         w.conn.execute("UPDATE promises SET state='dropped', announced=0 WHERE id=?1", [id])?;

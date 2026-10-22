@@ -25,13 +25,13 @@ pub const HELP: &str = "Torpor keeps save points of your project, so you can go 
   torpor promise list      The promises and how far each one is proven (show ID: one promise)\n\
   torpor promise dispute ID \"why\"   Say a promise is wrong; it turns advisory until you decide\n\
   torpor check ID... | --all   Run the checks against the folder as it is now\n\
+  torpor find-break [--check -]   Which turn broke it (the AI writes the check; no check: the files changed since the last 'works')\n\
   torpor promise ok | drop ID    Keep or remove a disputed promise (only you)\n\
   torpor gate on | off     Let promises stop the AI, or not (only you)\n\
   torpor off | on          Stop or resume saving this folder (only you, in your own terminal)\n\
   torpor retain DAYS       Keep save points longer than Claude Code keeps chats (only you)\n\
   torpor forget            Delete the records of this folder; or --all, or --before YYYY-MM-DD (only you)\n\
-  torpor version           Which Torpor this is\n\
-  torpor help              This screen\n";
+  torpor version, torpor help   Which Torpor this is; this screen\n";
 
 pub(crate) fn out(s: &str) {
     let _ = std::io::stdout().write_all(s.as_bytes());
@@ -109,6 +109,7 @@ pub fn run(args: Vec<String>) -> i32 {
         Some("keep") => promise_cmd::keep(&a[1..]),
         Some("check") => promise_cmd::check(&a[1..]),
         Some("gate") => promise_cmd::gate(&a[1..]),
+        Some("find-break") => crate::findbreak::find_break(&a[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             out(&format!("torpor {}\n", crate::version()));
             0
