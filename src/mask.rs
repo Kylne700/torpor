@@ -51,7 +51,7 @@ fn mask_kv(s: &str) -> String {
 }
 
 /// Any run of 16+ chars from [A-Za-z0-9_+=-] holding a letter and a digit becomes [hidden].
-fn mask_runs(s: &str) -> String {
+pub fn mask_runs(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let (mut from, mut i) = (0, 0);

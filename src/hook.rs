@@ -350,6 +350,10 @@ fn begin(cx: &Cx, ups: bool) -> Result<Turn> {
     let notification = prompt.as_deref().is_some_and(|p| p.trim_start().starts_with("<task-notification>"));
     let (origin, preview) = if notification { ("task_notification", None) } else { ("unknown", prompt.as_deref().and_then(mask::prompt_preview)) };
     let new = turn::create(db, sid, &pid, cx.now, preview.as_deref(), origin)?;
+    if let (true, Some(p)) = (ups && !notification, prompt.as_deref()) {
+        // A failed text copy must never stop the turn from starting.
+        let _ = crate::texts::store_prompt(db, new.id, p);
+    }
     let mut points = Vec::new();
     if let Some(o) = &old {
         points.push(PointSpec { kind: PointKind::End, turn_id: Some(o.id), note: None });
@@ -689,6 +693,7 @@ fn read_origin(cx: &Cx, turn: &Turn) -> Result<()> {
     let r = transcript::read_origin(Path::new(&tp), off, pid);
     if let Some(f) = r.found {
         db.execute("UPDATE turns SET origin=?2, origin_by=?3 WHERE id=?1 AND origin IN ('unknown','none')", params![turn.id, f.origin, f.by])?;
+        crate::texts::set_origin(db, turn.id, &f.origin)?;
     }
     db.execute("UPDATE sessions SET transcript_offset=?2 WHERE id=?1", params![cx.session, r.new_offset])?;
     Ok(())

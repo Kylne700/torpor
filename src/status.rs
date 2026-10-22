@@ -338,6 +338,9 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
     if meta_get_i64(db, "thinned_harder_at").is_some_and(|t| now - t < 14 * retention::DAY_NS) {
         r.notes.push("Torpor reached its 2 GB limit for this project and kept fewer old save points.".to_string());
     }
+    if meta_get(db, "texts_off").as_deref() == Some("1") {
+        r.notes.push("Torpor keeps no prompt text because CLAUDE_CODE_SKIP_PROMPT_HISTORY is set, so it has no goal words or constraints.".to_string());
+    }
 
     if mark_seen && (max_id > 0 || max_at > 0) {
         // Best effort: a busy database just means the faults are shown again next time.

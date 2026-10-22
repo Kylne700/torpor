@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub const FORMAT_LINE: &str = "torpor-store 1";
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 /// Compressed blobs up to this size live inline in `blobs.data`; bigger ones are loose files.
 pub const INLINE_MAX: usize = 64 * 1024;
 
-const SCHEMA_SQL: &str = r#"
+const SCHEMA_V1_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, transcript_path TEXT, first_seen INTEGER, last_seen INTEGER, source TEXT, permission_mode TEXT, ended_at INTEGER, end_reason TEXT, transcript_offset INTEGER NOT NULL DEFAULT 0, compact_epoch INTEGER NOT NULL DEFAULT 0, notified_restore_id INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS turns(id INTEGER PRIMARY KEY, n INTEGER NOT NULL UNIQUE, session_id TEXT NOT NULL, prompt_id TEXT, started_at INTEGER, ended_at INTEGER, start_point INTEGER, end_point INTEGER, end_kind TEXT NOT NULL DEFAULT 'open', origin TEXT NOT NULL DEFAULT 'unknown', origin_by TEXT NOT NULL DEFAULT 'none', preview TEXT, bash_count INTEGER NOT NULL DEFAULT 0, background_json TEXT);
 CREATE TABLE IF NOT EXISTS points(id INTEGER PRIMARY KEY, kind TEXT NOT NULL, visible INTEGER NOT NULL DEFAULT 1, session_id TEXT, turn_id INTEGER, tree_id BLOB NOT NULL, parent_id INTEGER, created_at INTEGER NOT NULL, partial INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0, dropped INTEGER NOT NULL DEFAULT 0, note TEXT);
@@ -34,6 +34,23 @@ CREATE INDEX IF NOT EXISTS changes_path ON changes(path);
 CREATE INDEX IF NOT EXISTS points_created ON points(created_at);
 CREATE INDEX IF NOT EXISTS turns_session_prompt ON turns(session_id, prompt_id);
 CREATE INDEX IF NOT EXISTS tool_events_turn ON tool_events(turn_id);
+"#;
+
+/// Schema v2 (spec 13). Added in one transaction on top of v1; no foreign keys, like v1.
+/// `state` (live, disputed, flaky, quarantined, dropped) is separate from `tier` (proposed, advisory, unproven, shadow, blocking) so a dispute keeps the tier it interrupted.
+/// `want_source` is the source a provisional `agent` promise gets when Stop reads the turn's origin. `replaces` marks the one allowed rewrite.
+const SCHEMA_V2_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS texts(turn_id INTEGER PRIMARY KEY, prompt TEXT, origin TEXT NOT NULL DEFAULT 'unknown', redactions INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS constraints(id INTEGER PRIMARY KEY, turn_id INTEGER, text TEXT NOT NULL, polarity TEXT NOT NULL DEFAULT 'do', source TEXT NOT NULL DEFAULT 'prompt', superseded_by INTEGER);
+CREATE TABLE IF NOT EXISTS promises(id INTEGER PRIMARY KEY, name TEXT NOT NULL, why TEXT, source TEXT NOT NULL, tier TEXT NOT NULL DEFAULT 'proposed', state TEXT NOT NULL DEFAULT 'live', spec_id TEXT NOT NULL, good_point INTEGER, bad_point INTEGER, created_turn INTEGER, created_at INTEGER NOT NULL DEFAULT 0, want_source TEXT, announced INTEGER NOT NULL DEFAULT 0, replaces INTEGER, assertions_n INTEGER NOT NULL DEFAULT 0, flake_hat REAL, mutants_killed INTEGER, mutants_tried INTEGER, deps_json TEXT, watched_json TEXT, last_pass_point INTEGER, shadow_days INTEGER NOT NULL DEFAULT 0, catches INTEGER NOT NULL DEFAULT 0, disputes_json TEXT);
+CREATE TABLE IF NOT EXISTS promise_runs(id INTEGER PRIMARY KEY, promise_id INTEGER, tree_id BLOB, kind TEXT NOT NULL, verdict TEXT NOT NULL, failed_step INTEGER, reason TEXT, assertions_n INTEGER NOT NULL DEFAULT 0, token_ok INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS receipts(id INTEGER PRIMARY KEY, session_id TEXT, turn_id INTEGER, at INTEGER NOT NULL DEFAULT 0, selected INTEGER NOT NULL DEFAULT 0, ran INTEGER NOT NULL DEFAULT 0, outcome TEXT NOT NULL DEFAULT 'none');
+CREATE TABLE IF NOT EXISTS gate_chain(session_id TEXT NOT NULL, prompt_id TEXT NOT NULL, promise_id INTEGER NOT NULL, tree_id BLOB, blocks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, prompt_id, promise_id));
+CREATE TABLE IF NOT EXISTS push_log(id INTEGER PRIMARY KEY, session_id TEXT, turn_id INTEGER, compact_n INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL, chars INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, delivered INTEGER);
+CREATE TABLE IF NOT EXISTS bisects(id INTEGER PRIMARY KEY, promise_id INTEGER, spec_id TEXT, states_json TEXT, probes_json TEXT, result TEXT, culprit INTEGER, prob REAL, runs INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS cli_calls(session_id TEXT, prompt_id TEXT, subcommand TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS promise_runs_promise ON promise_runs(promise_id, id);
+CREATE INDEX IF NOT EXISTS cli_calls_at ON cli_calls(at);
 "#;
 
 // ---------------------------------------------------------------- paths
@@ -297,17 +314,24 @@ fn open_db(path: &Path, create: bool) -> Result<Connection> {
     if v > SCHEMA_VERSION {
         return Err(Error::Newer);
     }
+    // A v1 store migrates to v2 on any open (the command line too); an empty database is only made by a hook.
     if v < SCHEMA_VERSION {
-        if !create {
+        if v == 0 && !create {
             return Err(Error::NotFound("schema".into()));
         }
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        // Re-read under the lock: another process may have migrated while this one waited.
         let v2: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        let res = if v2 == 0 {
-            conn.execute_batch(SCHEMA_SQL).and_then(|_| conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}")))
-        } else {
-            Ok(())
-        };
+        let res = (|| {
+            if v2 == 0 {
+                conn.execute_batch(SCHEMA_V1_SQL)?;
+            }
+            if v2 < 2 {
+                conn.execute_batch(SCHEMA_V2_SQL)?;
+                conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+            }
+            Ok::<(), rusqlite::Error>(())
+        })();
         match res {
             Ok(()) => conn.execute_batch("COMMIT")?,
             Err(e) => {

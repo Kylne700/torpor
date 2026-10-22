@@ -40,6 +40,9 @@ pub fn store_bytes(db: &Connection) -> i64 {
     db.query_row("SELECT COALESCE(SUM(stored_size),0) FROM blobs", [], |r| r.get(0)).unwrap_or(0)
 }
 
+/// Points a live promise names stay inside W (spec 13). A query at thinning time, not the `pinned` flag; past W they drop like any point.
+const PROMISE_POINTS: &str = "SELECT good_point FROM promises WHERE state<>'dropped' AND good_point IS NOT NULL UNION SELECT bad_point FROM promises WHERE state<>'dropped' AND bad_point IS NOT NULL UNION SELECT last_pass_point FROM promises WHERE state<>'dropped' AND last_pass_point IS NOT NULL";
+
 /// Drop points by age (spec 2.4). Never the newest point. Returns how many were dropped.
 pub fn thin(db: &Connection, now: i64, w_days: i64, harder: bool) -> Result<usize> {
     let newest: i64 = db.query_row("SELECT COALESCE(MAX(id),0) FROM points", [], |r| r.get(0))?;
@@ -47,11 +50,11 @@ pub fn thin(db: &Connection, now: i64, w_days: i64, harder: bool) -> Result<usiz
     let (keep_all, window) = if harder { (DAY_NS, 7 * DAY_NS) } else { (2 * DAY_NS, w_ns) };
     let mut n = db.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2", params![newest, now - w_ns])?;
     if harder {
-        n += db.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND pinned=0 AND id<>?1 AND created_at<?2", params![newest, now - window])?;
+        n += db.execute(&format!("UPDATE points SET dropped=1 WHERE dropped=0 AND pinned=0 AND id<>?1 AND created_at<?2 AND id NOT IN ({PROMISE_POINTS})"), params![newest, now - window])?;
     }
     n += db.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND kind='tool' AND id<>?1 AND created_at<?2", params![newest, now - keep_all])?;
     // From then on: the last visible, unpinned point of each day.
-    let mut st = db.prepare("SELECT id,created_at FROM points WHERE dropped=0 AND visible=1 AND pinned=0 AND created_at<?1 ORDER BY id")?;
+    let mut st = db.prepare(&format!("SELECT id,created_at FROM points WHERE dropped=0 AND visible=1 AND pinned=0 AND created_at<?1 AND id NOT IN ({PROMISE_POINTS}) ORDER BY id"))?;
     let rows: Vec<(i64, i64)> = st.query_map([now - keep_all], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
     let mut drop_ids: Vec<i64> = Vec::new();
     for (i, (id, at)) in rows.iter().enumerate() {
@@ -67,6 +70,7 @@ pub fn thin(db: &Connection, now: i64, w_days: i64, harder: bool) -> Result<usiz
     // Text goes at W; the metadata rows stay.
     db.execute("UPDATE turns SET preview=NULL WHERE preview IS NOT NULL AND started_at<?1", [now - w_ns])?;
     db.execute("UPDATE tool_events SET cmd_preview=NULL WHERE cmd_preview IS NOT NULL AND at<?1", [now - w_ns])?;
+    db.execute("UPDATE texts SET prompt=NULL WHERE prompt IS NOT NULL AND turn_id IN (SELECT id FROM turns WHERE started_at<?1)", [now - w_ns])?;
     db.execute("UPDATE points SET note=NULL WHERE kind='pre_bash' AND note IS NOT NULL AND created_at<?1", [now - w_ns])?;
     Ok(n)
 }
@@ -199,6 +203,7 @@ pub fn forget_before(ws: &mut Ws, cutoff: i64, now: i64) -> Result<(usize, GcSta
             tx.execute(&format!("DELETE FROM {t} WHERE point_id IN (SELECT id FROM points WHERE dropped=1 AND created_at<?1)"), [cutoff])?;
         }
         tx.execute("UPDATE turns SET preview=NULL WHERE started_at<?1", [cutoff])?;
+        tx.execute("UPDATE texts SET prompt=NULL WHERE turn_id IN (SELECT id FROM turns WHERE started_at<?1)", [cutoff])?;
         tx.execute("UPDATE tool_events SET cmd_preview=NULL,paths_json=NULL WHERE at<?1", [cutoff])?;
         tx.execute("UPDATE points SET note=NULL WHERE id<>?1 AND created_at<?2", params![newest, cutoff])?;
         tx.commit()?;

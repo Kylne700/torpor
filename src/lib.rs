@@ -10,6 +10,7 @@ pub mod retention;
 pub mod scan;
 pub mod status;
 pub mod store;
+pub mod texts;
 pub mod transcript;
 pub mod turn;
 pub mod util;
