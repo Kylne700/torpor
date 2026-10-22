@@ -213,3 +213,87 @@ Measured on the tree of commit b29f09d; later commits change only this file.
 3. Port ownership in the product (S2b.6): pick the port late, retry once when the app exits at once, do not trust a ready probe that a process other than the app answered.
 4. Optional: one rerun to confirm a catch; `sourceRoot`; a measured cold start; one real-AI run in real Claude Code with a promise (an extra ignored test next to `a10_real`) to settle the NOT VERIFIED items, then decide on the README comparison.
 5. Keep: `cargo test` and `cargo test --release` green, the plain-binary size under 12,000,000 bytes, `sh tests/release_ignores_fault_env.sh <binary>`, the privacy script with tree counts at 0, the commit trailers from the brief.
+
+# S2b fixes (after the Opus review of c4f6914)
+
+(Appended by the S2b fix agent. Inputs: scratch/torpor-s2b-review.md (0 high, 4 medium, 6 low; its numbers are used below) and scratch/torpor-s2b-fix-brief.md. Start: c4f6914. Everything above stays as it was, except one line in S2b.6: its NOT VERIFIED note about the restore branch of `a10_run` is outdated, because that branch is gone (review 10).)
+
+## S2b-fix.1 Fixes and their tests
+
+A test "fails before" when it was run on the old code and failed; S2b-fix.2 says which of them were.
+
+| Review | Change | Test | Commit |
+|--------|--------|------|--------|
+| 1 (med) | Stop chain without `prompt_id`: `begin()` (src/hook.rs) reopens the session's newest turn (`newest_of`, src/turn.rs) when an event has no `prompt_id` and no turn is open, so a block continuation no longer starts a fresh `seq-N` turn with a fresh cap. `chain_state` (src/gate.rs) returns a Result: a store error now makes the Stop fail open instead of reading as "0 blocks so far". | tests/gate.rs `a_stop_chain_whose_payloads_have_no_prompt_id_blocks_at_most_twice`; unit `a_chain_that_cannot_be_read_is_an_error_not_zero_blocks` (src/gate.rs) | 47eddd6 |
+| 2 (med) | A FAIL followed by an UNRUNNABLE rerun is `Unrunnable` and the check ends there (src/promise.rs `check_tree_with`); only a PASS after a FAIL is Flaky. One port race or clock cut no longer retires a blocking promise. | tests/gate.rs `a_fail_followed_by_an_unrunnable_rerun_is_not_a_flake_and_the_promise_stays_blocking` | 47eddd6 |
+| 3 (med) | NOT FIXED here, on purpose: the tracked dist/linux-x64/torpor still reports `torpor 2.0.0`, so bin/torpor does not install it and runs the source build in place. The brief keeps dist/ out of reach (the release bot rebuilds it). Rule for the rebuild: build every dist/ binary with `CARGO_TARGET_DIR=target/dist cargo build --release` and run `sh tests/release_ignores_fault_env.sh <binary>` on each; target/release/torpor made by `cargo test --release` is a fault-inject build and must never be copied into dist/. | none | |
+| 4 (med) | README: the event time reads "Oct 26, 12:00 PM GMT-5 (17:00 UTC)"; the sentence about the `pre-event-base` tag is kept. | text only (checked with rg) | fb8001d |
+| 5 (low) | README Limits: new "Network use" bullet (Torpor itself sends HTTP to 127.0.0.1 and to no other host; the app and its start command may use the network); the bullet about rejected environment values and step URLs now says exactly what is rejected and that the start command and the app are not limited; the mode B sentence of spec 30 is in word for word (checked with `rg -F`); "A promise is a small check. It checks that one thing works" replaces "proves one thing works". | text only | fb8001d |
+| 6 (low) | An unverified promise also needs a relevant changed path (src/gate.rs `select`): a README-only turn or a turn without edits runs nothing. The unverified promise keeps its place first in line among the selected ones. | tests/gate.rs `a_check_that_cannot_be_read_is_unverified_and_first_in_line_next_time` (tail changed: a README-only turn and a no-edit turn give the receipt 0/0/none and the promise stays unrun, then a server.js edit runs it) | f4f7a74 |
+| 7 (low) | Scratch copy (src/scratch.rs): once the copy is complete, every saved link that resolves outside it, or to its own root, is removed, so `d/b -> ..` and `d/c -> b/..` are not recreated; before `create_dir_all` for an overlay file, the nearest existing parent folder must be inside the copy. | unit `chained_links_that_lead_out_are_dropped_and_no_folder_is_made_through_one` (src/scratch.rs); tests/scratch_run.rs `chained_links_that_lead_out_of_the_copy_are_not_recreated` | 81fa169 |
+| 8 (low) | Watchdog (src/scratch.rs, src/hook.rs): the process groups of running apps sit in a lock-free table (`LIVE`, 64 slots) next to a counter of spawns in flight; `kill_live_groups()` takes no lock, waits at most 1000 ms (`SPAWN_WAIT_MS`) for spawns that are in flight, then stops every group in the table. `App::spawn` registers the group right after the spawn, before anything can return early. The watchdog calls it right after it wins the output claim, before it logs the fault and writes the fallback. | unit `the_kill_takes_no_lock_waits_for_spawns_in_flight_but_only_so_long` (src/scratch.rs); tests/live_groups.rs `the_watchdog_kill_reaches_a_running_app` | 596286e |
+| 9 (low) | `undo`, `back` and every restore path skip the project's `.claude/settings.json` and `.claude/settings.local.json` and say so in plain words, first in the report. Three layers: the plan (src/restore.rs `Plan::finish`, `is_claude_settings`, `CLAUDE_NOTE`), `apply_entry` (skips them even when an old journal lists them), and `undo` (src/merge.rs `undo_inner` skips them before the conflict analysis, so they can neither be rewritten nor make undo refuse). | tests/restore.rs `claude_code_settings_files_are_never_rewritten_and_the_report_names_them`; tests/undo.rs `claude_code_settings_files_are_never_touched_by_undo_and_never_make_it_refuse`; unit `claude_settings_files_leave_every_plan_and_are_said_first` and `applying_skips_a_claude_settings_file_even_from_an_old_journal` (src/restore.rs) | ae9fb05 |
+| 10 (low) | The A10 tests no longer touch the tracked dist/: tests/a10_real.rs runs `claude` on a temp COPY of the plugin (`common::plugin_copy`, tests/common/mod.rs: .claude-plugin, bin, hooks, skills, and the binary at dist/<platform>/torpor). Chosen instead of a Drop guard: there is no panic window at all and nothing to restore. | tests/a10_real.rs `the_plugin_copy_holds_the_binary_and_the_committed_dist_is_left_alone` (runs without Claude) | ae6be5b |
+| (extra) | A10-block harness: tests/a10_block.rs, three `#[ignore]` tests (free rehearsal, the one real run, report of a kept run). Result in S2b-fix.4. | `a10_block_seed` (rehearsal, passed) | eadbdfd |
+
+## S2b-fix.2 Before and after
+
+Each test below was run on the old code and failed there; the fix made it pass (final runs in S2b-fix.3).
+- Reviews 1, 2, 6: the c4f6914 tree (git archive into a temp folder, not in the repo) plus the new tests/gate.rs, `cargo test --test gate` with the three names: 3 failed. Review 1: "a third block in the same chain" (the third Stop of one chain still blocked). Review 2: the receipt read `1/1/flaky`, the promise was retired as a flake. Review 6: the receipt of a README-only turn read `1/1/ok` instead of `0/0/none` (the unverified promise ran anyway).
+- Review 7: the unit test and the tests/scratch_run.rs test both panicked on the old code.
+- Review 8: on the old code a temporary test (not kept), which held `LIVE.lock()` while the watchdog fired, failed with "the watchdog did not reach the group while another thread held LIVE".
+- Review 9: with the old src/restore.rs and src/merge.rs put back for one run (then restored byte for byte), the `back` test planned "Would change 4 files ... (.claude/settings.local.json)" and the undo test said "Can't undo turn 1 cleanly".
+- Review 10 and the A10-block harness: no before-run (new test helpers; the rehearsal and the real run are their check). Reviews 4 and 5 are README text, checked with rg.
+
+## S2b-fix.3 Final checks (run once, on the last code commit eadbdfd; the commit of these notes changes no code)
+
+| Command | Result |
+|---------|--------|
+| `cargo test --no-fail-fast` | exit 0: 298 passed, 0 failed, 6 ignored in 32 `test result:` lines (31 test binaries and the doc-test run); no warnings |
+| `cargo test --release --no-fail-fast` | exit 0: 298 passed, 0 failed, 6 ignored in the same 32 lines (this build has the fault-inject feature) |
+| the 6 ignored (both runs) | `a10_block` x3 (rehearsal, the real run, the report), `a10_real` x2 (real Claude Code), `a5_latency` x1 (quiet machine); all are run by hand |
+| `CARGO_TARGET_DIR=target/dist cargo build --release` | target/dist/release/torpor: 7,650,536 bytes (limit 12,000,000), `torpor 2.1.0` |
+| `sh tests/release_ignores_fault_env.sh target/dist/release/torpor` | ok: ignores TORPOR_TEST_PANIC, TORPOR_TEST_SLEEP_MS, TORPOR_TEST_FREE_BYTES, TORPOR_FAULT=capture and TORPOR_FAULT=restore (hook took 0 s) |
+| `git status --short dist` | empty: the tracked dist/ is unchanged |
+| privacy script (scratch/gitlab-build1/privacy.sh, counts only) | tree files with denylist hits 0; files with a home path 0; HEAD message hits 0; history lines 2 (the known two); 55 commits. Key-like pattern files 8, tree emails 12 and placeholder-pattern files 2 are the same as on the c4f6914 tree (the second placeholder file is this notes file, which names the pattern) |
+| the 8 commits of this part | no home path, no email other than the noreply ones, all by the per-repo identity |
+
+Against the S2b numbers above (286 passed, 0 failed, 3 ignored in 30 `test result:` lines): +12 passing are the new tests of S2b-fix.1 (gate 2, scratch_run 1, live_groups 1, restore 1, undo 1, a10_real 1, unit tests in src: gate 1, scratch 2, restore 2), +2 binaries (a10_block, live_groups), +3 ignored (a10_block). The A10-block commands (not part of `cargo test`):
+- `CARGO_TARGET_DIR=target/dist cargo build --release`, then `TMPDIR=/tmp/claude-1000 cargo test --test a10_block a10_block_seed -- --ignored --exact --nocapture` (free rehearsal, passed in 7.3 s);
+- `TMPDIR=/tmp/claude-1000 TORPOR_A10_BIN=target/dist/release/torpor cargo test --test a10_block a10_block_run -- --ignored --exact --nocapture` (the one real run, S2b-fix.4);
+- `TORPOR_A10_DIR=<the kept folder under /tmp> cargo test --test a10_block a10_block_report -- --ignored --exact --nocapture` (free).
+
+## S2b-fix.4 The A10-block run (the one real Claude Code run)
+
+How: `a10_block_run` seeds a synthetic project under /tmp (the login promise made blocking; a project-local hook that writes every UserPromptSubmit and Stop payload to payloads.txt next to the project), copies the plugin with the plain binary (`target/dist/release/torpor`, `torpor 2.1.0`), and runs `claude -p --model haiku --plugin-dir <copy> --allowedTools Bash,Edit,Write,Read --max-budget-usd 0.50 --strict-mcp-config --mcp-config '{"mcpServers":{}}' --output-format json` once (600 s timeout, every `CLAUDE*` variable except CLAUDE_CONFIG_DIR removed from the environment). The free rehearsal `a10_block_seed` passed first (7.3 s). The folder was kept under /tmp, not in the repo; `a10_block_report` prints the report from it again at no cost. The run used up the one allowed real run; do not repeat it without asking.
+
+Result (the five items the brief asked for):
+- Stop blocked: yes, twice. The text, identical both times (from the transcript's `hook_blocking_error`): `Torpor: promise #1 "login works" (the user's words, turn 3) fails now. Failing step: after sign-in the account data shows. It failed 3 of 3 fresh runs and still passes on the saved working version. Changed since it last passed: server.js (turn 4). Fix the app, not the check, and do not special-case test values. If this promise is wrong or outdated run `torpor promise dispute 1 "<why>"`; it asks the user instead of you.`
+- Same prompt_id on the continuations: yes. The UserPromptSubmit payload and all 3 Stop payloads carry one `prompt_id` in one session; `stop_hook_active` was false, true, true. The store has one new turn (turn 4) and one gate_chain row with blocks=2. (So the `seq-N` path of review 1 did not occur with real Claude Code; that fix guards a case this run did not show.)
+- Chain stopped after 2 blocks: yes. 3 Stop events; the receipts of turn 4 read block, block, unresolved. The third Stop was allowed with the notice "save point 10, turn 4 changed 1 file (1 edit), undo it: torpor undo 4" and "promise #1 (login works) failed after this turn (3 of 3 runs; it passed on the version from the start of turn 3). The AI was not stopped." Promise runs since the seed: gate FAIL x3, control PASS, gate FAIL x3, control PASS, gate FAIL x3. The tier stayed blocking; no faults.
+- Cost: total_cost_usd 0.00755067 (notional, a Max subscription run). Claude: exit 0 after 37 s, subtype success, is_error false, 10 turns, no permission denials.
+- permission_mode: "auto" in all four payloads. README already says what auto means (Torpor blocks risky commands instead of asking); no such command ran.
+- Harness verdict line: `stop_events=3 blocks=2 same_prompt_id=true cap_held=true`.
+- Also seen: the PostToolUse hint after the Edit ("Torpor: edit touches promise #1; `torpor check 1` before finishing"). Real Claude Code facts for later work: hook payloads carry `prompt_id`; a Stop continuation after a block keeps it; the block text reaches the AI as an attachment of type `hook_blocking_error`, the notice of an allowed Stop as `hook_success` with `hook_system_message`, and a PostToolUse hint as `hook_additional_context`.
+
+Caveats:
+- Torpor blocks a second time only when the project tree changed since the last block (`chain_open` in src/gate.rs). So the prompt tells haiku to add one comment line to server.js after each report; without that it would have been blocked once and let go at the second Stop. The run shows the cap (2 blocks, then the AI is let go), not what an AI does on its own.
+- The first print of the harness said `same_prompt_id=false`: my parser counted the blank line after each payload as an event. Fixed in eadbdfd (blank lines are skipped) and re-checked on the kept folder with `a10_block_report` (true). The run was not repeated. The kept folder's seed.txt was written by hand from the store (the first run predates that file).
+- One run, one model (haiku), one machine, one Claude Code version; it says nothing about other models.
+
+## S2b-fix.5 Choices, deviations and a spec contradiction
+
+- Spec 18 contradicts itself (review 6): "Nothing selected (only README, docs or tests changed, or no edits) -> nothing runs and nothing is printed" against "Not finished = 'unverified', which gets top priority at the next Stop". Choice: the relevance filter comes first (B2 also says a README-only diff runs nothing); "top priority" orders the promises that were selected, and an unverified promise is always picked once a relevant path changed (it skips the overlap test). If the lead wants an unverified promise to run on every Stop, the filter must let it through, and README-only turns then cost runs.
+- Review 8, deviation from the brief's wording: the brief asks the kill to reach groups while another thread holds LIVE, with a bounded wait. There is no lock now (a lock-free table), so nothing can be held or poisoned; the only wait is the 1000 ms for a spawn that is in flight. A 65th app at once is stopped and refused with "too many apps are running at once"; a run holds a few apps at most (shortcut: 64 slots, raise if parallel runs grow). The watchdog now kills before it logs the fault and writes the fallback; it still fires at 30 s, the kill adds at most about 1 s, the hook timeout is 45 s. Ctrl-C of `torpor check` stays a README limit, as the brief says.
+- Review 7: links that end inside a linked dependency folder stay (a linked node_modules still works); links that resolve to the copy's own root are dropped too; dangling and looping links are kept (marked `shortcut:` in src/scratch.rs: upgrade if one ever does harm).
+- Review 9: the skip also covers an old journal (an older Torpor's journal cannot make a new one write them), and a skipped Claude Code settings file is not counted as a failure (the exit code stays 0). An empty `.claude` folder may still be planned as a Mkdir (harmless: its files are never written).
+- Review 10: temp copy of the plugin, not a Drop guard (see the table).
+- CI hand-off (scratch/torpor-s2b-ci.md): the A6 `maintenance.auto=false` fix is in since 332447d (noted at the top of S2b); nothing else is pending from it.
+
+## S2b-fix.6 Open problems and NOT VERIFIED
+
+- Review 3 is open on purpose: the tracked dist/linux-x64/torpor reports 2.0.0 until the release bot rebuilds it (plain build, then the env script, see the table). The darwin and arm64 binaries were not looked at.
+- NOT VERIFIED: `a10_run` (the older real run, tests/a10_real.rs) was not run by me and cannot be; it compiles, its Claude-free test passes, and the plugin-copy step it uses ran for real inside `a10_block_run`.
+- NOT VERIFIED: GitHub Actions on these commits (the lead pushes), Windows, and any Claude Code version other than the one of the A10-block run; no payload without `prompt_id` was ever seen from real Claude Code.
+- skills/torpor/SKILL.md still says "A promise is a small check that proves one thing works." (README was fixed; the brief did not list SKILL.md). Change it to "checks that one thing works" with the next edit.
+- Still true from S2b.7 (next steps for S2c): DOM runner and `torpor runner install`, undo with checks, port ownership in the product.
