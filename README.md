@@ -8,7 +8,7 @@ Torpor is built by an AI coding agent team (Claude Code) working for its author,
 
 ## Pre-event declaration
 
-Torpor's engine (save points, undo, find-break and promise checks) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts (Oct 26, 12:00 PM ET). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo, recovery, find-break and promise checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
+Torpor's engine (save points, undo, find-break and promise checks) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo, recovery, find-break and promise checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
 
 ## What it does today
 
@@ -107,7 +107,7 @@ Exit codes: 0 done, 1 error, 2 wrong command line, 3 refused (also a check that 
 
 ## Promises and the gate
 
-A promise is a small check that proves one thing works, for example "sign-in is accepted, then the account data shows". Your AI writes the check, because Torpor makes no AI model calls. Torpor rejects a check it does not understand, and it never repairs one.
+A promise is a small check. It checks that one thing works, for example "sign-in is accepted, then the account data shows". Your AI writes the check, because Torpor makes no AI model calls. Torpor rejects a check it does not understand, and it never repairs one.
 
 **How Torpor trusts a check.** Torpor runs a new check 5 times on the version you called good. All 5 must pass. Then it looks for an earlier version where the check fails twice in a row. If it finds one, the promise is proven: the check passes on the working version and fails on the broken one. If it finds none, the check is kept as a guard, not proven, and Torpor says so.
 
@@ -154,14 +154,15 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **Two sessions in one folder** can edit the same file. Torpor marks such changes as shared and `torpor undo` leaves them alone.
 - **Empty folders** that were removed are not brought back by `undo`, unless a saved file lived in them.
 - **Files outside the project folder are not covered.**
-- **A promise's start command runs on your computer.** At each check, Torpor runs the command written in the check (for example `node server.js`) in a scratch copy of your project, with HOME set to a temporary folder and your `.env` files left out. Treat a check like a test script you approved. Torpor rejects a check that points to a host other than this computer.
+- **A promise's start command runs on your computer.** At each check, Torpor runs the command written in the check (for example `node server.js`) in a scratch copy of your project, with HOME set to a temporary folder and your `.env` files left out. Treat a check like a test script you approved. Torpor rejects a check whose environment values or step URLs point to a host other than this computer. It does not limit the start command or the app: they can use the network and files outside the scratch copy.
+- **Network use.** Torpor itself sends HTTP to 127.0.0.1 and to no other host. The app and its start command may use the network.
 - **If Torpor is killed during a check, the app it started may keep running.** Torpor does not look for it on a later run.
 - **Find-break assumes that once a check breaks, it stays broken.** If a turn in between made the app work again, the answer can be wrong, or Torpor says it could not decide.
 - **Page (browser) steps cannot run yet.** A check made of clicks and typing is not saved. Checks use the app's own HTTP routes.
 - **A passing check does not prove the app is right.** It says that one thing worked when it ran.
 - **Torpor cannot know what a check was meant to test.** It checks that the check uses words from yours and that it fails when part of the fix is undone. A check that fails at random can pass its proof by luck, and Torpor calls a check flaky (advisory, never stops the AI) when it has seen it pass and fail on the same version, not before. To stop the AI, a check must fail 3 fresh runs in a row while it still passes on the last version that worked. That makes a false stop rare, not impossible.
 - **Slow apps cannot stop the AI.** At the end of a turn Torpor has 30 seconds, and its checks get up to 20 of them. An app that starts or answers slower than that has its check cut off, and the turn ends.
-- **The AI that wrote a check knows what is in it.** Torpor hides the stored check from the AI, which protects later sessions, not the one that wrote it.
+- **The AI that wrote a check knows what is in it.** Torpor hides the stored check from the AI. This version runs in mode B (your own coding agent writes the checks), and in mode B, the agent that wrote a check knows its source for that session, so hiding it protects only later sessions.
 - **The record of which files an app ran works for Node apps.** For other apps, a promise runs after every turn that changes a file other than docs and tests.
 - **Built for Claude Code.** Other tools are not supported.
 - **Windows is not supported yet.** Torpor is built and tested on Linux. The macOS and static Linux builds are made by the project's CI and have not been run by hand. Behavior in a normal interactive Claude Code session (the permission prompt for commands that reach outside) has not been checked by hand yet.
