@@ -38,7 +38,33 @@ pub struct Report {
     pub retain_days: i64,
     /// The reach comes from `torpor retain`, not from Claude Code's setting.
     pub retain_custom: bool,
+    pub promises: PromiseStats,
     pub now: i64,
+}
+
+/// The promises that count (not dropped, not still being qualified): how many, how many passed last time, how many failures they caught.
+#[derive(Default)]
+pub struct PromiseStats {
+    pub total: usize,
+    pub ok: usize,
+    pub caught: i64,
+    /// (label, count) in the order blocking, shadow, advisory, guard only.
+    pub tiers: Vec<(&'static str, usize)>,
+}
+
+fn promise_stats(db: &Connection) -> Result<PromiseStats> {
+    let mut s = PromiseStats::default();
+    let mut counts = [0usize; 4];
+    for p in crate::promise::all(db, false)?.iter().filter(|p| p.tier != "proposed") {
+        s.total += 1;
+        s.caught += p.catches;
+        s.ok += crate::promise::last_run(db, p.id).is_some_and(|(v, _)| v == "PASS") as usize;
+        if let Some(i) = ["blocking", "shadow", "advisory", "unproven"].iter().position(|t| *t == p.tier) {
+            counts[i] += 1;
+        }
+    }
+    s.tiers = ["blocking", "shadow", "advisory", "guard only"].into_iter().zip(counts).filter(|(_, n)| *n > 0).collect();
+    Ok(s)
 }
 
 struct Fault {
@@ -275,6 +301,8 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
         r.last_turn = Some(LastTurn { n: tn, preview, edits, shell, sub });
     }
 
+    r.promises = promise_stats(db)?;
+
     // Not saved: what the newest save point could not take.
     let newest_id: Option<i64> = db.query_row("SELECT MAX(id) FROM points WHERE dropped=0", [], |x| x.get(0)).optional()?.flatten();
     if let Some(pid) = newest_id {
@@ -406,6 +434,10 @@ pub fn render(r: &Report) -> String {
         (Some(old), Some(new)) => o.push_str(&format!("Save points: {} (oldest {}), last one {}, using {}.\n", r.points, local_stamp(old, r.now), ago(r.now, new), human_bytes(r.bytes.max(0) as u64))),
         _ => o.push_str("Save points: none yet.\n"),
     }
+    if r.promises.total > 0 {
+        let tiers: Vec<String> = r.promises.tiers.iter().map(|(t, n)| format!("{n} {t}")).collect();
+        o.push_str(&format!("Promises: {} ({}) · caught {}\n", r.promises.total, tiers.join(", "), r.promises.caught));
+    }
     if let Some(t) = &r.last_turn {
         let total = t.edits + t.shell + t.sub;
         let what = match &t.preview {
@@ -485,5 +517,6 @@ pub fn to_json(r: &Report) -> Value {
         "not_saved_total": r.not_saved_total,
         "problems": r.problems,
         "notes": r.notes,
+        "promises": {"total": r.promises.total, "ok": r.promises.ok, "caught": r.promises.caught, "tiers": r.promises.tiers.iter().map(|(t, n)| json!({"tier": t, "n": n})).collect::<Vec<_>>()},
     })
 }

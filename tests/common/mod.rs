@@ -58,6 +58,7 @@ impl Out {
         v.get("systemMessage")
             .or_else(|| v.pointer("/hookSpecificOutput/additionalContext"))
             .or_else(|| v.pointer("/hookSpecificOutput/permissionDecisionReason"))
+            .or_else(|| v.get("reason"))
             .and_then(|x| x.as_str())
             .unwrap_or("")
             .to_string()
@@ -107,29 +108,44 @@ pub fn run_cmd(mut c: Command, stdin: &[u8]) -> Out {
     }
 }
 
-// ---------------------------------------------------------------- output contract (spec 3.3)
+// ---------------------------------------------------------------- output contract (spec 3.3, S2 section 12)
 
-fn has_forbidden(v: &Value) -> Option<String> {
+fn has_forbidden(v: &Value, event: &str, top: bool) -> Option<String> {
     match v {
         Value::Object(m) => {
             for (k, x) in m {
-                if ["decision", "continue", "suppressOutput", "stopReason"].contains(&k.as_str()) {
+                if ["continue", "suppressOutput", "stopReason"].contains(&k.as_str()) {
                     return Some(format!("key {k}"));
                 }
-                if let Some(f) = has_forbidden(x) {
+                // The one block there is: a Stop hook that stops the AI (S2 gate). Nothing else may carry a decision.
+                if k == "decision" && !(top && event == "Stop" && x.as_str() == Some("block")) {
+                    return Some(format!("key {k}"));
+                }
+                if let Some(f) = has_forbidden(x, event, false) {
                     return Some(f);
                 }
             }
             None
         }
-        Value::Array(a) => a.iter().find_map(has_forbidden),
+        Value::Array(a) => a.iter().find_map(|x| has_forbidden(x, event, false)),
         Value::String(s) if s == "allow" => Some("value \"allow\"".into()),
         _ => None,
     }
 }
 
+/// Every line of a message Torpor says starts with "Torpor" (the user must see who is talking).
+fn assert_torpor_lines(event: &str, what: &str, s: &str) {
+    assert!(s.chars().count() < 10_000, "{event}: {what} too long");
+    for l in s.lines() {
+        assert!(l.starts_with("Torpor"), "{event}: {what} line does not start with Torpor: {l}");
+    }
+    assert!(!s.is_empty(), "{event}: empty {what}");
+}
+
 /// Panics when a hook answer breaks the contract: one JSON object at most, allowed keys for this event, no
-/// `allow`, strings under 10,000 characters, Stop line within 160, nothing on stderr, exit 0.
+/// `allow`, strings under 10,000 characters, the first Stop line within 160, nothing on stderr, exit 0.
+/// Allowed: Stop `systemMessage` (lines) or the block `decision`+`reason`; UserPromptSubmit and SessionStart
+/// `additionalContext` (and a `systemMessage` for the user); PostToolUse `additionalContext`; PreToolUse deny or ask.
 pub fn check_contract(event: &str, o: &Out) {
     assert_eq!(o.code, 0, "{event}: exit code {} (stderr: {})", o.code, o.stderr);
     assert!(o.stderr.is_empty(), "{event}: wrote to stderr: {}", o.stderr);
@@ -139,13 +155,14 @@ pub fn check_contract(event: &str, o: &Out) {
     assert!(o.stdout.ends_with('\n') && o.stdout.matches('\n').count() == 1, "{event}: stdout is not one line: {:?}", o.stdout);
     let v: Value = serde_json::from_str(o.stdout.trim_end()).unwrap_or_else(|e| panic!("{event}: stdout is not JSON ({e}): {:?}", o.stdout));
     let obj = v.as_object().unwrap_or_else(|| panic!("{event}: stdout is not an object"));
-    if let Some(f) = has_forbidden(&v) {
+    if let Some(f) = has_forbidden(&v, event, true) {
         panic!("{event}: forbidden output ({f}): {}", o.stdout);
     }
     let keys: BTreeSet<&str> = obj.keys().map(|k| k.as_str()).collect();
     let allowed: &[&str] = match event {
-        "UserPromptSubmit" | "PreToolUse" => &["hookSpecificOutput"],
-        "SessionStart" | "Stop" => &["systemMessage"],
+        "PreToolUse" | "PostToolUse" | "PostToolUseFailure" => &["hookSpecificOutput"],
+        "UserPromptSubmit" | "SessionStart" => &["hookSpecificOutput", "systemMessage"],
+        "Stop" => &["systemMessage", "decision", "reason"],
         _ => &[],
     };
     for k in &keys {
@@ -153,11 +170,20 @@ pub fn check_contract(event: &str, o: &Out) {
     }
     if let Some(s) = obj.get("systemMessage") {
         let s = s.as_str().expect("systemMessage is a string");
-        assert!(s.chars().count() < 10_000, "{event}: systemMessage too long");
-        assert!(s.starts_with("Torpor"), "{event}: message does not start with Torpor: {s}");
+        assert_torpor_lines(event, "systemMessage", s);
         if event == "Stop" {
-            assert!(s.chars().count() <= 160, "Stop line over 160 characters: {s}");
+            let first = s.lines().next().unwrap_or("");
+            // The save-point line keeps the spec's 160; a promise note carries a reason of its own (a few hundred characters at most).
+            let note = ["Torpor: promise #", "Torpor: new promise #", "Torpor: the AI disputes promise #"].iter().any(|p| first.starts_with(p));
+            let max = if note { 700 } else { 160 };
+            assert!(first.chars().count() <= max, "Stop line over {max} characters: {first}");
         }
+    }
+    // A block comes with its reason and nothing else; a reason never comes alone.
+    assert_eq!(keys.contains("decision"), keys.contains("reason"), "{event}: decision and reason go together: {}", o.stdout);
+    if let Some(r) = obj.get("reason") {
+        assert_torpor_lines(event, "reason", r.as_str().expect("reason is a string"));
+        assert!(!keys.contains("systemMessage"), "{event}: a block carries only its reason: {}", o.stdout);
     }
     if let Some(h) = obj.get("hookSpecificOutput") {
         let h = h.as_object().expect("hookSpecificOutput is an object");
@@ -172,7 +198,8 @@ pub fn check_contract(event: &str, o: &Out) {
             let r = h.get("permissionDecisionReason").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("PreToolUse: no reason in {}", o.stdout));
             assert!(r.chars().count() < 10_000 && r.starts_with("Torpor"), "PreToolUse: bad reason {r}");
         } else {
-            assert!(h.get("additionalContext").and_then(|x| x.as_str()).is_some_and(|r| r.chars().count() < 10_000));
+            let c = h.get("additionalContext").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("{event}: no additionalContext in {}", o.stdout));
+            assert!(c.chars().count() < 10_000 && c.starts_with("Torpor"), "{event}: bad additionalContext {c}");
         }
     }
 }

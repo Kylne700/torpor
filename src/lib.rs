@@ -1,10 +1,13 @@
 pub mod capture;
 pub mod cli;
 pub mod destructive;
+pub mod findbreak;
 pub mod history;
 pub mod hook;
 pub mod mask;
 pub mod merge;
+pub mod promise;
+pub mod promise_cmd;
 pub mod restore;
 pub mod runner;
 pub mod retention;

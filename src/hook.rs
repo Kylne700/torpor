@@ -4,7 +4,7 @@ use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
 use crate::destructive::{self, Verdict};
-use crate::{mask, restore, retention, scan, transcript};
+use crate::{mask, promise, restore, retention, scan, transcript, vault};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::cell::Cell;
@@ -407,7 +407,28 @@ fn session_start(cx: &Cx) -> Result<Option<Value>> {
     if let Some(n) = lost_key_files(db) {
         problems.push(format!("{n} secret file{} saved earlier can't be restored: their key file is gone.", if n == 1 { "" } else { "s" }));
     }
+    // A changed vault is the more serious notice (spec 13); it never blocks.
+    if let Some(n) = vault_notice(cx, false) {
+        return Ok(Some(sys_message(&n)));
+    }
     Ok(problems.first().map(|p| sys_message(&format!("Torpor: {p}"))))
+}
+
+/// Spec 13: the promise vault against its chain. `once`: a mismatch is told one time (Stop); SessionStart tells it every time.
+fn vault_notice(cx: &Cx, once: bool) -> Option<String> {
+    let found = guarded(cx, || Ok(vault::verify(cx.ws, Key::load()?.as_ref()).notice()))?;
+    let db = cx.db;
+    let Some(n) = found else {
+        guarded(cx, || Ok(db.execute("DELETE FROM meta WHERE key='vault_notice'", [])?));
+        return None;
+    };
+    if once {
+        if meta_get(db, "vault_notice").as_deref() == Some(n.as_str()) {
+            return None;
+        }
+        guarded(cx, || meta_set(db, "vault_notice", &n));
+    }
+    Some(n)
 }
 
 /// Secret blobs whose key is not the current key file's: (count) or None when there are none.
@@ -620,7 +641,21 @@ fn pre_tool(cx: &Cx) -> Result<Option<Value>> {
     if cx.verdict == Verdict::Save {
         pre_bash_point(cx, &turn);
     }
+    if cx.p.s("tool_name").as_deref() == Some("Bash") {
+        if let Some(cmd) = cx.p.input_str("command") {
+            guarded(cx, || note_cli_calls(cx.db, &cx.session, &turn, &cmd, cx.now));
+        }
+    }
     Ok(None)
+}
+
+/// Spec 12, "Who ran a CLI command": the `torpor` commands the AI is about to run, so the CLI can tell the AI from the user (10 s window).
+fn note_cli_calls(db: &Connection, session: &str, turn: &Turn, cmd: &str, now: i64) -> Result<()> {
+    for sub in destructive::torpor_calls(cmd) {
+        db.execute("INSERT INTO cli_calls(session_id,prompt_id,subcommand,at) VALUES(?1,?2,?3,?4)", params![session, turn.prompt_id, sub, now])?;
+    }
+    db.execute("DELETE FROM cli_calls WHERE at<?1", [now - 3600 * NS_PER_SEC])?;
+    Ok(())
 }
 
 fn exit_code_of(error: &str) -> Option<i64> {
@@ -677,25 +712,43 @@ fn stop(cx: &Cx, failed: bool) -> Result<Option<Value>> {
     let bg = cx.p.v.get("background_tasks").filter(|v| v.as_array().is_some_and(|a| !a.is_empty())).map(|v| v.to_string());
     turn::close(db, turn.id, if failed { "failed" } else { "stop" }, end_pt, cx.now, bg.as_deref())?;
     guarded(cx, || read_origin(cx, &turn));
-    if failed || end_pt.is_none() || meta_get(db, "quiet").as_deref() == Some("1") {
-        return Ok(None);
+    guarded(cx, || promise::upgrade_sources(db, &turn));
+    // Promise lines (spec 14) are about the AI's promises, so `quiet` does not hide them and a turn that changed nothing still gets them.
+    let mut lines: Vec<String> = Vec::new();
+    if !failed {
+        lines.extend(vault_notice(cx, true));
+        lines.extend(guarded(cx, || promise::stop_notes(db, cx.now)).unwrap_or_default());
+        for l in &lines {
+            let chars = l.chars().count() as i64;
+            guarded(cx, || Ok(db.execute("INSERT INTO push_log(session_id,turn_id,kind,chars,tokens,delivered) VALUES(?1,?2,'notice',?3,?4,1)", params![sid, turn.id, chars, (chars + 3) / 4])?));
+        }
     }
-    let line = stop_line(db, &turn, end_pt.unwrap_or(0))?;
-    Ok(line.map(|l| sys_message(&l)))
+    if !failed && end_pt.is_some() && meta_get(db, "quiet").as_deref() != Some("1") {
+        if let Some(l) = stop_line(db, &turn, end_pt.unwrap_or(0))? {
+            lines.insert(0, l);
+        }
+    }
+    Ok((!lines.is_empty()).then(|| sys_message(&lines.join("\n"))))
 }
 
 fn read_origin(cx: &Cx, turn: &Turn) -> Result<()> {
-    let db = cx.db;
-    let row: Option<(Option<String>, i64)> = db.query_row("SELECT transcript_path,transcript_offset FROM sessions WHERE id=?1", [&cx.session], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+    read_origin_for(cx.db, &cx.session, cx.p.s("transcript_path"), turn, true)
+}
+
+/// Spec 4.4: who started `turn`, read from the session's own transcript. The CLI runs it mid-turn too (`save_offset` false: only Stop moves the offset).
+pub fn read_origin_for(db: &Connection, session: &str, hook_tp: Option<String>, turn: &Turn, save_offset: bool) -> Result<()> {
+    let row: Option<(Option<String>, i64)> = db.query_row("SELECT transcript_path,transcript_offset FROM sessions WHERE id=?1", [session], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
     let Some((tp, off)) = row else { return Ok(()) };
-    let Some(tp) = tp.or_else(|| cx.p.s("transcript_path")) else { return Ok(()) };
+    let Some(tp) = tp.or(hook_tp) else { return Ok(()) };
     let pid = turn.prompt_id.as_deref().filter(|p| !p.starts_with("seq-"));
     let r = transcript::read_origin(Path::new(&tp), off, pid);
     if let Some(f) = r.found {
         db.execute("UPDATE turns SET origin=?2, origin_by=?3 WHERE id=?1 AND origin IN ('unknown','none')", params![turn.id, f.origin, f.by])?;
         crate::texts::set_origin(db, turn.id, &f.origin)?;
     }
-    db.execute("UPDATE sessions SET transcript_offset=?2 WHERE id=?1", params![cx.session, r.new_offset])?;
+    if save_offset {
+        db.execute("UPDATE sessions SET transcript_offset=?2 WHERE id=?1", params![session, r.new_offset])?;
+    }
     Ok(())
 }
 

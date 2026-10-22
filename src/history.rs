@@ -257,6 +257,7 @@ fn point_texts(db: &Connection, where_sql: &str, arg: i64) -> Result<Vec<(i64, S
             ("end", _) => "end".to_string(),
             ("pre_bash", Some(n)) if !n.trim().is_empty() => format!("before {}", if n.chars().count() > 50 { format!("{}…", trunc_chars(&n, 50)) } else { n }),
             ("pre_bash", _) => "before a shell command".to_string(),
+            ("keep", Some(n)) if !n.trim().is_empty() => format!("kept \"{}\"", trunc_chars(&n, 50)),
             (k, _) => k.replace('_', " "),
         };
         out.push((id, kind, text));

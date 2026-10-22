@@ -3,7 +3,7 @@
 use crate::restore::{self, Target};
 use crate::store::*;
 use crate::util::*;
-use crate::{capture, destructive, history, hook, merge, retention, scan, status};
+use crate::{capture, destructive, history, hook, merge, promise_cmd, retention, scan, status};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -20,27 +20,34 @@ pub const HELP: &str = "Torpor keeps save points of your project, so you can go 
   torpor statusline        One line for Claude Code's status bar (see the README)\n\
   torpor gc                Free space used by old save points\n\
   torpor quiet on|off      Show or hide the line Torpor prints after each turn\n\
+  torpor keep \"words\"      Save a version you want to come back to (--check - adds a promise)\n\
+  torpor promise add -     Save a check that proves something works (the AI writes it; read from stdin)\n\
+  torpor promise list      The promises and how far each one is proven (show ID: one promise)\n\
+  torpor promise dispute ID \"why\"   Say a promise is wrong; it turns advisory until you decide\n\
+  torpor check ID... | --all   Run the checks against the folder as it is now\n\
+  torpor promise ok | drop ID    Keep or remove a disputed promise (only you)\n\
+  torpor gate on | off     Let promises stop the AI, or not (only you)\n\
   torpor off | on          Stop or resume saving this folder (only you, in your own terminal)\n\
   torpor retain DAYS       Keep save points longer than Claude Code keeps chats (only you)\n\
   torpor forget            Delete the records of this folder; or --all, or --before YYYY-MM-DD (only you)\n\
   torpor version           Which Torpor this is\n\
   torpor help              This screen\n";
 
-fn out(s: &str) {
+pub(crate) fn out(s: &str) {
     let _ = std::io::stdout().write_all(s.as_bytes());
 }
 
-fn err(s: &str) {
+pub(crate) fn err(s: &str) {
     let _ = std::io::stderr().write_all(s.as_bytes());
 }
 
-fn usage(line: &str) -> i32 {
+pub(crate) fn usage(line: &str) -> i32 {
     err(&format!("Usage: torpor {line}\n"));
     2
 }
 
 /// Print the reason for an error and give its exit code.
-fn fail(e: &Error) -> i32 {
+pub(crate) fn fail(e: &Error) -> i32 {
     match e {
         Error::Newer => {
             err("This project's records were written by a newer Torpor. Update the plugin.\n");
@@ -76,7 +83,7 @@ fn fail(e: &Error) -> i32 {
 pub fn run(args: Vec<String>) -> i32 {
     let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     // Commands that only the user may run: an agent's shell has CLAUDECODE set (spec 7.2, 8).
-    if a.first().is_some_and(|c| destructive::USER_ONLY.contains(c)) && std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
+    if destructive::user_only_args(&a).is_some() && std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
         let typed: String = a.join(" ").chars().filter(|c| !c.is_control()).take(60).collect();
         err(&format!("Run this in your own terminal: ~/.torpor/bin/torpor {typed}\n"));
         return 3;
@@ -98,6 +105,10 @@ pub fn run(args: Vec<String>) -> i32 {
         Some("forget") => forget_cmd(&a[1..]),
         Some("gc") => gc_cmd(&a[1..]),
         Some("quiet") => quiet_cmd(&a[1..]),
+        Some("promise") => promise_cmd::promise_cmd(&a[1..]),
+        Some("keep") => promise_cmd::keep(&a[1..]),
+        Some("check") => promise_cmd::check(&a[1..]),
+        Some("gate") => promise_cmd::gate(&a[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             out(&format!("torpor {}\n", crate::version()));
             0
@@ -113,7 +124,7 @@ pub fn run(args: Vec<String>) -> i32 {
     }
 }
 
-fn open_here() -> Result<Ws> {
+pub(crate) fn open_here() -> Result<Ws> {
     let root = resolve_root(None)?;
     Ws::open(&root, false)
 }
@@ -462,7 +473,9 @@ fn statusline_segment(input: &[u8]) -> String {
         None => String::new(),
     };
     let more = if r.problems.is_empty() { "" } else { " · see torpor status" };
-    format!("torpor · {} save point{}{last}{more}", r.points, if r.points == 1 { "" } else { "s" })
+    let pr = &r.promises;
+    let promises = if pr.total > 0 { format!(" · {} promise{} ok · caught {}", pr.ok, if pr.ok == 1 { "" } else { "s" }, pr.caught) } else { String::new() };
+    format!("torpor · {} save point{}{promises}{last}{more}", r.points, if r.points == 1 { "" } else { "s" })
 }
 
 /// Run the user's own status line command on the same input; its first line, if it printed one within 2 s.
@@ -505,7 +518,7 @@ fn run_wrapped(cmd: &[String], input: &[u8]) -> Option<String> {
     Some(line.trim_end().to_string()).filter(|l| !l.is_empty())
 }
 
-fn stdin_is_tty() -> bool {
+pub(crate) fn stdin_is_tty() -> bool {
     // SAFETY: isatty only inspects file descriptor 0.
     unsafe { libc::isatty(0) == 1 }
 }

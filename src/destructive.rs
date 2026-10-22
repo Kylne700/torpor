@@ -63,9 +63,31 @@ pub fn judge_with(cmd: &str, dirs: &[PathBuf], store: &[String]) -> Verdict {
     }
     // What is cut off is not read, so a cut command is never judged harmless.
     let verdict = if end < cmd.len() { Verdict::Save } else { Verdict::Clear };
-    let mut w = Walk { dirs, store, in_store: false, verdict };
+    let mut w = Walk { dirs, store, in_store: false, verdict, calls: Vec::new() };
     w.text(&cmd[..end], 0);
     w.verdict
+}
+
+/// Every `torpor ...` call in a command, by name ("keep", "promise add", "check"), in order (spec 12, "Who ran a CLI command").
+/// Read the same way as the safety verdicts: wrappers, `sh -c` and here-documents included.
+pub fn torpor_calls(cmd: &str) -> Vec<String> {
+    let mut end = cmd.len().min(MAX_TEXT);
+    while !cmd.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut w = Walk { dirs: &[], store: &[], in_store: false, verdict: Verdict::Clear, calls: Vec::new() };
+    w.text(&cmd[..end], 0);
+    w.calls
+}
+
+/// The name a `torpor` call goes by in `cli_calls`: the first word, plus the second for `promise`, `gate` and `runner`.
+pub fn call_name<S: AsRef<str>>(args: &[S]) -> Option<String> {
+    let mut words = args.iter().map(|a| a.as_ref()).filter(|a| !a.starts_with('-'));
+    let sub = words.next()?;
+    Some(match (sub, words.next()) {
+        ("promise" | "gate" | "runner", Some(o)) => format!("{sub} {o}"),
+        _ => sub.to_string(),
+    })
 }
 
 /// Texts that point at Torpor's own files: the store folder and the key file (or its folder), written as an
@@ -521,14 +543,29 @@ fn local(w: &[String]) -> bool {
     }
 }
 
-/// `torpor off|on|forget|retain`, also as `bash ~/.torpor/bin/torpor forget`.
-fn user_only(w: &[String]) -> Option<String> {
+/// The arguments of a `torpor ...` command, also as `bash ~/.torpor/bin/torpor ...`.
+fn torpor_args(w: &[String]) -> Option<&[String]> {
     let i = usize::from(SHELLS.contains(&base(&w[0])));
-    if w.get(i).map(|x| base(x)) != Some("torpor") {
-        return None;
+    (w.get(i).map(|x| base(x)) == Some("torpor")).then(|| &w[i + 1..])
+}
+
+/// Is `torpor <args>` a command only the user may run? Gives it as the refusal shows it ("torpor promise drop").
+/// One list for the CLI refusal and the PreToolUse deny, so they cannot drift apart.
+pub fn user_only_args<S: AsRef<str>>(args: &[S]) -> Option<String> {
+    let mut words = args.iter().map(|a| a.as_ref()).filter(|a| !a.starts_with('-'));
+    let sub = words.next()?;
+    match (sub, words.next()) {
+        (s, _) if USER_ONLY.contains(&s) => Some(format!("torpor {s}")),
+        ("gate", Some(o @ ("on" | "off"))) => Some(format!("torpor gate {o}")),
+        ("promise", Some(o @ ("ok" | "drop" | "block"))) => Some(format!("torpor promise {o}")),
+        // Any `--spec...` spelling: the check source stays hidden from the AI (spec 14).
+        ("promise", Some("show")) if args.iter().any(|a| a.as_ref().starts_with("--spec")) => Some("torpor promise show --spec".into()),
+        _ => None,
     }
-    let sub = w[i + 1..].iter().find(|a| !a.starts_with('-'))?;
-    USER_ONLY.contains(&sub.as_str()).then(|| format!("torpor {sub}"))
+}
+
+fn user_only(w: &[String]) -> Option<String> {
+    user_only_args(torpor_args(w)?)
 }
 
 /// Does this word point at Torpor's store or key file?
@@ -547,6 +584,8 @@ struct Walk<'a> {
     /// A `cd` into the store came earlier: later writers are aimed at it.
     in_store: bool,
     verdict: Verdict,
+    /// Names of the `torpor` calls seen (see `torpor_calls`).
+    calls: Vec<String>,
 }
 
 impl Walk<'_> {
@@ -581,6 +620,9 @@ impl Walk<'_> {
     fn seg(&mut self, seg: &Seg, w: &[String]) {
         if let Some(c) = user_only(w) {
             self.add(Verdict::UserOnly(c));
+        }
+        if let Some(name) = torpor_args(w).and_then(call_name) {
+            self.calls.push(name);
         }
         // The program itself may live in the store (`~/.torpor/bin/torpor`); only its arguments are targets.
         let hits = w[1..].iter().any(|a| names(a, self.store));
@@ -879,6 +921,58 @@ mod tests {
         for c in ["torpor status", "torpor back 1", "torpor undo 3", "torpor log", "echo torpor off"] {
             assert!(matches!(j(c), Verdict::Clear | Verdict::Save), "{c}");
         }
+    }
+
+    #[test]
+    fn promise_and_gate_commands_follow_the_same_rule_through_every_wrapper() {
+        for (c, name) in [
+            ("torpor promise drop 2", "torpor promise drop"),
+            ("torpor promise ok 2", "torpor promise ok"),
+            ("torpor promise block 2", "torpor promise block"),
+            ("torpor gate off", "torpor gate off"),
+            ("torpor gate on", "torpor gate on"),
+            ("torpor promise show 2 --spec", "torpor promise show --spec"),
+            ("torpor promise show --spec 2", "torpor promise show --spec"),
+            ("torpor promise show 2 --spec=1", "torpor promise show --spec"),
+            ("CLAUDECODE= torpor promise drop 2", "torpor promise drop"),
+            ("env -u CLAUDECODE torpor promise drop 2", "torpor promise drop"),
+            ("command torpor promise drop 2", "torpor promise drop"),
+            ("exec torpor gate off", "torpor gate off"),
+            ("sh -c 'torpor promise drop 2'", "torpor promise drop"),
+            ("bash -lc \"cd x && torpor gate off\"", "torpor gate off"),
+            ("~/.torpor/bin/2.1.0/torpor promise drop 2", "torpor promise drop"),
+            ("bash ~/.torpor/bin/torpor promise block 3", "torpor promise block"),
+            ("torpor -q promise -- drop 2", "torpor promise drop"),
+            ("torpor promise drop 2 | cat", "torpor promise drop"),
+        ] {
+            assert_eq!(j(c), Verdict::UserOnly(name.into()), "{c}");
+        }
+        // What the AI may run: add, list, show, dispute, check, keep, find-break, undo.
+        for c in [
+            "torpor promise show 2",
+            "torpor promise list",
+            "torpor promise add - <<'EOF'\n{}\nEOF",
+            "torpor promise dispute 2 \"wrong\"",
+            "torpor check --all",
+            "torpor keep \"works\" --check -",
+            "torpor find-break --check -",
+            "torpor gate",
+            "echo torpor promise drop 2",
+        ] {
+            assert!(matches!(j(c), Verdict::Clear | Verdict::Save), "{c}");
+        }
+    }
+
+    #[test]
+    fn torpor_calls_are_named_the_same_way_on_both_sides() {
+        assert_eq!(torpor_calls("cd x && torpor keep \"a b\" --check - && npm test"), vec!["keep"]);
+        assert_eq!(torpor_calls("torpor promise add --good 5 - <<'EOF'\n{}\nEOF"), vec!["promise add"]);
+        assert_eq!(torpor_calls("bash -c 'torpor check --all; torpor gate on'"), vec!["check", "gate on"]);
+        assert_eq!(torpor_calls("env FOO=1 ~/.torpor/bin/torpor find-break"), vec!["find-break"]);
+        assert!(torpor_calls("echo torpor keep; ls").is_empty());
+        assert_eq!(call_name(&["promise", "show", "--spec", "2"]).as_deref(), Some("promise show"));
+        assert_eq!(call_name(&["-q", "keep", "words"]).as_deref(), Some("keep"));
+        assert_eq!(call_name::<&str>(&[]), None);
     }
 
     #[test]

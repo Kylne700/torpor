@@ -447,6 +447,10 @@ pub fn describe(db: &Connection, id: i64, now: i64) -> String {
         },
         ("pre_restore", _) => "before a restore".to_string(),
         ("restored", _) => "after a restore".to_string(),
+        ("keep", _) => match note.as_deref() {
+            Some(w) if !w.trim().is_empty() => format!("kept \"{}\"", trunc_chars(w, 50)),
+            _ => "a kept version".to_string(),
+        },
         _ => "between turns".to_string(),
     };
     format!("{what}, {}", local_stamp(at, now))

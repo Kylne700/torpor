@@ -35,6 +35,8 @@ pub enum PointKind {
     PreBash,
     PreRestore,
     Restored,
+    /// `torpor keep`: the user (or the AI at the user's word) says this version is good.
+    Keep,
 }
 
 impl PointKind {
@@ -46,6 +48,7 @@ impl PointKind {
             PointKind::PreBash => "pre_bash",
             PointKind::PreRestore => "pre_restore",
             PointKind::Restored => "restored",
+            PointKind::Keep => "keep",
         }
     }
     /// `tool` points are internal; everything else is a save point the user sees.

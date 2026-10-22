@@ -433,7 +433,6 @@ fn the_contract_checker_rejects_what_it_should() {
         ("PreToolUse", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{},\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Torpor: x\"}}\n", "")),
         ("UserPromptSubmit", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"a\"}}\n{\"x\":1}\n", "")),
         ("UserPromptSubmit", out(0, &format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"{long}\"}}}}\n"), "")),
-        ("UserPromptSubmit", out(0, "{\"systemMessage\":\"Torpor: hi\"}\n", "")),
         ("SessionStart", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"a\"}}\n", "")),
         ("SessionStart", out(0, "{\"systemMessage\":\"Something else\"}\n", "")),
         ("Stop", out(0, &stop_long, "")),
@@ -443,6 +442,15 @@ fn the_contract_checker_rejects_what_it_should() {
         ("Stop", out(2, "", "")),
         ("Stop", out(0, "", "oops")),
         ("PostToolUse", out(0, "{\"systemMessage\":\"Torpor: ok\"}\n", "")),
+        ("PostToolUse", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"edited a file\"}}\n", "")),
+        ("SessionStart", out(0, "{\"decision\":\"block\",\"reason\":\"Torpor: x\"}\n", "")),
+        ("Stop", out(0, "{\"decision\":\"block\"}\n", "")),
+        ("Stop", out(0, "{\"reason\":\"Torpor: x\"}\n", "")),
+        ("Stop", out(0, "{\"decision\":\"allow\",\"reason\":\"Torpor: x\"}\n", "")),
+        ("Stop", out(0, "{\"decision\":\"block\",\"reason\":\"Fix the app\"}\n", "")),
+        ("Stop", out(0, "{\"decision\":\"block\",\"reason\":\"Torpor: x\",\"systemMessage\":\"Torpor: y\"}\n", "")),
+        ("Stop", out(0, "{\"systemMessage\":\"Torpor: one\\nsecond line\"}\n", "")),
+        ("Stop", out(0, &format!("{{\"decision\":\"block\",\"reason\":\"Torpor: {long}\"}}\n"), "")),
         ("SessionEnd", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\",\"additionalContext\":\"a\"}}\n", "")),
     ];
     for (i, (ev, o)) in bad.iter().enumerate() {
@@ -455,6 +463,12 @@ fn the_contract_checker_rejects_what_it_should() {
         ("UserPromptSubmit", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Torpor: x\"}}\n", "")),
         ("PreToolUse", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Torpor: x\"}}\n", "")),
         ("PreToolUse", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"Torpor: x\"}}\n", "")),
+        ("Stop", out(0, "{\"systemMessage\":\"Torpor: save point 3 · turn 1 changed 1 file\\nTorpor: new promise #2 \\\"login works\\\"\"}\n", "")),
+        ("Stop", out(0, "{\"decision\":\"block\",\"reason\":\"Torpor: promise #2 fails now. Fix the app, not the check.\"}\n", "")),
+        ("UserPromptSubmit", out(0, "{\"systemMessage\":\"Torpor: hi\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"Torpor: x\"}}\n", "")),
+        ("UserPromptSubmit", out(0, "{\"systemMessage\":\"Torpor: hi\"}\n", "")),
+        ("SessionStart", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Torpor (after compaction 1): rules\"}}\n", "")),
+        ("PostToolUse", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Torpor: edit touches promises #2\"}}\n", "")),
     ];
     for (ev, o) in &good {
         check_contract(ev, o);
