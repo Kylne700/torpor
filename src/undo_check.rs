@@ -1,7 +1,8 @@
 //! Undo with checks (spec 20): before `torpor undo K` writes anything, the result is built in a scratch copy of the project and the promises
 //! that watch the undone files run on it. A promise that passes now and fails there stops the undo (exit 3; the user can go on anyway with `--force`).
-//! Unlike the Stop gate this runs inside the undo's store lock and open transaction: the merge was built there and must not change meanwhile.
-//! A deadline bounds it. A check that cannot run, is flaky, ran out of time or already fails now never stops the undo; it is reported.
+//! The checks start the app and take a while, so they run without the store lock (merge.rs plans under the lock, lets go, and plans again after).
+//! What they need from the plan is made while the undo still holds its transaction: merged bytes exist only there (`ready`).
+//! A deadline bounds them. A check that cannot run, is flaky, ran out of time or already fails now never stops the undo; it is reported.
 use crate::gate;
 use crate::promise::{self, Call, Promise};
 use crate::restore::{Act, Plan};
@@ -13,8 +14,10 @@ use std::time::{Duration, Instant};
 
 /// All the checks of one undo together. The Bash tool of Claude Code gives up on a command after 2 minutes unless told otherwise.
 const CHECK_SECS: u64 = 90;
-/// How long to wait for another check in this project before the result goes unchecked (the store lock is held meanwhile).
+/// How long to wait for another check in this project before the result goes unchecked.
 const RUN_WAIT_MS: u64 = 5000;
+/// Saving the project as it is now, for the checks; the 90 seconds above include it.
+const SAVE_SECS: u64 = 30;
 /// Names listed in a dry run; the rest are counted.
 const NAMES_MAX: usize = 5;
 /// A file bigger than this is left out of the changed copy.
@@ -72,29 +75,53 @@ fn changed_copy(ws: &Ws, plan: &Plan) -> (Opts, usize) {
     (o, left_out)
 }
 
-/// Run the promises this undo reaches on its result. `live` is the project as it is now. A dry run only says which promises it would run.
-pub fn run(ws: &Ws, live: &[u8; 32], plan: &Plan, k: i64, dry_run: bool) -> Checks {
+/// What the checks of one undo will run: the promises its files reach, and its result as a changed copy of the project.
+pub struct Ready {
+    picked: Vec<Promise>,
+    opts: Opts,
+    left_out: usize,
+}
+
+/// Look at what this undo reaches, while the undo still holds its transaction: merged bytes exist only there, so the changed copy is made now.
+/// `Err` is an undo with nothing to run, and the notes for its report. A dry run only says which promises it would run.
+pub fn ready(ws: &Ws, plan: &Plan, dry_run: bool) -> Result<Ready, Checks> {
     let mut out = Checks::default();
     let files: Vec<String> = plan.entries.iter().filter(|e| !matches!(e.act, Act::Mkdir | Act::RmdirIfEmpty)).map(|e| e.path.clone()).collect();
     let picked: Vec<Promise> = match promise::all(&ws.conn, false) {
         Ok(v) => v.into_iter().filter(|p| gate::eligible(p) && gate::meets(p, &files)).collect(),
         Err(_) => {
             out.notes.push("The promise checks could not be read, so the result is untested.".to_string());
-            return out;
+            return Err(out);
         }
     };
     if picked.is_empty() {
         if !dry_run {
             out.notes.push("No checks cover these files, so the result is untested.".to_string());
         }
-        return out;
+        return Err(out);
     }
     if dry_run {
         out.notes.push(format!("Would check the result first: {} (a dry run does not run the checks).", names(&picked)));
-        return out;
+        return Err(out);
     }
     let (opts, left_out) = changed_copy(ws, plan);
+    Ok(Ready { picked, opts, left_out })
+}
+
+/// Run the promises on the result of undoing turn `k`. No store lock is held: the project as it is now is saved first (shared lock, committed
+/// at once) and the checks work on that tree. The 90 seconds start before the saving.
+pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
+    let mut out = Checks::default();
+    let Ready { picked, opts, left_out } = ready;
     let _deadline = runner::Deadline::set(Instant::now() + Duration::from_secs(CHECK_SECS));
+    let live = match scratch::snapshot(ws, Duration::from_secs(SAVE_SECS)) {
+        Ok(t) => t,
+        Err(e) => {
+            out.notes.push(format!("The project could not be saved for the checks ({}), so the result is untested.", promise::clean(&e.to_string(), 120)));
+            return out;
+        }
+    };
+    let ws = &*ws;
     let Ok(_held) = scratch::hold_run_lock(ws, RUN_WAIT_MS) else {
         out.notes.push("Another check is running in this project, so the result is untested.".to_string());
         return out;
@@ -110,7 +137,7 @@ pub fn run(ws: &Ws, live: &[u8; 32], plan: &Plan, k: i64, dry_run: bool) -> Chec
             out.notes.push(format!("Promise {name} did not count: its check cannot be read."));
             continue;
         };
-        let mut c = promise::check_tree_with(ws, &l.spec, live, &opts);
+        let mut c = promise::check_tree_with(ws, &l.spec, &live, &opts);
         out.runs.push((p.id, std::mem::take(&mut c.runs)));
         match c.call {
             Call::Pass => passed.push(p),
@@ -119,7 +146,7 @@ pub fn run(ws: &Ws, live: &[u8; 32], plan: &Plan, k: i64, dry_run: bool) -> Chec
             Call::Unrunnable => out.notes.push(format!("Promise {name} did not count: it could not run ({}).", promise::clean(c.reason.trim_end_matches('.'), 160))),
             Call::Fail => {
                 // Only a check that passes on the project as it is now is broken by this undo (spec 20).
-                let mut now = promise::check_tree(ws, &l.spec, live);
+                let mut now = promise::check_tree(ws, &l.spec, &live);
                 out.runs.push((p.id, std::mem::take(&mut now.runs)));
                 if now.call != Call::Pass {
                     out.notes.push(format!("Promise {name} did not count: it does not pass now either."));

@@ -3,6 +3,7 @@
 //! Any conflict means nothing is written. The plan runs through the same journaled executor as `back`.
 use crate::capture::{join, lookup_path, TreeCache};
 use crate::restore::{self, entry_state, live_perm, not_saved_text, not_saved_why, perm_for, Act, Entry, Job, Opts, Outcome, Plan, Skip, DB_NOTE, LOCK_WAIT_MS};
+use crate::promise;
 use crate::scan;
 use crate::undo_check;
 use crate::store::*;
@@ -317,28 +318,98 @@ fn turn_points(db: &Connection, k: i64) -> Result<std::result::Result<(i64, [u8;
     }
 }
 
-/// `torpor undo K [--dry-run] [--force]`. Takes the exclusive lock itself, and keeps it while the result is checked (spec 20; `force` skips the checks).
+/// `torpor undo K [--dry-run] [--force]` (spec 20; `force` skips the checks). Planning and writing hold the exclusive lock; the checks do not. They start
+/// the app and take up to about 95 s, and while the lock is held every hook gives up. So pass one plans and lets go of the lock, the checks run, and pass
+/// two plans again and writes only when the plan is the one that was checked. Restore still re-checks each file before it writes.
 pub fn undo(ws: &mut Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
-    ws.lock_exclusive(LOCK_WAIT_MS)?;
-    let r = undo_locked(ws, k, dry_run, force);
-    ws.unlock();
-    r
-}
-
-fn undo_locked(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
-    let first = restore::recover_locked(ws)?;
-    let mut out = undo_inner(ws, k, dry_run, force)?;
-    if !first.is_empty() {
-        out.text = format!("{}\n{}", first.join("\n"), out.text);
+    let (mut said, first) = locked(ws, |ws| undo_first(ws, k, dry_run, force))?;
+    let mut out = match first {
+        First::Done(o) => o,
+        First::Check(before, ready) => {
+            let mut checks = undo_check::run(ws, ready, k);
+            if let Some(why) = checks.refuse.take() {
+                // Nothing to write, and no reason to take the lock for it. The runs happened all the same.
+                let _ = promise::write(ws, |w| Ok(undo_check::record(w, &checks.runs)));
+                Outcome::new(3, format!("{why}\n"))
+            } else {
+                let (more, o) = locked(ws, |ws| undo_second(ws, k, &before, checks))?;
+                said.extend(more);
+                o
+            }
+        }
+    };
+    if !said.is_empty() {
+        out.text = format!("{}\n{}", said.join("\n"), out.text);
     }
     Ok(out)
 }
 
-fn undo_inner(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
+/// Take the exclusive lock, finish a restore that was cut off (its lines come back for the report), run `f`, let go.
+fn locked<T>(ws: &mut Ws, f: impl FnOnce(&Ws) -> Result<T>) -> Result<(Vec<String>, T)> {
+    ws.lock_exclusive(LOCK_WAIT_MS)?;
+    let r = restore::recover_locked(ws).and_then(|said| Ok((said, f(ws)?)));
+    ws.unlock();
+    r
+}
+
+/// How the first pass of an undo ended.
+enum First {
+    /// Written, refused, or nothing to do or to check.
+    Done(Outcome),
+    /// Planned, nothing written, the lock let go: the plan, and the checks to run on its result.
+    Check(Plan, undo_check::Ready),
+}
+
+fn undo_first(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<First> {
     let prep = restore::prepare(ws, &format!("before undoing turn {k}"))?;
+    let (start_point, plan, mut detail) = match plan_undo(ws, &prep, k)? {
+        Ok(t) => t,
+        Err(o) => return Ok(First::Done(o)),
+    };
+    // Spec 20: the result is checked before anything is written. Nothing to write or a refusal already: nothing to check.
+    if !force && plan.refuse.is_none() && !plan.entries.is_empty() {
+        match undo_check::ready(ws, &plan, dry_run) {
+            Ok(ready) => return Ok(First::Check(plan, ready)), // `prep` goes with it: the transaction rolls back and no save point stays
+            Err(mut quick) => detail.append(&mut quick.notes),
+        }
+    }
+    Ok(First::Done(apply(ws, prep, k, dry_run, start_point, detail, plan)?))
+}
+
+/// Pass two, after the checks: plan again, and write only when the plan is the one that was checked.
+fn undo_second(ws: &Ws, k: i64, before: &Plan, mut checks: undo_check::Checks) -> Result<Outcome> {
+    let out = (|| {
+        let prep = restore::prepare(ws, &format!("before undoing turn {k}"))?;
+        let (start_point, plan, mut detail) = match plan_undo(ws, &prep, k)? {
+            Ok(t) => t,
+            Err(o) => return Ok(o),
+        };
+        if plan.refuse.is_none() && signature(&plan) != signature(before) {
+            return Ok(Outcome::new(3, format!("The project changed while the checks ran, so nothing was changed. Run `torpor undo {k}` again.\n")));
+        }
+        detail.append(&mut checks.notes);
+        apply(ws, prep, k, false, start_point, detail, plan)
+    })();
+    // The transaction is over now (a run row written inside it would go with it).
+    undo_check::record(ws, &checks.runs);
+    out
+}
+
+/// What a plan would do: for each entry the path, the action, what the path must hold, what it holds afterwards, and the permission bits.
+fn signature(p: &Plan) -> Vec<(&str, Act, &str, &str, u32)> {
+    p.entries.iter().map(|e| (e.path.as_str(), e.act, e.old.as_str(), e.new.as_str(), e.perm)).collect()
+}
+
+fn apply(ws: &Ws, prep: restore::Prep, k: i64, dry_run: bool, start_point: i64, detail: Vec<String>, plan: Plan) -> Result<Outcome> {
+    let head = format!("{} turn {k} only. Later work stays.", if dry_run { "Would undo" } else { "Undoing" });
+    restore::go(ws, prep, Job { kind: "undo", target_point: start_point, head, detail, plan }, &Opts { with_data: false, dry_run })
+}
+
+/// The plan for undoing turn K on the project as `prep` saw it: (the save point from before the turn, the plan, the lines that explain it), or the answer when there is nothing to plan.
+fn plan_undo(ws: &Ws, prep: &restore::Prep, k: i64) -> Result<std::result::Result<(i64, Plan, Vec<String>), Outcome>> {
     let (start_point, start, end) = match turn_points(&prep.tx, k)? {
         Ok(t) => t,
-        Err(o) => return Ok(o),
+        Err(o) => return Ok(Err(o)),
     };
     let paths: Vec<String> = {
         let mut st = prep.tx.prepare("SELECT DISTINCT c.path FROM changes c JOIN turns t ON t.id=c.turn_id WHERE t.n=?1 AND c.class IN ('edit','shell','subagent') ORDER BY c.path")?;
@@ -346,7 +417,7 @@ fn undo_inner(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
         rows.collect::<std::result::Result<_, _>>()?
     };
     if paths.is_empty() {
-        return Ok(Outcome::new(0, format!("Turn {k} changed no files, so there is nothing to undo.\n")));
+        return Ok(Err(Outcome::new(0, format!("Turn {k} changed no files, so there is nothing to undo.\n"))));
     }
     let mut u = Undo { ws, db: &prep.tx, key: prep.key.as_ref(), k, live: prep.live, start, tc: HashMap::new(), del: vec![], cre: vec![], chm: vec![], detail: vec![], skips: vec![], conflicts: vec![], removed: vec![], created: vec![] };
     for p in &paths {
@@ -361,19 +432,8 @@ fn undo_inner(ws: &Ws, k: i64, dry_run: bool, force: bool) -> Result<Outcome> {
     }
     let (mkd, rmd) = u.folders()?;
     let refuse = if u.conflicts.is_empty() { None } else { Some(conflict_text(&u, &prep.tx)?) };
-    let Undo { del, cre, chm, mut detail, skips, .. } = u;
-    let mut plan = Plan::finish(del, rmd, mkd, cre, chm, skips, refuse);
-    // Spec 20: the result is checked before anything is written. Nothing to write or a refusal already: nothing to check.
-    let mut checks = undo_check::Checks::default();
-    if !force && plan.refuse.is_none() && !plan.entries.is_empty() {
-        checks = undo_check::run(ws, &prep.live, &plan, k, dry_run);
-        detail.append(&mut checks.notes);
-        plan.refuse = checks.refuse.take();
-    }
-    let head = format!("{} turn {k} only. Later work stays.", if dry_run { "Would undo" } else { "Undoing" });
-    let out = restore::go(ws, prep, Job { kind: "undo", target_point: start_point, head, detail, plan }, &Opts { with_data: false, dry_run })?;
-    undo_check::record(ws, &checks.runs);
-    Ok(out)
+    let Undo { del, cre, chm, detail, skips, .. } = u;
+    Ok(Ok((start_point, Plan::finish(del, rmd, mkd, cre, chm, skips, refuse), detail)))
 }
 
 /// "Can't undo turn 17 cleanly, so nothing was changed." and the way out.

@@ -1,6 +1,6 @@
 //! Scratch copies and the app process (spec 16): a saved version runs in its own folder, on its own port, with its own HOME.
-//! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run (one exception: `torpor undo`
-//! runs its checks inside its own lock and transaction, see undo_check.rs).
+//! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run (`torpor undo` plans under its
+//! lock, lets go, runs its checks, and plans again, see merge.rs).
 use crate::capture::{self, Req, flatten_tree};
 use crate::dom;
 use crate::runner::{self, Client, Judged, ReqErr, Verdict};
