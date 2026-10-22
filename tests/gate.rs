@@ -349,10 +349,22 @@ fn a_check_that_cannot_be_read_is_unverified_and_first_in_line_next_time() {
             assert_eq!(s.cli(&["status", "--json"]).json().unwrap()["promises"]["checks_cut_short"], json!(true));
         }
     }
-    // Readable again: the unverified promise runs first, even for a turn that changed only a doc.
+    // Readable again: a turn that changes only a doc, or nothing, runs nothing (spec 18 "nothing selected, nothing runs"); the promise stays first in line.
     set(&s, &format!("UPDATE promises SET spec_id='{spec_id}' WHERE id=1"));
+    let n = s.q_i64("SELECT count(*) FROM promise_runs");
     s.prompt("notes");
     s.edit("README.md", "# notes\n");
+    let o = s.stop();
+    assert!(blocked(&o).is_none() && !o.text().contains("promise #"), "{}", why(&o));
+    assert_eq!(last_receipt(&s), "0/0/none");
+    s.prompt("just talking");
+    s.stop();
+    assert_eq!(last_receipt(&s), "0/0/none");
+    assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs"), n, "no check ran");
+    assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
+    // The next turn that changes something relevant runs it.
+    s.prompt("tweak");
+    s.edit("server.js", &(SERVER.to_string() + "// tweak\n"));
     s.stop();
     assert_eq!(last_receipt(&s), "1/1/ok");
     assert_eq!(s.q_i64("SELECT count(*) FROM meta WHERE key='gate_unrun'"), 0);

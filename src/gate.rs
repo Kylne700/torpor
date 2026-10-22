@@ -246,8 +246,10 @@ struct Cand {
     est: u64,
 }
 
-/// Spec 18: any of: the watched set meets the files changed since the last PASS; the last verdict was FAIL or UNRUNNABLE; not run in the last
-/// 3 Stops; no deps. A turn that changed nothing but docs and tests selects nothing, except a promise left unverified last time.
+/// Spec 18: a turn that changed nothing but docs and tests (or nothing) selects nothing. Of the rest, a promise is run when any of: left unverified
+/// last time; the watched set meets the files changed since the last PASS; the last verdict was FAIL or UNRUNNABLE; not run in the last 3 Stops; no deps.
+/// (Spec 18 also says "unverified gets top priority": that is the order among the selected, not a way past the relevance filter, so a README-only
+/// turn runs nothing; the promise stays unverified and goes first at the next turn that changes something relevant.)
 fn select(ws: &Ws, inp: &Input, ps: Vec<Promise>, paths: &[String]) -> Vec<Cand> {
     let db = &ws.conn;
     let unrun = id_list(db, "gate_unrun");
@@ -256,7 +258,7 @@ fn select(ws: &Ws, inp: &Input, ps: Vec<Promise>, paths: &[String]) -> Vec<Cand>
     for p in ps {
         let watched = watched_set(&p);
         let forced = unrun.contains(&p.id);
-        if !forced && !paths.iter().any(|x| relevant(x, watched.as_ref())) {
+        if !paths.iter().any(|x| relevant(x, watched.as_ref())) {
             continue;
         }
         let lp = p.last_pass_point.and_then(|pt| promise::point_tree(db, pt).ok());
@@ -778,10 +780,10 @@ mod tests {
         assert!(chain_open(1, &Some(t.to_vec()), &other));
         assert!(!chain_open(2, &Some(t.to_vec()), &other));
     }
-}
 
     #[test]
     fn a_chain_that_cannot_be_read_is_an_error_not_zero_blocks() {
         let db = Connection::open_in_memory().unwrap(); // no gate_chain table
         assert!(chain_state(&db, "s", "p").is_err());
     }
+}
