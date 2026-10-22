@@ -811,6 +811,18 @@ pub fn make_plugin_root(dir: &Path, with_binary: bool) -> PathBuf {
     root
 }
 
+/// A loadable copy of the whole plugin (manifest, launcher, hooks, skill) under `dest`, with `bin` as its
+/// `dist/<target>/torpor`. A real Claude Code run loads this copy, so the `dist/` committed in the checkout is never written.
+pub fn plugin_copy(dest: &Path, bin: &Path) {
+    for d in [".claude-plugin", "bin", "hooks", "skills"] {
+        copy_tree(&manifest_dir().join(d), &dest.join(d));
+    }
+    let to = dest.join("dist").join(dist_target());
+    std::fs::create_dir_all(&to).unwrap();
+    std::fs::copy(bin, to.join("torpor")).unwrap();
+    std::fs::set_permissions(to.join("torpor"), std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Copy a folder tree (files, folders, symlinks, modes) with std only.
 pub fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();

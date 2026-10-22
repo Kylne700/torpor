@@ -1,4 +1,4 @@
-//! A10 (spec section 10) and A8 (a) and (b): the ONE real Claude Code run. Both tests are ignored, so `cargo test`
+//! A10 (spec section 10) and A8 (a) and (b): the ONE real Claude Code run. The two real tests are ignored, so `cargo test`
 //! never spends anything. Two steps, so the asserts can be repeated without another real run:
 //!
 //!   CARGO_TARGET_DIR=target/dist cargo build --release     # the plain binary that ships, never the test build
@@ -7,11 +7,13 @@
 //!   TORPOR_A10_DIR=<the same folder> cargo test --test a10_real a10_assert -- --ignored --exact --nocapture
 //!
 //! `a10_run` builds a temp project (a git repo with a project-local Stop hook), runs `claude -p` once (haiku, 0.50 USD
-//! cap, the user's normal plugins and settings loaded) with the plain binary copied to `dist/linux-x64/torpor`, and keeps
-//! everything in the folder. `a10_assert` reads that folder, drives the INSTALLED binary (`back`, `back 1`, `undo 1`),
-//! checks every A10 / A8(a) / A8(b) assert, and writes `a10-log.txt` (turn origin and probe fields included) there.
-//! The settings file is only hashed (sha256), never printed. Nothing in this file writes outside the given folder,
-//! except the binary copy under `dist/`, which `a10_run` removes again (a committed one is put back).
+//! cap, the user's normal plugins and settings loaded) with a COPY of the plugin in the folder (`plugin/`, holding the
+//! plain binary as `dist/<target>/torpor`), and keeps everything in the folder. `a10_assert` reads that folder, drives the
+//! INSTALLED binary (`back`, `back 1`, `undo 1`), checks every A10 / A8(a) / A8(b) assert, and writes `a10-log.txt` (turn
+//! origin and probe fields included) there. The settings file is only hashed (sha256), never printed. Nothing in this file
+//! writes outside the given folder: the checkout, and the `dist/` folder committed in it, are never written.
+mod common;
+
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -70,6 +72,25 @@ fn snapshot(root: &Path) -> String {
 }
 
 #[test]
+fn the_plugin_copy_holds_the_binary_and_the_committed_dist_is_left_alone() {
+    let committed = code_dir().join("dist");
+    let before = snapshot(&committed);
+    let tmp = tempfile::tempdir().unwrap();
+    let fake = tmp.path().join("fake-torpor");
+    fs::write(&fake, "not a real binary\n").unwrap();
+    let copy = tmp.path().join("plugin");
+    common::plugin_copy(&copy, &fake);
+    for f in [".claude-plugin/plugin.json", "bin/torpor", "hooks/hooks.json", "skills/torpor/SKILL.md"] {
+        assert!(copy.join(f).is_file(), "{f} is not in the copy");
+    }
+    let put = copy.join("dist").join(common::dist_target()).join("torpor");
+    assert_eq!(fs::read(&put).unwrap(), fs::read(&fake).unwrap());
+    assert_eq!(fs::metadata(&put).unwrap().permissions().mode() & 0o111, 0o111, "the copied binary must be executable");
+    assert_eq!(fs::read_dir(copy.join("dist")).unwrap().count(), 1, "only this computer's binary goes into the copy");
+    assert_eq!(snapshot(&committed), before, "the committed dist/ changed");
+}
+
+#[test]
 #[ignore = "the one real Claude Code run (Max subscription, haiku, 0.50 USD cap); see the top of this file"]
 fn a10_run() {
     let t = t_dir();
@@ -84,12 +105,7 @@ fn a10_run() {
     fs::write(proj.join("keep.txt"), "one\n").unwrap();
     fs::write(proj.join("old.txt"), "old\n").unwrap();
     fs::write(proj.join(".claude/settings.json"), STOP_HOOK).unwrap();
-    // The plugin's launcher looks for dist/linux-x64/torpor. A shipped binary may already be committed there: it is put back after the run.
-    let dist = code_dir().join("dist").join("linux-x64");
-    let shipped = fs::read(dist.join("torpor")).ok();
-    fs::create_dir_all(&dist).unwrap();
-    fs::copy(&bin, dist.join("torpor")).unwrap();
-    fs::set_permissions(dist.join("torpor"), fs::Permissions::from_mode(0o755)).unwrap();
+    common::plugin_copy(&t.join("plugin"), &bin);
     fs::write(t.join("bin.blake3"), blake3::hash(&fs::read(&bin).unwrap()).to_hex().to_string()).unwrap();
     fs::write(t.join("settings.before"), settings_hash()).unwrap();
     fs::write(t.join("git.before"), snapshot(&proj.join(".git"))).unwrap();
@@ -97,7 +113,7 @@ fn a10_run() {
     let mut cmd = Command::new("claude");
     cmd.current_dir(&proj)
         .args(["-p", "--model", "haiku", "--plugin-dir"])
-        .arg(code_dir())
+        .arg(t.join("plugin"))
         .args(["--allowedTools", "Bash,Edit,Write,Read", "--max-budget-usd", "0.50"])
         .args(["--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#, "--output-format", "json"])
         .env("TORPOR_HOME", t.join("home"))
@@ -126,17 +142,6 @@ fn a10_run() {
         std::thread::sleep(Duration::from_millis(500));
     };
     std::thread::sleep(Duration::from_secs(3)); // a detached cleanup run may still be finishing
-    match shipped {
-        Some(old) => {
-            fs::write(dist.join("torpor"), old).unwrap();
-            fs::set_permissions(dist.join("torpor"), fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        None => {
-            let _ = fs::remove_file(dist.join("torpor"));
-            let _ = fs::remove_dir(&dist);
-            let _ = fs::remove_dir(code_dir().join("dist"));
-        }
-    }
     fs::write(t.join("settings.after"), settings_hash()).unwrap();
     fs::write(t.join("git.after-run"), snapshot(&proj.join(".git"))).unwrap();
     fs::write(t.join("run.txt"), format!("exit={:?} seconds={}\n", status.map(|s| s.code()), started.elapsed().as_secs())).unwrap();
