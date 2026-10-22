@@ -124,7 +124,7 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 
 Torpor stores its records on this computer and never uploads them. Your AI agent still sends your prompts and files to its provider, as before.
 
-Torpor has no network code and makes no AI model calls. The command wrapped by `torpor statusline --` is your own command, and it does what it did before.
+Torpor makes no AI model calls. Its network use is plain HTTP to 127.0.0.1 (this computer), to run your promise checks against your app in a scratch copy. The command wrapped by `torpor statusline --` is your own command, and it does what it did before.
 
 ## License
 
