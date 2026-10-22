@@ -60,8 +60,27 @@ fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
     names.iter().find_map(|n| dirs.iter().map(|d| d.join(n)).find(|p| is_exec(p)))
 }
 
+/// The `node` that page runs and the install use. The first `node` on the PATH can be a version manager's shim (asdf, mise, volta) that needs the
+/// person's environment and HOME, and those runs get neither. So node is asked for its own path here, in the person's environment, and that
+/// binary is what runs. If it cannot say, the first one is used as before.
 pub fn find_node() -> Option<PathBuf> {
-    find_in(&path_dirs(), &["node"])
+    let first = find_in(&path_dirs(), &["node"])?;
+    let env: Vec<(String, String)> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    Some(real_node(&first, &env).unwrap_or(first))
+}
+
+/// `node -p process.execPath` with `env`, within 5 s. The answer must be the path of an executable file.
+fn real_node(node: &Path, env: &[(String, String)]) -> Option<PathBuf> {
+    let mut c = Command::new(node);
+    c.args(["-p", "process.execPath"]);
+    let mut app = App::launch(c, &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), env, PathBuf::from("/dev/null"), None).ok()?;
+    if !app.wait_end(Duration::from_secs(5)) {
+        return None; // dropping `app` stops what it started
+    }
+    app.wait_eof();
+    let said = String::from_utf8_lossy(&app.head()).into_owned();
+    let p = PathBuf::from(said.lines().map(str::trim).rfind(|l| !l.is_empty())?);
+    (p.is_absolute() && is_exec(&p)).then_some(p)
 }
 
 /// A Chromium-family browser already on the computer (spec 16): on the PATH, or an app bundle on macOS.
@@ -83,7 +102,7 @@ pub fn preflight(home: &Path, opts: &Opts) -> std::result::Result<(), String> {
     if opts.runner.is_none() && !installed(&runner_dir(home)) {
         return Err("runner not installed: torpor runner install".into());
     }
-    if find_node().is_none() {
+    if find_in(&path_dirs(), &["node"]).is_none() {
         return Err("Node.js is not installed, so page (browser) steps cannot run".into());
     }
     Ok(())
@@ -541,6 +560,18 @@ mod tests {
         assert!(!msg.contains("sk-ant-api03") && msg.chars().count() <= 301, "{msg}");
         assert_eq!(fail["i"], 3);
         assert!(read_lines(b"").is_empty());
+    }
+
+    #[test]
+    fn a_version_manager_shim_is_replaced_by_the_node_it_finds_with_the_environment_it_gets() {
+        let Some(node) = find_in(&path_dirs(), &["node"]) else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("node");
+        fs::write(&shim, "#!/bin/sh\nexec \"$SHIM_REAL\" \"$@\"\n").unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        let real = real_node(&shim, &[("SHIM_REAL".into(), node.to_string_lossy().into_owned())]).unwrap();
+        assert!(real.is_absolute() && is_exec(&real) && real != shim, "{real:?}");
+        assert_eq!(real_node(&shim, &[]), None, "without its environment the shim finds no node, and the caller keeps the first one");
     }
 
     #[test]

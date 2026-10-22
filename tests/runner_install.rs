@@ -305,3 +305,28 @@ fn the_registry_stand_in_must_be_on_127_0_0_1_and_a_missing_or_old_node_is_said_
         assert_eq!((o.code, o.stderr.as_str()), (2, "Usage: torpor runner install [--yes]\n"), "{bad:?}");
     }
 }
+
+#[test]
+fn a_node_that_is_a_version_manager_shim_is_asked_for_its_real_path_and_that_one_runs() {
+    let fx = Fx::new(false, true);
+    // Like asdf, mise or volta: the first `node` on the PATH finds the real one through the person's environment, which the download does not get.
+    let shim = fx.bin.join("node");
+    std::fs::remove_file(&shim).unwrap();
+    std::fs::write(&shim, "#!/bin/sh\nexec \"$SHIM_REAL\" \"$@\"\n").unwrap();
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = fx.cmd(&["install", "--yes"]);
+    c.env("SHIM_REAL", which("node"));
+    let o = run_cmd(c, b"");
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.contains("installed playwright-core 1.64.1"), "{}", o.stdout);
+    assert!(fx.dir().join("node_modules/playwright-core/package.json").is_file());
+    // Without that environment the shim cannot find its node and the plain message stays.
+    let fx = Fx::new(false, true);
+    std::fs::remove_file(fx.bin.join("node")).unwrap();
+    std::fs::write(fx.bin.join("node"), "#!/bin/sh\nexec \"$SHIM_REAL\" \"$@\"\n").unwrap();
+    std::fs::set_permissions(fx.bin.join("node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let o = fx.run(&["install", "--yes"]);
+    assert_eq!(o.code, 1, "{}{}", o.stdout, o.stderr);
+    assert!(o.stderr.starts_with("Node.js 20 or newer is needed"), "{}", o.stderr);
+    fx.nothing_installed();
+}
