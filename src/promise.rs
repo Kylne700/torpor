@@ -574,7 +574,7 @@ pub fn check_line(p: &Promise, spec: &Spec, c: &Checked) -> String {
     }
 }
 
-fn tier_label(p: &Promise) -> &str {
+pub fn tier_label(p: &Promise) -> &str {
     if p.tier == "unproven" { "guard only" } else { p.tier.as_str() }
 }
 

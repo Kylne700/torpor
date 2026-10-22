@@ -4,7 +4,7 @@
 use crate::capture::{NORMAL_CAP, PRECIOUS_CAP, SECRET_CAP};
 use crate::store::*;
 use crate::util::*;
-use crate::{retention, scan, turn};
+use crate::{constraints, push, retention, scan, transcript, turn};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -39,7 +39,50 @@ pub struct Report {
     /// The reach comes from `torpor retain`, not from Claude Code's setting.
     pub retain_custom: bool,
     pub promises: PromiseStats,
+    pub context: ContextStats,
     pub now: i64,
+}
+
+/// What reaches the AI (spec 21, 23), for the newest session of the folder: Torpor's own tokens from the push log, every hook's context from the
+/// sizes of the attachments in the transcript (sizes only, no text is read out), and the constraints and rebuilds.
+#[derive(Default)]
+pub struct ContextStats {
+    pub tokens: i64,
+    pub max_turn: i64,
+    pub cycle: i64,
+    pub cycle_tokens: i64,
+    pub max_cycle: i64,
+    /// (tokens of all hooks, the most in one turn). None: no transcript to read.
+    pub hooks: Option<(i64, i64)>,
+    pub pinned: i64,
+    pub replaced: i64,
+    pub rebuilds: i64,
+    pub missed: i64,
+}
+
+fn context_stats(db: &Connection) -> Result<ContextStats> {
+    let mut c = ContextStats::default();
+    (c.pinned, c.replaced) = constraints::counts(db);
+    let q = |sql: &str| db.query_row(sql, [], |x| x.get::<_, i64>(0)).unwrap_or(0);
+    c.rebuilds = q("SELECT COUNT(*) FROM push_log WHERE kind='rebuild'");
+    c.missed = q("SELECT COUNT(*) FROM push_log WHERE kind='rebuild' AND delivered=0");
+    let row: Option<(String, Option<String>, i64)> =
+        db.query_row("SELECT id,transcript_path,compact_epoch FROM sessions ORDER BY last_seen DESC, rowid DESC LIMIT 1", [], |x| Ok((x.get(0)?, x.get(1)?, x.get(2)?))).optional()?;
+    let Some((sid, tp, epoch)) = row else { return Ok(c) };
+    c.tokens = push::session_tokens(db, &sid);
+    c.max_turn = push::max_turn_tokens(db, &sid);
+    c.cycle = epoch;
+    c.cycle_tokens = push::cycle_tokens(db, &sid, epoch);
+    c.max_cycle = push::max_cycle_tokens(db, &sid);
+    // shortcut: a block belongs to the turn of the last user entry before it in the file; not checked against real Claude Code transcripts, upgrade when it is.
+    c.hooks = tp.and_then(|p| transcript::context_blocks(Path::new(&p))).map(|blocks| {
+        let mut per: std::collections::BTreeMap<Option<String>, i64> = Default::default();
+        for b in &blocks {
+            *per.entry(b.prompt_id.clone()).or_default() += (b.chars as i64 + 3) / 4;
+        }
+        (per.values().sum(), per.values().copied().max().unwrap_or(0))
+    });
+    Ok(c)
 }
 
 /// The promises that count (not dropped, not still being qualified): how many, how many passed last time, how many failures they caught.
@@ -307,6 +350,7 @@ pub fn gather(ws: &Ws, all: bool, mark_seen: bool, now: i64) -> Result<Report> {
     }
 
     r.promises = promise_stats(db)?;
+    r.context = context_stats(db)?;
 
     // Not saved: what the newest save point could not take.
     let newest_id: Option<i64> = db.query_row("SELECT MAX(id) FROM points WHERE dropped=0", [], |x| x.get(0)).optional()?.flatten();
@@ -426,6 +470,30 @@ fn plural(n: i64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// Only what exists is shown: a folder that never pushed a line or pinned a constraint adds nothing to status.
+fn render_context(c: &ContextStats, o: &mut String) {
+    let hooks = c.hooks.filter(|h| h.0 > 0);
+    if c.tokens > 0 || hooks.is_some() {
+        o.push_str(&format!(
+            "Context: Torpor gave the AI {} tokens in this session (most in one turn {}; this compaction cycle {} of {} allowed)",
+            c.tokens,
+            c.max_turn,
+            c.cycle_tokens,
+            push::CYCLE_TOKENS
+        ));
+        match hooks {
+            Some((all, turn)) => o.push_str(&format!("; all hooks together {all} (most in one turn {turn}), counted from the sizes in the transcript.\n")),
+            None => o.push_str(".\n"),
+        }
+    }
+    if c.pinned > 0 || c.replaced > 0 {
+        o.push_str(&format!("Constraints pinned: {}{}.\n", c.pinned, if c.replaced > 0 { format!(" ({} replaced by a later one)", c.replaced) } else { String::new() }));
+    }
+    if c.missed > 0 {
+        o.push_str(&format!("Rebuild not delivered: the transcript does not show Torpor's records reaching the AI after {} of {} compactions or restarts. The AI can still run torpor log.\n", c.missed, c.rebuilds));
+    }
+}
+
 pub fn render(r: &Report) -> String {
     let mut o = String::new();
     o.push_str(if r.off {
@@ -448,6 +516,7 @@ pub fn render(r: &Report) -> String {
             o.push_str("The promise checks were cut short at the last 3 turn ends. Run them: torpor check --all\n");
         }
     }
+    render_context(&r.context, &mut o);
     if let Some(t) = &r.last_turn {
         let total = t.edits + t.shell + t.sub;
         let what = match &t.preview {
@@ -527,6 +596,19 @@ pub fn to_json(r: &Report) -> Value {
         "not_saved_total": r.not_saved_total,
         "problems": r.problems,
         "notes": r.notes,
+        "context": {
+            "torpor_tokens": r.context.tokens,
+            "max_turn_tokens": r.context.max_turn,
+            "cycle": r.context.cycle,
+            "cycle_tokens": r.context.cycle_tokens,
+            "max_cycle_tokens": r.context.max_cycle,
+            "hooks_tokens": r.context.hooks.map(|h| h.0),
+            "hooks_max_turn_tokens": r.context.hooks.map(|h| h.1),
+            "constraints_pinned": r.context.pinned,
+            "constraints_replaced": r.context.replaced,
+            "rebuilds": r.context.rebuilds,
+            "rebuilds_not_delivered": r.context.missed,
+        },
         "promises": {"total": r.promises.total, "ok": r.promises.ok, "caught": r.promises.caught, "checks_silent": r.promises.silent, "checks_cut_short": r.promises.unverified, "tiers": r.promises.tiers.iter().map(|(t, n)| json!({"tier": t, "n": n})).collect::<Vec<_>>()},
     })
 }

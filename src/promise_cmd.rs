@@ -359,6 +359,7 @@ pub fn keep(args: &[&str]) -> i32 {
             let c = capture::capture(&ws, &tx, &req)?;
             if !skip {
                 tx.execute("INSERT INTO constraints(turn_id,text,polarity,source) VALUES(?1,?2,'do',?3)", params![turn_id, words, if who.agent { "keep_agent" } else { "keep_user" }])?;
+                crate::constraints::supersede(&tx, tx.last_insert_rowid())?; // only the user's own keep replaces an older opposite one
             }
             tx.commit()?;
             Ok(c)

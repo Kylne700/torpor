@@ -306,6 +306,8 @@ pub struct Sim {
     pub program: Option<PathBuf>,
     /// (event, wall time) of every checked hook call; tool events are labelled `Event(Tool)`.
     pub timings: Vec<(String, Duration)>,
+    /// (event, stdout) of every checked hook call that answered with something: what Claude Code was given (B9 reads it).
+    pub tape: Vec<(String, String)>,
     prompt_n: u32,
     tool_n: u32,
     pub pid: String,
@@ -323,7 +325,7 @@ impl Sim {
     pub fn with_env(env: Arc<Env>, n: u32) -> Sim {
         let sid = format!("sess-{n:04}-0000-4000-8000-00000000000{n}");
         let transcript = env.home.join(format!("transcript-{n}.jsonl"));
-        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n, observer: Default::default() }
+        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), tape: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n, observer: Default::default() }
     }
 
     /// A second Claude Code session in the same project and store.
@@ -357,6 +359,9 @@ impl Sim {
         let o = self.hook_unchecked(event, extra);
         check_contract(event, &o);
         self.timings.push((event.to_string(), o.elapsed));
+        if !o.stdout.trim().is_empty() {
+            self.tape.push((event.to_string(), o.stdout.clone()));
+        }
         o
     }
 
@@ -497,6 +502,15 @@ impl Sim {
         self.edit_tool("Edit", rel, content, None)
     }
 
+    /// The write and only the PostToolUse half of an edit-tool call: for tests that need a thousand edits and look at what that half says.
+    pub fn quick_edit(&mut self, rel: &str, content: &str) -> Out {
+        let abs = self.path(rel);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, content).unwrap();
+        let id = self.tool_id();
+        self.tool_event("PostToolUse", "Write", &json!({"file_path": abs}), &id, None, json!({"tool_response": {"filePath": abs, "success": true}}))
+    }
+
     pub fn write_tool(&mut self, rel: &str, content: &str) -> Out {
         self.edit_tool("Write", rel, content, None)
     }
@@ -519,7 +533,9 @@ impl Sim {
             let resp = json!({"stdout": String::from_utf8_lossy(&o.stdout), "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false});
             self.tool_event("PostToolUse", "Bash", &input, &id, agent, json!({"tool_response": resp}));
         } else {
-            self.tool_event("PostToolUseFailure", "Bash", &input, &id, agent, json!({"error": format!("Exit code {code}"), "is_interrupt": false}));
+            // Claude Code's own text: the exit code on the first line, then what the command printed.
+            let shown = format!("{}{}", String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&o.stdout));
+            self.tool_event("PostToolUseFailure", "Bash", &input, &id, agent, json!({"error": format!("Exit code {code}\n{shown}"), "is_interrupt": false}));
         }
         code
     }
@@ -572,6 +588,42 @@ impl Sim {
 
     pub fn session_end(&mut self, reason: &str) -> Out {
         self.hook("SessionEnd", json!({"reason": reason}))
+    }
+
+    // ---- compaction (spec 21)
+
+    /// One line in the fake transcript.
+    pub fn transcript_line(&self, line: &Value) {
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
+        writeln!(f, "{line}").unwrap();
+    }
+
+    /// The compact_boundary record Claude Code writes when it compacts a conversation. A subagent's carries its agentId.
+    pub fn boundary(&self, uuid: &str, agent: Option<&str>) {
+        let mut l = json!({"type": "system", "subtype": "compact_boundary", "uuid": uuid});
+        if let Some(a) = agent {
+            l["agentId"] = json!(a);
+            l["isSidechain"] = json!(true);
+        }
+        self.transcript_line(&l);
+    }
+
+    /// The attachment Claude Code writes into the transcript for a hook's additionalContext.
+    pub fn attach(&self, hook: &str, text: &str) {
+        self.transcript_line(&json!({"type": "attachment", "attachment": {"type": "hook_additional_context", "hookName": hook, "content": [text]}}));
+    }
+
+    /// A compaction of the main conversation: PreCompact, the boundary in the transcript, then SessionStart(compact). The answer is returned;
+    /// the attachment is NOT written (call `attach` to play Claude Code putting the text in front of the AI).
+    pub fn compaction(&mut self, uuid: &str) -> Out {
+        self.hook("PreCompact", json!({"trigger": "auto"}));
+        self.boundary(uuid, None);
+        self.hook("SessionStart", json!({"source": "compact"}))
+    }
+
+    /// The additionalContext of an answer, if it has one.
+    pub fn context_of(o: &Out) -> Option<String> {
+        o.json()?.get("hookSpecificOutput")?.get("additionalContext")?.as_str().map(str::to_string)
     }
 
     // ---- the store, read from outside

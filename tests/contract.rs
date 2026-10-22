@@ -3,6 +3,7 @@
 //! Every answer also passes `check_contract` inside the harness (allowed keys per event, nested hookEventName,
 //! no `allow`, strings under 10,000 characters, Stop line within 160).
 mod common;
+use common::app::{SERVER, add, broken_server, login, story};
 use common::*;
 use rusqlite::params;
 use serde_json::json;
@@ -452,6 +453,11 @@ fn the_contract_checker_rejects_what_it_should() {
         ("Stop", out(0, "{\"systemMessage\":\"Torpor: one\\nsecond line\"}\n", "")),
         ("Stop", out(0, &format!("{{\"decision\":\"block\",\"reason\":\"Torpor: {long}\"}}\n"), "")),
         ("SessionEnd", out(0, "{\"hookSpecificOutput\":{\"hookEventName\":\"SessionEnd\",\"additionalContext\":\"a\"}}\n", "")),
+        // S2: a block reason of 101 words or on two lines, and a rebuild or a targeted line of 10,000 characters.
+        ("Stop", out(0, &format!("{{\"decision\":\"block\",\"reason\":\"Torpor: {}\"}}\n", "word ".repeat(100)), "")),
+        ("Stop", out(0, "{\"decision\":\"block\",\"reason\":\"Torpor: one\\nTorpor: two\"}\n", "")),
+        ("PostToolUse", out(0, &format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Torpor: {long}\"}}}}\n"), "")),
+        ("SessionStart", out(0, &format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"Torpor (after compaction 1): {long}\"}}}}\n"), "")),
     ];
     for (i, (ev, o)) in bad.iter().enumerate() {
         assert!(catch_unwind(AssertUnwindSafe(|| check_contract(ev, o))).is_err(), "case {i} ({ev}) should have been rejected: {:?}", o.stdout);
@@ -472,5 +478,47 @@ fn the_contract_checker_rejects_what_it_should() {
     ];
     for (ev, o) in &good {
         check_contract(ev, o);
+    }
+}
+
+// ---------------------------------------------------------------- S2: every kind of answer, produced for real
+
+/// "Event/shape" of every answer on the tape that said something.
+fn shapes(sim: &Sim) -> std::collections::BTreeSet<String> {
+    let mut v = std::collections::BTreeSet::new();
+    for (event, out) in &sim.tape {
+        let j: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
+        for (path, name) in [("/decision", "block"), ("/systemMessage", "systemMessage"), ("/hookSpecificOutput/additionalContext", "additionalContext"), ("/hookSpecificOutput/permissionDecision", "permissionDecision")] {
+            if j.pointer(path).is_some() {
+                v.insert(format!("{event}/{name}"));
+            }
+        }
+    }
+    v
+}
+
+#[test]
+fn every_s2_answer_kind_is_produced_and_passes_the_contract() {
+    // Every answer of the Sim goes through `check_contract` (a bad one panics inside `hook`); here the S2 kinds are made to happen.
+    let mut s = story();
+    assert_eq!(add(&mut s, &login()).code, 0);
+    s.stop();
+    // Advisory: the edit gets the targeted line, the Stop a note for the person, the next prompt one line for the AI.
+    s.prompt("add dark mode");
+    s.edit("server.js", &broken_server());
+    s.stop();
+    s.prompt("what happened?");
+    // Blocking: the next regression stops the AI.
+    rw(&s).execute_batch("UPDATE promises SET tier='blocking' WHERE id=1").unwrap();
+    s.edit("server.js", &(broken_server() + "// again\n"));
+    let o = s.stop();
+    assert_eq!(o.json().unwrap()["decision"], "block", "{}", o.stdout);
+    // The AI fixes it, and the conversation is compacted.
+    s.edit("server.js", SERVER);
+    s.stop();
+    s.compaction("compact-1");
+    let seen = shapes(&s);
+    for w in ["PostToolUse/additionalContext", "Stop/block", "Stop/systemMessage", "UserPromptSubmit/additionalContext", "SessionStart/additionalContext"] {
+        assert!(seen.contains(w), "no {w} answer was produced: {seen:?}");
     }
 }

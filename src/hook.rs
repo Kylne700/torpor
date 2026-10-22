@@ -4,7 +4,7 @@ use crate::store::*;
 use crate::turn::{self, EventRow, SessionInfo, Turn};
 use crate::util::*;
 use crate::destructive::{self, Verdict};
-use crate::{gate, mask, promise, push, restore, retention, rewind, scan, transcript, vault};
+use crate::{constraints, errkey, gate, mask, promise, push, rebuild, restore, retention, rewind, scan, transcript, vault};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -19,6 +19,8 @@ const MAX_STDIN: u64 = 8 << 20;
 const LOCK_WAIT_MS: u64 = 100;
 const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 pub const STOP_LINE_MAX: usize = 160;
+/// The most characters of additionalContext one UserPromptSubmit answer carries (Claude Code cuts at 10,000).
+const UPS_MAX: usize = 9_900;
 
 pub const MSG_REFUSED_ROOT: &str = "Torpor does not record your whole home folder. Start Claude Code inside a project folder to get save points.";
 pub const MSG_NEWER: &str = "This project's records were written by a newer Torpor. Update the plugin.";
@@ -456,6 +458,30 @@ pub fn first_scan(ws: &Ws, db: &Connection) -> Result<scan::Scan> {
 }
 
 fn session_start(cx: &Cx) -> Result<Option<Value>> {
+    let mut out = start_notice(cx)?;
+    // Spec 21: after a compaction (or a clear, or a resume) Torpor's records go back to the AI. A subagent's compaction fires this event with
+    // the parent's ids and an agent_id, so only a payload without one is the conversation's own.
+    if cx.p.s("agent_id").is_none() {
+        let src = cx.p.s("source").unwrap_or_default();
+        let tp = cx.p.s("transcript_path");
+        if src == "compact" {
+            // A turn still open has not had its origin read (Stop does that): read it now, so the track can say who asked.
+            guarded(cx, || match turn::open_of(cx.db, &cx.session)? {
+                Some(t) => read_origin_for(cx.db, &cx.session, tp.clone(), &t, false),
+                None => Ok(()),
+            });
+        }
+        if let Some(text) = guarded(cx, || rebuild::at_start(cx.db, &cx.session, &src, tp.as_deref().map(Path::new))).flatten() {
+            let mut v = out.take().unwrap_or_else(|| json!({}));
+            v["hookSpecificOutput"] = json!({ "hookEventName": "SessionStart", "additionalContext": text });
+            out = Some(v);
+        }
+    }
+    Ok(out)
+}
+
+/// The line for the person at SessionStart: a first scan, a full disk, a lost key, a changed vault, a gate that has not run.
+fn start_notice(cx: &Cx) -> Result<Option<Value>> {
     let db = cx.db;
     if meta_get(db, "mode").is_none() {
         guarded(cx, || first_scan(cx.ws, cx.db).map(|_| ()));
@@ -551,11 +577,21 @@ fn restore_notice(cx: &Cx) -> Result<Option<String>> {
 
 fn user_prompt(cx: &Cx) -> Result<Option<Value>> {
     let mut notes: Vec<String> = restore_notice(cx)?.into_iter().collect();
+    // Spec 21: a compaction the transcript had not shown at SessionStart is looked for once more here. This comes before `begin`, so the
+    // new prompt's turn is not in the text. It goes first: the notes after it are the ones dropped if the whole is too long.
+    let tp = cx.p.s("transcript_path");
+    if let Some(text) = guarded(cx, || rebuild::at_prompt(cx.db, &cx.session, tp.as_deref().map(Path::new))).flatten() {
+        notes.insert(0, text);
+    }
     let turn = begin(cx, true)?;
     // A rewind that left shell or subagent changes standing (spec 22): the person sees the line too.
     let rewind = guarded(cx, || rewind::line(cx.ws, cx.db, &cx.session, &turn)).flatten();
     notes.extend(rewind.clone());
     notes.extend(gate_notes(cx, &turn));
+    // One string must stay under 10,000 characters (the rebuild alone is at most 8,000).
+    while notes.len() > 1 && notes.iter().map(|n| n.chars().count() + 1).sum::<usize>() > UPS_MAX {
+        notes.pop();
+    }
     let mut out = (!notes.is_empty()).then(|| ups_context(&notes.join("\n")));
     if let (Some(v), Some(l)) = (out.as_mut(), rewind) {
         v["systemMessage"] = json!(l);
@@ -785,11 +821,17 @@ fn post_tool(cx: &Cx, failed: bool) -> Result<Option<Value>> {
     } else if tool == "Bash" {
         let cmd = cx.p.input_str("command").map(|c| mask::cmd_preview(&c));
         let exit = if failed { cx.p.v.get("error").and_then(|e| e.as_str()).and_then(exit_code_of) } else { Some(0) };
-        turn::add_event(
+        let ev = turn::add_event(
             db,
             &EventRow { session: &cx.session, turn: Some(turn.id), tool_use_id: tuid.as_deref(), tool: "Bash", agent: agent.as_deref(), paths_json: None, cmd_preview: cmd.as_deref(), exit_code: exit, failed, duration_ms: cx.p.i("duration_ms") },
             cx.now,
         )?;
+        // Spec 21: the error key of a failed command (the key only, never its output). The output is what follows the first line of `error`.
+        if let (true, Some(code), Some(err)) = (failed, exit, cx.p.v.get("error").and_then(|e| e.as_str())) {
+            let output = err.split_once('\n').map_or("", |x| x.1);
+            let key = errkey::key(&cx.p.input_str("command").unwrap_or_default(), code, output, &cx.ws.root.to_string_lossy(), &user_home().to_string_lossy());
+            guarded(cx, || Ok(db.execute("UPDATE tool_events SET ek1=?2 WHERE id=?1", params![ev, key])?));
+        }
         turn::bump_bash(db, turn.id)?;
         if capture::mode(db) == Mode::Fast {
             guarded_capture(
@@ -815,6 +857,12 @@ fn stop(cx: &Cx, failed: bool) -> Result<Option<Value>> {
     let bg = cx.p.v.get("background_tasks").filter(|v| v.as_array().is_some_and(|a| !a.is_empty())).map(|v| v.to_string());
     turn::close(db, turn.id, if failed { "failed" } else { "stop" }, end_pt, cx.now, bg.as_deref())?;
     guarded(cx, || read_origin(cx, &turn));
+    guarded(cx, || constraints::record(db, turn.id)); // spec 21: the user's always/never/must sentences
+    if !failed {
+        // Spec 21: did the last rebuild reach the AI? The transcript says so.
+        let tp = cx.p.s("transcript_path");
+        guarded(cx, || rebuild::verify(db, sid, tp.as_deref().map(Path::new)));
+    }
     guarded(cx, || promise::upgrade_sources(db, &turn));
     // Promise lines (spec 14) are about the AI's promises, so `quiet` does not hide them and a turn that changed nothing still gets them.
     let mut lines: Vec<String> = Vec::new();
@@ -937,7 +985,10 @@ fn subagent_stop(cx: &Cx) -> Result<Option<Value>> {
 }
 
 fn pre_compact(cx: &Cx) -> Result<Option<Value>> {
-    cx.db.execute("UPDATE sessions SET compact_epoch=compact_epoch+1 WHERE id=?1", [&cx.session])?;
+    // A subagent's compaction carries the parent's ids and an agent_id: it does not start a new cycle of the conversation (spec 21).
+    if cx.p.s("agent_id").is_none() {
+        cx.db.execute("UPDATE sessions SET compact_epoch=compact_epoch+1 WHERE id=?1", [&cx.session])?;
+    }
     Ok(None) // never any stdout: it would join the compaction prompt
 }
 

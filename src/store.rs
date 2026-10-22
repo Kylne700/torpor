@@ -342,7 +342,17 @@ fn open_db(path: &Path, create: bool) -> Result<Connection> {
         // Files are 0600 even if umask or SQLite said otherwise.
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
+    ensure_ek1(&conn);
     Ok(conn)
+}
+
+/// Spec 21: `tool_events.ek1` holds the error key of a failed shell command. Added to any version 2 store on open, without a schema bump:
+/// version 2 has not shipped, and only the rebuild after compaction reads the column. A second process adding it first is fine.
+fn ensure_ek1(conn: &Connection) {
+    let has: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('tool_events') WHERE name='ek1')", [], |r| r.get(0)).unwrap_or(true);
+    if !has {
+        let _ = conn.execute_batch("ALTER TABLE tool_events ADD COLUMN ek1 TEXT");
+    }
 }
 
 // ---------------------------------------------------------------- meta

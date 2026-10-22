@@ -1,6 +1,8 @@
 pub mod capture;
 pub mod cli;
+pub mod constraints;
 pub mod destructive;
+pub mod errkey;
 pub mod findbreak;
 pub mod gate;
 pub mod history;
@@ -10,6 +12,7 @@ pub mod merge;
 pub mod promise;
 pub mod promise_cmd;
 pub mod push;
+pub mod rebuild;
 pub mod restore;
 pub mod runner;
 pub mod retention;
