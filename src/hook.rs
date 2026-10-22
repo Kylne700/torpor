@@ -395,8 +395,14 @@ fn begin(cx: &Cx, ups: bool) -> Result<Turn> {
     let mut pid = cx.p.s("prompt_id");
     if pid.is_none() {
         if !ups {
+            // No prompt_id on an event that is not a prompt: it belongs to the turn that is open, else to the newest one (a Stop ended it and the
+            // AI went on). A new `seq-N` turn here would start a new block chain every time and the 2-block cap would never trip.
             if let Some(t) = turn::open_of(db, sid)? {
                 return Ok(t);
+            }
+            if let Some(t) = turn::newest_of(db, sid)? {
+                turn::reopen(db, t.id)?;
+                return Ok(Turn { end_kind: "open".into(), ..t });
             }
         }
         pid = Some(format!("seq-{}", turn::count_of(db, sid)? + 1));

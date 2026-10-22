@@ -61,6 +61,14 @@ pub fn open_of(db: &Connection, session: &str) -> Result<Option<Turn>> {
         .optional()?)
 }
 
+/// The session's newest turn, open or ended.
+pub fn newest_of(db: &Connection, session: &str) -> Result<Option<Turn>> {
+    Ok(db
+        .prepare_cached(&format!("SELECT {TURN_COLS} FROM turns WHERE session_id=?1 ORDER BY id DESC LIMIT 1"))?
+        .query_row([session], turn_of)
+        .optional()?)
+}
+
 pub fn by_id(db: &Connection, id: i64) -> Result<Option<Turn>> {
     Ok(db.prepare_cached(&format!("SELECT {TURN_COLS} FROM turns WHERE id=?1"))?.query_row([id], turn_of).optional()?)
 }

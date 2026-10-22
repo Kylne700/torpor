@@ -84,6 +84,46 @@ fn b1_a_blocking_promise_stops_a_real_regression_once_per_change() {
 }
 
 #[test]
+fn a_stop_chain_whose_payloads_have_no_prompt_id_blocks_at_most_twice() {
+    let mut s = blocking_story();
+    s.pid.clear(); // from here on no payload carries a prompt_id (the prompt included: its turn is keyed `seq-N`)
+    s.hook("UserPromptSubmit", json!({"prompt": "tidy up the server"}));
+    let turns = s.q_i64("SELECT count(*) FROM turns");
+    s.edit("server.js", &broken_server());
+    assert!(blocked(&s.stop()).is_some(), "the first Stop is blocked");
+    // The AI goes on without a new prompt: the Stop ended the turn, and no payload says which turn the edit belongs to.
+    s.edit("server.js", &(broken_server() + "// second try\n"));
+    assert!(blocked(&s.stop()).is_some(), "a changed version may be blocked once more");
+    s.edit("server.js", &(broken_server() + "// third try\n"));
+    let o = s.stop();
+    assert!(blocked(&o).is_none(), "a third block in the same chain: {}", why(&o));
+    assert_eq!(s.q_i64("SELECT SUM(blocks) FROM gate_chain"), 2);
+    assert_eq!(s.q_i64("SELECT count(*) FROM turns"), turns, "the continuations stay in the turn they began in");
+    assert!(s.faults().is_empty(), "{:?}", s.faults());
+}
+
+#[test]
+fn a_fail_followed_by_an_unrunnable_rerun_is_not_a_flake_and_the_promise_stays_blocking() {
+    let mut s = story();
+    // While `arm` exists the app starts once: the next start (the re-run of a FAIL) exits 1, so that run is UNRUNNABLE.
+    let (arm, flag) = (s.env.home.join("arm"), s.env.home.join("flag"));
+    let cmd = format!("if [ -e '{}' ]; then if [ -e '{}' ]; then exit 1; fi; touch '{}'; fi; node server.js --port {{port}}", arm.display(), flag.display(), flag.display());
+    let start = json!({"cmd": cmd, "ready": "/login", "timeout_s": 30}).to_string();
+    { let o = add(&mut s, &spec("login works", &start, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
+    set(&s, "UPDATE promises SET tier='blocking' WHERE id=1");
+    s.stop();
+    s.prompt("tidy up the server");
+    s.edit("server.js", &broken_server());
+    std::fs::write(&arm, "x").unwrap();
+    let o = s.stop();
+    assert!(blocked(&o).is_none(), "{}", why(&o));
+    assert_eq!((runs(&s, "gate", "FAIL"), runs(&s, "gate", "UNRUNNABLE")), (1, 1), "{}", common::app::runs(&s));
+    assert_eq!(last_receipt(&s), "1/1/unrunnable");
+    assert_eq!(s.q_str("SELECT tier||' '||state FROM promises").as_deref(), Some("blocking live"), "one hiccup must not retire a blocking promise");
+    assert!(s.faults().is_empty(), "{:?}", s.faults());
+}
+
+#[test]
 fn a_dispute_or_the_gate_switch_ends_the_blocking() {
     let mut s = blocking_story();
     s.prompt("tidy up the server");

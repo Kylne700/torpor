@@ -177,15 +177,14 @@ fn flake_hat(db: &Connection, id: i64) -> f64 {
 // ---------------------------------------------------------------- the Stop chain
 
 /// Blocks so far in this chain (session, prompt) and the tree of the newest one.
-fn chain_state(db: &Connection, session: &str, prompt: &str) -> (i64, Option<Vec<u8>>) {
-    let sum: i64 = db.query_row("SELECT COALESCE(SUM(blocks),0) FROM gate_chain WHERE session_id=?1 AND prompt_id=?2", params![session, prompt], |r| r.get(0)).unwrap_or(0);
+/// An error is returned, never read as "no blocks yet": that would lift the cap. The caller fails open (the Stop is allowed).
+fn chain_state(db: &Connection, session: &str, prompt: &str) -> Result<(i64, Option<Vec<u8>>)> {
+    let sum: i64 = db.query_row("SELECT COALESCE(SUM(blocks),0) FROM gate_chain WHERE session_id=?1 AND prompt_id=?2", params![session, prompt], |r| r.get(0))?;
     let tree: Option<Vec<u8>> = db
         .query_row("SELECT tree_id FROM gate_chain WHERE session_id=?1 AND prompt_id=?2 AND blocks>0 ORDER BY rowid DESC LIMIT 1", params![session, prompt], |r| r.get(0))
-        .optional()
-        .ok()
-        .flatten()
+        .optional()?
         .flatten();
-    (sum, tree)
+    Ok((sum, tree))
 }
 
 fn chain_open(sum: i64, last: &Option<Vec<u8>>, tree: &[u8; 32]) -> bool {
@@ -524,7 +523,7 @@ fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skippe
     if !skipped.is_empty() {
         a.outcomes.insert("unresolved");
     }
-    let (sum, last) = chain_state(db, &inp.session, &inp.prompt_id);
+    let (sum, last) = chain_state(db, &inp.session, &inp.prompt_id)?;
     let mut open = chain_open(sum, &last, &inp.tree);
     for (c, r) in cands.iter().zip(res) {
         let id = c.p.id;
@@ -670,7 +669,7 @@ pub fn run(root: &Path, inp: &Input) -> Result<Out> {
         return Ok(Out::Nothing);
     }
     let paths: Vec<String> = turn::net_changes(&ws.conn, inp.turn_id, "'edit','shell','subagent','outside'")?.into_iter().map(|n| n.path).collect();
-    let (sum, last) = chain_state(&ws.conn, &inp.session, &inp.prompt_id);
+    let (sum, last) = chain_state(&ws.conn, &inp.session, &inp.prompt_id)?;
     let open = chain_open(sum, &last, &inp.tree);
     let gate_on = promise::gate_enabled(&ws.conn);
     let mut cands = select(&ws, inp, ps, &paths);
@@ -780,3 +779,9 @@ mod tests {
         assert!(!chain_open(2, &Some(t.to_vec()), &other));
     }
 }
+
+    #[test]
+    fn a_chain_that_cannot_be_read_is_an_error_not_zero_blocks() {
+        let db = Connection::open_in_memory().unwrap(); // no gate_chain table
+        assert!(chain_state(&db, "s", "p").is_err());
+    }

@@ -374,7 +374,8 @@ pub fn check_tree_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &scratch::Op
         runs.push(r);
         match v {
             Verdict::Unrunnable => {
-                call = if i == 0 { Call::Unrunnable } else { Call::Flaky };
+                // After a FAIL too: a run that could not run (clock, port race, app did not start) says nothing about the check. Only a PASS after a FAIL is flaky.
+                call = Call::Unrunnable;
                 break;
             }
             Verdict::Pass => {
