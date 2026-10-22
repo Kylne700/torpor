@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod cli;
 pub mod constraints;
+pub mod deps;
 pub mod destructive;
 pub mod errkey;
 pub mod findbreak;

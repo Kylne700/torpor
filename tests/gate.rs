@@ -151,6 +151,28 @@ fn a_turn_that_changes_only_docs_and_tests_runs_nothing_20_of_20() {
 }
 
 #[test]
+fn the_files_the_app_ran_are_recorded_and_a_change_to_none_of_them_waits_for_the_second_stop() {
+    let mut s = blocking_story();
+    let runs_before = s.q_i64("SELECT count(*) FROM promise_runs");
+    assert_eq!(s.q_str("SELECT deps_json FROM promises WHERE id=1").as_deref(), Some(r#"["server.js"]"#), "the extra run is a record, not a verdict");
+    assert_eq!(runs_before, 7, "5 on the good version and 2 on the bad one; the coverage run is not stored");
+    // A file the app never loads: the Stop picks nothing, and the Stop after it runs the check anyway (not run in the last 3 Stops).
+    s.prompt("add a helper");
+    s.write_tool("tools/helper.js", "module.exports = 1;\n");
+    s.stop();
+    assert_eq!(last_receipt(&s), "0/0/none");
+    s.prompt("and another");
+    s.write_tool("tools/other.js", "module.exports = 2;\n");
+    s.stop();
+    assert_eq!(last_receipt(&s), "1/1/ok");
+    // The app's own file picks it at once.
+    s.prompt("tidy the server");
+    s.edit("server.js", &(SERVER.to_string() + "// tidy\n"));
+    s.stop();
+    assert_eq!(last_receipt(&s), "1/1/ok");
+}
+
+#[test]
 fn a_setup_failure_is_unrunnable_and_never_blocks_20_of_20() {
     let mut s = blocking_story();
     for i in 0..20 {

@@ -553,15 +553,23 @@ pub fn finish(ws: &mut Ws, id: i64, pr: &Proof, until: Instant, say: &dyn Fn(&st
     let gtree = point_tree(&ws.conn, pr.good)?;
     let btree = pr.bad.and_then(|b| point_tree(&ws.conn, b).ok());
     let watched = btree.as_ref().and_then(|bt| watched_json(ws, bt, &gtree));
+    let spec = spec_of(ws, &p)?.spec;
     let a = match (&btree, pr.state) {
         (None, _) => shadow::Assessed { tier: "unproven", note: None, killed: None, tried: None },
         (Some(_), "flaky") => shadow::Assessed { tier: "advisory", note: None, killed: None, tried: None },
-        (Some(bt), _) => shadow::assess(ws, &p, &spec_of(ws, &p)?.spec, &gtree, bt, pr.cold_ms, until, say),
+        (Some(bt), _) => shadow::assess(ws, &p, &spec, &gtree, bt, pr.cold_ms, until, say),
+    };
+    // Last, and only if time is left: one more run for the dependency record (a slow app is left without one, which keeps it always selected).
+    let deps = if pr.state == "live" && pr.cold_ms <= shadow::COLD_MS && Instant::now() + Duration::from_millis(3 * pr.cold_ms + 5000) < until {
+        say("Recording which files the app runs.");
+        crate::deps::record(ws, &spec, &gtree).and_then(|v| serde_json::to_string(&v).ok())
+    } else {
+        None
     };
     write(ws, |w| {
         w.conn.execute(
-            "UPDATE promises SET tier=?2, state=?3, good_point=?4, bad_point=?5, flake_hat=?6, last_pass_point=?4, watched_json=?7, mutants_killed=?8, mutants_tried=?9, shadow_days=0 WHERE id=?1",
-            params![id, a.tier, pr.state, pr.good, pr.bad, pr.hat, watched, a.killed, a.tried],
+            "UPDATE promises SET tier=?2, state=?3, good_point=?4, bad_point=?5, flake_hat=?6, last_pass_point=?4, watched_json=?7, mutants_killed=?8, mutants_tried=?9, deps_json=?10, shadow_days=0 WHERE id=?1",
+            params![id, a.tier, pr.state, pr.good, pr.bad, pr.hat, watched, a.killed, a.tried, deps],
         )?;
         Ok(())
     })?;
