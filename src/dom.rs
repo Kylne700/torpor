@@ -216,9 +216,8 @@ fn error_line(where_: &str, msg: &str) -> String {
 }
 
 /// Protocol lines only, and the text of their messages without secrets or long runs (a page can print anything into a console error).
-fn read_lines(log: &Path) -> Vec<String> {
-    let raw = fs::read(log).unwrap_or_default();
-    String::from_utf8_lossy(&raw)
+fn read_lines(raw: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(raw)
         .lines()
         .filter(|l| l.starts_with("{\"p\":"))
         .map(|l| match serde_json::from_str::<Value>(l) {
@@ -271,7 +270,8 @@ pub fn run_steps(home: &Path, spec: &Spec, run: &Run, opts: &Opts) -> Vec<String
         app.stop();
     }
     app.wait_eof();
-    let mut lines = read_lines(&log);
+    // What the pipe carried, kept in memory: the app under test shares the scratch folder and could rewrite `runner.log` after the done line.
+    let mut lines = read_lines(&app.head());
     if !ended && !lines.iter().any(|l| l.starts_with("{\"p\":\"done\"")) {
         let msg = if runner::out_of_time() { OUT_OF_TIME } else { "the browser runner did not finish" };
         lines.push(error_line("check", msg));
@@ -534,13 +534,13 @@ mod tests {
             ),
         )
         .unwrap();
-        let lines = read_lines(&log);
+        let lines = read_lines(&std::fs::read(&log).unwrap());
         assert_eq!(lines.len(), 3, "{lines:?}");
         let fail: Value = serde_json::from_str(&lines[1]).unwrap();
         let msg = fail["msg"].as_str().unwrap();
         assert!(!msg.contains("sk-ant-api03") && msg.chars().count() <= 301, "{msg}");
         assert_eq!(fail["i"], 3);
-        assert!(read_lines(&tmp.path().join("missing.log")).is_empty());
+        assert!(read_lines(b"").is_empty());
     }
 
     #[test]

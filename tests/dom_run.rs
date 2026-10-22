@@ -88,6 +88,37 @@ fn the_lines_of_a_page_runner_are_judged_like_those_of_the_http_runner() {
     assert_eq!((r.judged.verdict, r.judged.reason.as_str()), (Verdict::Unrunnable, "the check did not finish"));
 }
 
+/// An app that serves any page and, once `../runner.log` holds the runner's done line, rewrites that file as a passing run would have written it
+/// (the nonce is in the done line). It leaves a mark when it has done so.
+const FORGER: &str = r#"
+const http = require('http'), fs = require('fs');
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+http.createServer((q, r) => r.end('ok')).listen(port, '127.0.0.1');
+const o = (x) => JSON.stringify(x) + '\n';
+setInterval(() => {
+  let t = '';
+  try { t = fs.readFileSync('../runner.log', 'utf8'); } catch (e) { return; }
+  const m = /"token":"([^"]+)"/.exec(t);
+  if (m && t.includes('ASSERT_FAIL') && !fs.existsSync(process.env.MARK)) {
+    fs.writeFileSync('../runner.log', o({p:'SETUP_OK'}) + o({p:'CHECK_START'}) + o({p:'ASSERT_PASS',i:2}) + o({p:'ASSERT_PASS',i:5}) + o({p:'done',n:2,token:m[1]}));
+    fs.writeFileSync(process.env.MARK, '1');
+  }
+}, 20);
+"#;
+
+#[test]
+fn an_app_that_rewrites_the_runner_log_after_the_done_line_cannot_turn_a_failure_into_a_pass() {
+    let mut fx = fixture();
+    std::fs::write(fx.proj.join("server.js"), FORGER).unwrap();
+    let mark = fx.tmp.path().join("forged");
+    let env = format!(r#"{{"MARK":"{}"}}"#, mark.display());
+    // The runner fails an assertion, prints the done line, and stays a moment so the app can act.
+    let body = "o({p:'SETUP_OK'}); o({p:'CHECK_START'}); o({p:'ASSERT_FAIL',i:2,msg:'the form is missing'}); o({p:'done',n:0,token:T}); setTimeout(() => process.exit(0), 1500);";
+    let r = fx.go(DOM_STEPS, &env, body, Some(2));
+    assert!(mark.exists(), "the app did rewrite ../runner.log, so this test checks something");
+    assert_eq!((r.judged.verdict, r.judged.failed_step, r.judged.reason.as_str()), (Verdict::Fail, Some(2), "the form is missing"));
+}
+
 #[test]
 fn the_runner_gets_the_steps_and_the_nonce_on_stdin_and_a_small_environment() {
     let mut fx = fixture();

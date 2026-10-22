@@ -331,6 +331,9 @@ pub fn app_env(ws_dir: &Path, run: &Path, spec_env: &BTreeMap<String, String>, p
 #[derive(Default)]
 struct Tail {
     buf: Vec<u8>,
+    /// The first `LOG_CAP` bytes, the same as the log file gets. A page check is judged from these and never from the file: the app under
+    /// test runs next to that file and could rewrite it.
+    head: Vec<u8>,
     eof: bool,
 }
 
@@ -423,6 +426,8 @@ fn pump(mut r: PipeReader, log: PathBuf, tail: Arc<Mutex<Tail>>) {
             }
         }
         if let Ok(mut t) = tail.lock() {
+            let room = LOG_CAP.saturating_sub(t.head.len());
+            t.head.extend_from_slice(&buf[..n.min(room)]);
             t.buf.extend_from_slice(&buf[..n]);
             if t.buf.len() > TAIL_KEEP * 2 {
                 let cut = t.buf.len() - TAIL_KEEP;
@@ -443,7 +448,7 @@ impl App {
         App::launch(c, cwd, env, log, None)
     }
 
-    /// `c` in `cwd` with exactly `env`, in its own process group, stdout and stderr into `log` (first 1 MiB) and a short tail.
+    /// `c` in `cwd` with exactly `env`, in its own process group, stdout and stderr into `log` (first 1 MiB; the same bytes stay in memory, see `head`) and a short tail.
     /// stdin is closed, or carries `input` (the browser runner reads its spec there, never from argv or the environment).
     pub fn launch(mut c: Command, cwd: &Path, env: &[(String, String)], log: PathBuf, input: Option<Vec<u8>>) -> Result<App> {
         let (rd, wr) = std::io::pipe()?;
@@ -532,6 +537,11 @@ impl App {
             }),
             _ => None,
         }
+    }
+
+    /// The first 1 MiB the group printed, as the reader took it off the pipe (call `wait_eof` first).
+    pub fn head(&self) -> Vec<u8> {
+        self.tail.lock().map(|t| t.head.clone()).unwrap_or_default()
     }
 
     /// What the app printed last, on one line, without secrets or long runs. Waits a moment for the reader after an exit.
