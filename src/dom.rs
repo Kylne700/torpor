@@ -42,9 +42,10 @@ pub fn installed(dir: &Path) -> bool {
     dir.join("node_modules/playwright-core/package.json").is_file()
 }
 
-/// Playwright's own Chromium (the download path): any `chromium-*` folder in the runner's browser folder.
+/// Playwright's own Chromium (the download path): a `chromium-<rev>` folder in the runner's browser folder that holds Playwright's
+/// `INSTALLATION_COMPLETE` marker. A download that stopped half way has no marker, so the next `runner install` offers it again.
 pub fn own_browser(dir: &Path) -> bool {
-    fs::read_dir(dir.join("browsers")).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("chromium")))
+    fs::read_dir(dir.join("browsers")).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("chromium-") && e.path().join("INSTALLATION_COMPLETE").is_file()))
 }
 
 fn path_dirs() -> Vec<PathBuf> {
@@ -288,7 +289,7 @@ pub fn prompt(dir: &Path, need_package: bool, need_browser: bool) -> String {
         parts.push("about 3 MB (playwright-core from the npm registry)");
     }
     if need_browser {
-        parts.push("about 150 MB more for a Chromium from Playwright's servers, because none was found on this computer");
+        parts.push("a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers, because none was found on this computer");
     }
     format!("The browser runner needs {}. Install into {}? [y/N]", parts.join(", plus "), dir.display())
 }
@@ -304,11 +305,12 @@ fn download_env(home: &Path) -> Vec<(String, String)> {
     env
 }
 
-/// `node playwright-core/cli.js install chromium`, into the runner's browser folder. NOT VERIFIED: the code is here because the spec asks for
-/// it; it has never been run (the tests use a Chromium that is already installed, and a stand-in cli.js).
+/// `node playwright-core/cli.js install --no-shell chromium`, into the runner's browser folder. `--no-shell`: the runner starts the full
+/// Chromium, never the headless shell. NOT VERIFIED: the code is here because the spec asks for it; it has never been run (the tests use a
+/// Chromium that is already installed, and a stand-in cli.js).
 pub fn chromium_command(dir: &Path, node: &Path) -> Command {
     let mut c = Command::new(node);
-    c.arg(dir.join("node_modules/playwright-core/cli.js")).arg("install").arg("chromium").current_dir(dir).env_clear();
+    c.arg(dir.join("node_modules/playwright-core/cli.js")).arg("install").arg("--no-shell").arg("chromium").current_dir(dir).env_clear();
     c.envs(download_env(&dir.join("home")));
     c.env("PLAYWRIGHT_BROWSERS_PATH", dir.join("browsers"));
     c
@@ -480,6 +482,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("browsers/ffmpeg-1")).unwrap();
         assert!(!own_browser(&dir));
         std::fs::create_dir_all(dir.join("browsers/chromium-1234")).unwrap();
+        assert!(!own_browser(&dir), "a download that stopped half way (no INSTALLATION_COMPLETE) is not a browser");
+        std::fs::create_dir_all(dir.join("browsers/chromium_headless_shell-1234")).unwrap();
+        std::fs::write(dir.join("browsers/chromium_headless_shell-1234/INSTALLATION_COMPLETE"), "").unwrap();
+        assert!(!own_browser(&dir), "the headless shell is not the browser the runner starts");
+        std::fs::write(dir.join("browsers/chromium-1234/INSTALLATION_COMPLETE"), "").unwrap();
         assert!(own_browser(&dir));
     }
 
@@ -490,12 +497,12 @@ mod tests {
         assert!(q.starts_with("The browser runner needs about 3 MB (playwright-core from the npm registry).") && q.ends_with("Install into /srv/h/runner/1.64.1? [y/N]"), "{q}");
         assert!(!q.contains("Chromium"));
         let q = prompt(dir, true, true);
-        assert!(q.contains("plus about 150 MB more for a Chromium from Playwright's servers, because none was found"), "{q}");
-        assert!(prompt(dir, false, true).starts_with("The browser runner needs about 150 MB more for a Chromium from Playwright's servers"));
+        assert!(q.contains("plus a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers, because none was found"), "{q}");
+        assert!(prompt(dir, false, true).starts_with("The browser runner needs a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers"));
         let c = chromium_command(dir, Path::new("/usr/bin/node"));
         assert_eq!(c.get_program(), "/usr/bin/node");
         let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, ["/srv/h/runner/1.64.1/node_modules/playwright-core/cli.js", "install", "chromium"]);
+        assert_eq!(args, ["/srv/h/runner/1.64.1/node_modules/playwright-core/cli.js", "install", "--no-shell", "chromium"]);
         assert_eq!(c.get_current_dir(), Some(dir));
         let envs: std::collections::BTreeMap<String, String> = c.get_envs().filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned()))).collect();
         assert_eq!(envs["PLAYWRIGHT_BROWSERS_PATH"], "/srv/h/runner/1.64.1/browsers");

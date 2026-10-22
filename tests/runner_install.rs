@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 const CLI_JS: &str = "const fs = require('fs'), path = require('path');
 const b = process.env.PLAYWRIGHT_BROWSERS_PATH;
 fs.mkdirSync(path.join(b, 'chromium-1'), { recursive: true });
+fs.writeFileSync(path.join(b, 'chromium-1', 'INSTALLATION_COMPLETE'), '');
 fs.writeFileSync(path.join(b, '..', 'cli-ran.json'), JSON.stringify({ argv: process.argv.slice(2), home: process.env.HOME, browsers: b, cwd: process.cwd(), env: Object.keys(process.env).sort() }));
 ";
 
@@ -242,10 +243,10 @@ fn without_a_chromium_the_packages_own_command_installs_one_inside_the_runner_fo
         b"",
     );
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("plus about 150 MB more for a Chromium from Playwright's servers, because none was found"), "{}", o.stdout);
+    assert!(o.stdout.contains("plus a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers, because none was found"), "{}", o.stdout);
     assert!(o.stdout.contains("Installed Chromium for the browser runner."), "{}", o.stdout);
     let ran: serde_json::Value = serde_json::from_slice(&std::fs::read(fx.dir().join("cli-ran.json")).unwrap()).unwrap();
-    assert_eq!(ran["argv"], serde_json::json!(["install", "chromium"]));
+    assert_eq!(ran["argv"], serde_json::json!(["install", "--no-shell", "chromium"]));
     let dir = fx.dir().to_string_lossy().into_owned();
     assert_eq!(ran["browsers"], format!("{dir}/browsers"));
     assert_eq!(ran["home"], format!("{dir}/home"), "the download never touches the user's home");
@@ -255,6 +256,30 @@ fn without_a_chromium_the_packages_own_command_installs_one_inside_the_runner_fo
     let names: Vec<&str> = ran["env"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(names.iter().all(|n| allowed.contains(n)), "{names:?}");
     assert!(["HOME", "PATH", "PLAYWRIGHT_BROWSERS_PATH"].iter().all(|n| names.contains(n)), "{names:?}");
+}
+
+#[test]
+fn a_browser_download_that_stopped_half_way_is_offered_again_and_a_finished_one_is_not() {
+    let fx = Fx::new(false, false);
+    let no_browser = |args: &[&str]| {
+        let mut c = fx.cmd(args);
+        c.env("TORPOR_TEST_NO_BROWSER", "1");
+        run_cmd(c, b"")
+    };
+    let o = no_browser(&["install", "--yes"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    let (ran, marker) = (fx.dir().join("cli-ran.json"), fx.dir().join("browsers/chromium-1/INSTALLATION_COMPLETE"));
+    assert!(ran.is_file() && marker.is_file(), "the stand-in finished its download");
+    let o = no_browser(&["install", "--yes"]);
+    assert!(o.stdout.contains("is already installed in"), "a finished download is not offered again: {}", o.stdout);
+    // The download stopped half way: the folder is there, Playwright's marker is not.
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::remove_file(&ran).unwrap();
+    let o = no_browser(&["install", "--yes"]);
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    assert!(o.stdout.starts_with("The browser runner needs a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers"), "{}", o.stdout);
+    assert!(ran.is_file() && marker.is_file(), "the download ran again and finished");
+    assert_eq!(fx.reg.requests().len(), 1, "the package was not fetched again: {:?}", fx.reg.requests());
 }
 
 #[test]
