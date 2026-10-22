@@ -1,5 +1,6 @@
 //! Scratch copies and the app process (spec 16): a saved version runs in its own folder, on its own port, with its own HOME.
 //! Only `run.lock` is held while the app runs. The store lock and database transactions are never held across a run (one exception: `torpor undo`
+//! runs its checks inside its own lock and transaction, see undo_check.rs).
 use crate::capture::{self, Req, flatten_tree};
 use crate::dom;
 use crate::runner::{self, Client, Judged, ReqErr, Verdict};
@@ -549,7 +550,14 @@ impl App {
     }
 }
 
-fn free_port() -> Result<u16> {
+/// A free port for the `attempt`th start of an app (0, or 1 for the retry).
+#[cfg_attr(not(feature = "fault-inject"), allow(unused_variables))]
+fn free_port(attempt: usize) -> Result<u16> {
+    // Tests: the ports of the 1st and the 2nd start, comma separated, to put the app on a port somebody else holds (fault-inject builds only).
+    #[cfg(feature = "fault-inject")]
+    if let Some(p) = std::env::var("TORPOR_TEST_PORT").ok().and_then(|s| s.split(',').nth(attempt)?.trim().parse::<u16>().ok()) {
+        return Ok(p);
+    }
     // Tests: one window of ports per test, so two tests starting an app in the same moment never pick the same port (fault-inject builds only).
     #[cfg(feature = "fault-inject")]
     if let Some((lo, hi)) = std::env::var("TORPOR_TEST_PORTS").ok().and_then(|s| {
@@ -567,6 +575,71 @@ fn free_port() -> Result<u16> {
     }
     let l = std::net::TcpListener::bind(("127.0.0.1", 0))?;
     Ok(l.local_addr()?.port())
+}
+
+/// Who holds the socket that listens on a port.
+#[derive(Debug, PartialEq)]
+enum Holder {
+    /// A process of the app (its group, or started by one of its processes).
+    App,
+    /// Another process (its id): whatever answered on the port was not the app.
+    Other(u32),
+    /// Nobody Torpor can see: other users' processes, no /proc (macOS). The answer is trusted then.
+    Unknown,
+}
+
+/// The sockets that listen on `port` in the text of /proc/net/tcp or tcp6, as the "socket:[inode]" text a link in /proc/<pid>/fd shows.
+/// A line reads `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`; state 0A is LISTEN, the port is in hex.
+fn listening_sockets(table: &str, port: u16) -> Vec<String> {
+    let rows = table.lines().skip(1).map(|l| l.split_whitespace().collect::<Vec<_>>());
+    rows.filter(|f| f.get(3) == Some(&"0A") && f.get(1).and_then(|a| a.rsplit(':').next()).and_then(|p| u16::from_str_radix(p, 16).ok()) == Some(port))
+        .filter_map(|f| f.get(9).map(|i| format!("socket:[{i}]")))
+        .collect()
+}
+
+/// The processes of an app: its group and everything started below them, from (pid, parent, group) of every process.
+fn app_pids(procs: &[(u32, u32, i32)], pgid: i32) -> std::collections::BTreeSet<u32> {
+    let mut ours: std::collections::BTreeSet<u32> = procs.iter().filter(|p| p.2 == pgid).map(|p| p.0).collect();
+    while let Some(add) = procs.iter().find(|p| ours.contains(&p.1) && !ours.contains(&p.0)).map(|p| p.0) {
+        ours.insert(add);
+    }
+    ours
+}
+
+/// Who holds the listening socket on `port`: a process of the app in group `pgid`, another process, or nobody we can see. Linux reads /proc;
+/// elsewhere it is Unknown, so a port taken by someone else goes unnoticed there. shortcut: no lsof for macOS, upgrade when that matters.
+#[cfg(target_os = "linux")]
+fn holder_of(pgid: i32, port: u16) -> Holder {
+    let sockets: Vec<String> = ["/proc/net/tcp", "/proc/net/tcp6"].iter().flat_map(|t| listening_sockets(&fs::read_to_string(t).unwrap_or_default(), port)).collect();
+    if sockets.is_empty() {
+        return Holder::Unknown;
+    }
+    let holds = |pid: u32| {
+        let fds = fs::read_dir(format!("/proc/{pid}/fd"));
+        fds.is_ok_and(|d| d.flatten().any(|e| fs::read_link(e.path()).is_ok_and(|t| sockets.iter().any(|s| t.to_str() == Some(s.as_str())))))
+    };
+    let procs: Vec<(u32, u32, i32)> = fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+            // "pid (name) S parent group ...": the name may hold spaces and brackets, so the fields count from its last ")".
+            let stat = fs::read_to_string(e.path().join("stat")).ok()?;
+            let mut f = stat.rsplit_once(')')?.1.split_whitespace().skip(1);
+            Some((pid, f.next()?.parse().ok()?, f.next()?.parse().ok()?))
+        })
+        .collect();
+    let ours = app_pids(&procs, pgid);
+    if ours.iter().any(|p| holds(*p)) {
+        return Holder::App;
+    }
+    procs.iter().map(|p| p.0).find(|p| holds(*p)).map_or(Holder::Unknown, Holder::Other)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn holder_of(_pgid: i32, _port: u16) -> Holder {
+    Holder::Unknown
 }
 
 // ---------------------------------------------------------------- a run
@@ -662,9 +735,9 @@ impl Run {
     /// `start`, with files written over the copy and variables added for this run only (a mutant, a dependency-recording run).
     pub fn start_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &Opts) -> std::result::Result<Run, Stopped> {
         let rand = runner::new_rand();
-        let port = free_port().map_err(|e| stop(format!("no free port ({e})")))?;
         for (k, v) in &spec.env {
-            if let Some(p) = spec::env_problem(k, &spec::subst(v, &rand, port)) {
+            // The port is picked later, right before the app starts. No rule here depends on its digits, only on there being two or more.
+            if let Some(p) = spec::env_problem(k, &spec::subst(v, &rand, PROVISIONAL_PORT)) {
                 return Err(stop(format!("refused at run time: {p}")));
             }
         }
@@ -679,45 +752,78 @@ impl Run {
             return Err(stop(format!("needs-install: the saved version's lockfile differs from the one in the project, so {dep} cannot be reused")));
         }
         apply_overlay(&scratch.app, &opts.overlay, &opts.exec).map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
-        let spec_env: BTreeMap<String, String> = spec.env.iter().map(|(k, v)| (k.clone(), spec::subst(v, &rand, port))).collect();
-        let (mut env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
-        for (k, v) in &opts.env {
-            match env.iter_mut().find(|(n, _)| n == k) {
-                Some((_, old)) if k == "NODE_OPTIONS" => *old = format!("{old} {v}"),
-                Some((_, old)) => *old = v.clone(),
-                None => env.push((k.clone(), v.clone())),
-            }
-        }
-        let text = dotenv(&dotenv_part);
-        for name in [".env.torpor", ".env"] {
-            fs::write(scratch.app.join(name), &text).map_err(|e| stop(format!("no .env in the scratch copy ({e})")))?;
-        }
-        let cmd = spec::subst(&spec.start.cmd, &rand, port);
-        let mut app = App::spawn(&cmd, &scratch.app, &env, scratch.dir.join("server.log")).map_err(|e| stop(format!("the app could not be started ({e})")))?;
-        let shown = trunc_chars(&cmd, 40);
-        let ready = spec::subst(&spec.start.ready, &rand, port);
-        let deadline = Instant::now() + Duration::from_secs(spec.start.timeout_s);
-        let mut client = Client::new(port);
-        let mut last = "no answer".to_string();
+        // The port is picked here, as late as it can be: another process may take it between the pick and the app's bind. When the app ends at
+        // once, or a process that is not the app answers on the port, the app is started once more on another port.
+        let mut again = false;
         loop {
-            if let Some(end) = app.ended() {
-                let tail = app.tail();
-                return Err(Stopped { judged: unr(format!("the app did not start ({shown} {end})")), tail });
+            let port = free_port(usize::from(again)).map_err(|e| stop(format!("no free port ({e})")))?;
+            match start_app(ws, spec, &scratch, opts, &rand, port) {
+                Ok(app) => {
+                    let nonce = runner::new_nonce();
+                    return Ok(Run { port, rand, nonce, app_dir: scratch.app.clone(), app, _scratch: scratch, _lock: lock });
+                }
+                Err(n) if n.retry && !again && !runner::out_of_time() => again = true,
+                Err(n) => return Err(n.stopped),
             }
-            match client.request("GET", &ready, None) {
-                Ok(r) if (200..300).contains(&r.status) => break,
-                Ok(r) => last = format!("GET {ready} gave {}", r.status),
-                Err(ReqErr::Unrunnable(m)) => return Err(Stopped { judged: unr(m), tail: app.tail() }),
-                Err(ReqErr::Down(_)) => {}
-            }
-            if Instant::now() >= deadline {
-                let tail = app.tail();
-                return Err(Stopped { judged: unr(format!("the app did not start ({shown}: {last} for {} s)", spec.start.timeout_s)), tail });
-            }
-            std::thread::sleep(Duration::from_millis(250));
         }
-        let nonce = runner::new_nonce();
-        Ok(Run { port, rand, nonce, app_dir: scratch.app.clone(), app, _scratch: scratch, _lock: lock })
+    }
+}
+
+/// A port with two or more digits, for the one rule of the spec's env values that counts them, before the real port is picked.
+const PROVISIONAL_PORT: u16 = 40000;
+/// An app that ends within this long after its start has "ended at once".
+const AT_ONCE: Duration = Duration::from_secs(3);
+
+/// An app that did not come up: why, and whether one more start on another port may work.
+struct NoStart {
+    stopped: Stopped,
+    retry: bool,
+}
+
+/// One start of the app on `port`, up to "its ready path answers" (spec 16). The answer must come from the app itself: on Linux, a 2xx that
+/// a process outside the app gives on that port is not trusted. Torpor never stops such a process, only its own app.
+fn start_app(ws: &Ws, spec: &Spec, scratch: &Scratch, opts: &Opts, rand: &str, port: u16) -> std::result::Result<App, NoStart> {
+    let plain = |stopped: Stopped| NoStart { stopped, retry: false };
+    let spec_env: BTreeMap<String, String> = spec.env.iter().map(|(k, v)| (k.clone(), spec::subst(v, rand, port))).collect();
+    let (mut env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
+    for (k, v) in &opts.env {
+        match env.iter_mut().find(|(n, _)| n == k) {
+            Some((_, old)) if k == "NODE_OPTIONS" => *old = format!("{old} {v}"),
+            Some((_, old)) => *old = v.clone(),
+            None => env.push((k.clone(), v.clone())),
+        }
+    }
+    let text = dotenv(&dotenv_part);
+    for name in [".env.torpor", ".env"] {
+        fs::write(scratch.app.join(name), &text).map_err(|e| plain(stop(format!("no .env in the scratch copy ({e})"))))?;
+    }
+    let cmd = spec::subst(&spec.start.cmd, rand, port);
+    let started = Instant::now();
+    let mut app = App::spawn(&cmd, &scratch.app, &env, scratch.dir.join("server.log")).map_err(|e| plain(stop(format!("the app could not be started ({e})"))))?;
+    let shown = trunc_chars(&cmd, 40);
+    let ready = spec::subst(&spec.start.ready, rand, port);
+    let deadline = started + Duration::from_secs(spec.start.timeout_s);
+    let mut client = Client::new(port);
+    let mut last = "no answer".to_string();
+    loop {
+        if let Some(end) = app.ended() {
+            let tail = app.tail();
+            return Err(NoStart { stopped: Stopped { judged: unr(format!("the app did not start ({shown} {end})")), tail }, retry: started.elapsed() < AT_ONCE });
+        }
+        match client.request("GET", &ready, None) {
+            Ok(r) if (200..300).contains(&r.status) => match holder_of(app.pgid, port) {
+                Holder::Other(pid) => return Err(NoStart { stopped: stop(format!("port {port} is used by another process (pid {pid}), not by the app")), retry: true }),
+                _ => return Ok(app),
+            },
+            Ok(r) => last = format!("GET {ready} gave {}", r.status),
+            Err(ReqErr::Unrunnable(m)) => return Err(plain(Stopped { judged: unr(m), tail: app.tail() })),
+            Err(ReqErr::Down(_)) => {}
+        }
+        if Instant::now() >= deadline {
+            let tail = app.tail();
+            return Err(plain(Stopped { judged: unr(format!("the app did not start ({shown}: {last} for {} s)", spec.start.timeout_s)), tail }));
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -781,6 +887,43 @@ mod tests {
         apply_overlay(app, &[put("old.sh"), put("bin/new.sh"), put("plain.txt")], &["bin/new.sh".to_string()]).unwrap();
         let exec = |p: &str| fs::metadata(app.join(p)).unwrap().permissions().mode() & 0o111 != 0;
         assert_eq!([exec("old.sh"), exec("bin/new.sh"), exec("plain.txt")], [true, true, false]);
+    }
+
+    #[test]
+    fn the_listening_sockets_of_a_port_are_read_from_the_kernel_table() {
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+            0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111 1 0000000000000000 100 0 0 10 0\n\
+            1: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 222 1 0000000000000000 100 0 0 10 0\n\
+            2: 00000000:1F91 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 333 1 0000000000000000 100 0 0 10 0\n\
+            3: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 444 1 0000000000000000 100 0 0 10 0\n";
+        // 0x1F90 is 8080. A connected socket (state 01) is no listener, and the IPv6 form counts.
+        assert_eq!(listening_sockets(table, 8080), ["socket:[111]", "socket:[444]"]);
+        assert_eq!(listening_sockets(table, 8081), ["socket:[333]"]);
+        assert!(listening_sockets(table, 9).is_empty() && listening_sockets("", 8080).is_empty());
+    }
+
+    #[test]
+    fn the_app_is_its_group_and_everything_started_below_it() {
+        // (pid, parent, group): 10 leads group 10 with a child 11; 12 was started by 11 in a group of its own and 13 by 12; 20 and 21 are unrelated.
+        let procs = [(10, 1, 10), (11, 10, 10), (12, 11, 12), (13, 12, 13), (20, 1, 20), (21, 20, 20)];
+        assert_eq!(app_pids(&procs, 10).into_iter().collect::<Vec<_>>(), [10, 11, 12, 13]);
+        assert!(app_pids(&procs, 99).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_listening_socket_is_told_to_belong_to_its_holder() {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        // SAFETY: getpgrp has no arguments and cannot fail.
+        let mine = unsafe { libc::getpgrp() };
+        assert_eq!(holder_of(mine, port), Holder::App, "this process listens, and it is in its own group");
+        let mut other = group(); // a sleeping process in a group of its own
+        assert_eq!(holder_of(other.id() as i32, port), Holder::Other(std::process::id()));
+        drop(l);
+        assert_eq!(holder_of(mine, port), Holder::Unknown, "nothing listens now");
+        let _ = other.kill();
+        let _ = other.wait();
     }
 
     #[test]
