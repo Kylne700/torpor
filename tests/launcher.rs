@@ -70,6 +70,7 @@ fn hooks_json_matches_the_spec() {
         assert!(c.get("async").is_none() && c.get("asyncRewake").is_none(), "{ev}: no async");
     }
     // The timeout in hooks.json must always be longer than the binary's own deadline (spec 3.2).
+    assert_eq!(torpor::hook::own_deadline_ms("Stop"), Some(30_000), "the Stop hook's own deadline (spec 18)");
     for (ev, timeout, _) in table {
         let own = torpor::hook::own_deadline_ms(ev).unwrap();
         assert!(own < timeout as u64 * 1000, "{ev}: own deadline {own} ms vs timeout {timeout} s");

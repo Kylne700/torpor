@@ -401,7 +401,30 @@ fn record_runs(db: &Connection, id: i64, kind: &str, tree: &[u8; 32], runs: &[Ru
 
 fn become_flaky(db: &Connection, id: i64) -> Result<()> {
     db.execute("UPDATE promises SET state='flaky', tier=CASE WHEN tier IN ('shadow','blocking') THEN 'advisory' ELSE tier END WHERE id=?1", [id])?;
-    Ok(())
+    promise::end_shadow_wait(db, id)
+}
+
+/// Spec 17: a shadow promise passed. A would-block failure on another version has turned into this PASS (a dispute or a drop since would have
+/// cleared the note): a true catch, and from now on it blocks. Otherwise the first PASS of a day is a clean day, and 3 clean days do the same.
+fn shadow_pass(db: &Connection, p: &Promise, inp: &Input) -> Result<Option<String>> {
+    let id = p.id;
+    if let Some(failed) = meta_get(db, &format!("would:{id}")) {
+        if failed != hex(&inp.tree) && promise::promote(db, id, true)? {
+            return Ok(Some(format!("Torpor: promise {} would have stopped the AI and it was fixed since, so it stops the AI from now on. torpor promise show {id}", short_name(p))));
+        }
+        return Ok(None);
+    }
+    let (day, key) = (utc_day(inp.now), format!("shadow_day:{id}"));
+    if meta_get_i64(db, &key) == Some(day) {
+        return Ok(None);
+    }
+    meta_set(db, &key, &day.to_string())?;
+    db.execute("UPDATE promises SET shadow_days=shadow_days+1 WHERE id=?1", [id])?;
+    let n: i64 = db.query_row("SELECT shadow_days FROM promises WHERE id=?1", [id], |r| r.get(0))?;
+    if n >= 3 && promise::promote(db, id, false)? {
+        return Ok(Some(format!("Torpor: promise {} passed on {n} different days without a false alarm, so it stops the AI from now on. torpor promise show {id}", short_name(p))));
+    }
+    Ok(None)
 }
 
 fn set_hat(db: &Connection, id: i64) -> Result<()> {
@@ -528,6 +551,9 @@ fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skippe
                 } else {
                     db.execute("UPDATE promises SET last_pass_point=?2 WHERE id=?1", params![id, inp.end_pt])?;
                     a.outcomes.insert("ok");
+                    if c.p.tier == "shadow" {
+                        a.lines.extend(shadow_pass(db, &c.p, inp)?);
+                    }
                 }
             }
             Res::Flaky(ch) => {
@@ -586,6 +612,9 @@ fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skippe
                     continue;
                 }
                 let would = block_ok && c.p.tier == "shadow";
+                if would && meta_get(db, &format!("would:{id}")).is_none() {
+                    meta_set(db, &format!("would:{id}"), &hex(&inp.tree))?;
+                }
                 a.lines.push(fail_line(db, c, would));
                 a.outcomes.insert(if c.p.tier == "blocking" && !open { "unresolved" } else { "fail" });
                 if a.ups.is_none() {

@@ -491,6 +491,14 @@ fn show(args: &[&str]) -> i32 {
     if let Some(line) = proof(db, &p) {
         say(&line);
     }
+    if let (Some(k), Some(t)) = (p.mutants_killed, p.mutants_tried) {
+        say(&format!("Broken copies: the check failed on {k} of {t} copies with part of the fix undone."));
+    }
+    match p.tier.as_str() {
+        "shadow" => say(&format!("Shadow: {} of 3 clean days. It starts to stop the AI after one real catch, or when you run: torpor promise block {}", p.shadow_days, p.id)),
+        "blocking" if p.catches > 0 => say(&format!("Caught: {} real failure{}.", p.catches, if p.catches == 1 { "" } else { "s" })),
+        _ => {}
+    }
     let runs: Vec<(String, String, Option<i64>, Option<String>, i64)> = (|| -> rusqlite::Result<_> {
         let mut st = db.prepare("SELECT kind,verdict,failed_step,reason,at FROM promise_runs WHERE promise_id=?1 ORDER BY id DESC LIMIT 5")?;
         st.query_map([p.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect()
@@ -564,14 +572,41 @@ fn ok_or_drop(args: &[&str], ok: bool) -> i32 {
     }
 }
 
-/// `promise block ID` (user only): promotion to blocking comes with the gate. shortcut: refuses for now, S2b implements it.
+/// `promise block ID` (user only, cli.rs refuses it for an AI): skips the wait of spec 17, and only that wait. A promise in shadow that is live,
+/// not flaky and has no open dispute starts to stop the AI; anything else stays as it is.
 fn block(args: &[&str]) -> i32 {
     let [id] = args else { return usage("promise block ID") };
-    if num(id).is_none() {
-        return usage("promise block ID");
+    let Some(id) = num(id) else { return usage("promise block ID") };
+    let mut ws = match open_here() {
+        Ok(w) => w,
+        Err(e) => return fail_p(&e),
+    };
+    let r = promise::write(&mut ws, |w| {
+        let p = promise::get(&w.conn, id)?.filter(|p| p.state != "dropped").ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
+        let open = promise::disputes(&p).iter().any(|d| d["valid"].is_null());
+        let no = if p.tier != "shadow" {
+            Some(format!("it is {}, and only a promise in shadow can be made blocking", promise::tier_label(&p)))
+        } else if p.state != "live" || open || p.flake_hat.is_some_and(|h| h > 0.0) {
+            Some(format!("it is {}{}", if p.state == "live" { "flaky" } else { p.state.as_str() }, if open { " with an open dispute" } else { "" }))
+        } else {
+            None
+        };
+        if no.is_none() {
+            promise::promote(&w.conn, id, false)?;
+        }
+        Ok(no)
+    });
+    match r {
+        Ok(None) => {
+            say(&format!("Promise #{id} now stops the AI when it fails at the end of a turn."));
+            0
+        }
+        Ok(Some(why)) => {
+            err(&format!("Promise #{id} stays as it is: {why}. torpor promise show {id}\n"));
+            1
+        }
+        Err(e) => fail_p(&e),
     }
-    err("Torpor cannot make a promise blocking in this version.\n");
-    1
 }
 
 // ---------------------------------------------------------------- check

@@ -6,7 +6,7 @@ use crate::spec::{self, Linted, Spec};
 use crate::store::*;
 use crate::turn::{self, Turn};
 use crate::util::*;
-use crate::{hook, restore, texts, vault};
+use crate::{hook, restore, shadow, texts, vault};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -215,6 +215,9 @@ pub fn upgrade_sources(db: &Connection, t: &Turn) -> Result<()> {
     let origin: String = db.query_row("SELECT origin FROM turns WHERE id=?1", [t.id], |r| r.get(0))?;
     if origin == "human" {
         db.execute("UPDATE promises SET source=want_source WHERE want_source IS NOT NULL AND created_turn=?1", [t.id])?;
+    } else {
+        // Shadow was granted on the words of a turn that turned out not to be the user's (spec 17: the AI's own promises stay advisory).
+        db.execute("UPDATE promises SET tier='advisory' WHERE tier='shadow' AND want_source IS NOT NULL AND created_turn=?1", [t.id])?;
     }
     db.execute("UPDATE promises SET want_source=NULL WHERE want_source IS NOT NULL AND created_turn=?1", [t.id])?;
     Ok(())
@@ -351,6 +354,11 @@ fn fits_another(runs: &[RunResult]) -> bool {
 
 /// One verdict for `tree` (spec 16): a PASS stands; a FAIL is re-run in up to 2 more fresh scratch copies and is a FAIL only in 3 of 3.
 pub fn check_tree(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Checked {
+    check_tree_with(ws, spec, tree, &scratch::Opts::default())
+}
+
+/// `check_tree` on a changed copy of the version (a mutant, spec 17).
+pub fn check_tree_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &scratch::Opts) -> Checked {
     let n = Some(spec.assertions());
     let mut runs: Vec<RunResult> = Vec::new();
     let mut call = Call::Fail;
@@ -361,7 +369,7 @@ pub fn check_tree(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Checked {
             (call, cut) = (Call::Unrunnable, true);
             break;
         }
-        let r = scratch::run_once(ws, spec, tree, n);
+        let r = scratch::run_once_with(ws, spec, tree, n, opts);
         let v = r.judged.verdict;
         runs.push(r);
         match v {
@@ -421,7 +429,7 @@ pub fn secs(ms: u64) -> String {
     format!("{:.1} s", ms as f64 / 1000.0)
 }
 
-fn fails_at_assertion(r: &RunResult) -> bool {
+pub fn fails_at_assertion(r: &RunResult) -> bool {
     r.judged.verdict == Verdict::Fail && r.judged.failed_step.is_some()
 }
 
@@ -434,6 +442,8 @@ pub struct Saved {
     pub good_fails: usize,
     /// The version that fails the check, if one was found.
     pub bad_point: Option<i64>,
+    /// Why a promise that has its proof is not in shadow (words for the person).
+    pub note: Option<String>,
 }
 
 pub enum Done {
@@ -491,7 +501,7 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
             )?;
             Ok(())
         })?;
-        return Ok(Done::Saved(Saved { tier: "advisory", state: "flaky", good_runs: GOOD_RUNS, good_fails: fails, bad_point: None }));
+        return Ok(Done::Saved(Saved { tier: "advisory", state: "flaky", good_runs: GOOD_RUNS, good_fails: fails, bad_point: None, note: None }));
     }
     // Good holds 5 of 5. Does an earlier version fail it?
     let candidates = match p.bad_point {
@@ -513,21 +523,49 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
             break;
         }
     }
-    let tier = if bad.is_some() { "advisory" } else { "unproven" };
-    // The files the bad-to-good change touched are what this promise watches (spec 18); docs and tests do not count, lock files and settings do.
-    let watched: Option<String> = bad
-        .and_then(|b| point_tree(&ws.conn, b).ok())
-        .and_then(|bt| crate::findbreak::changed_files_opt(ws, &bt, &gtree))
-        .map(|v| v.into_iter().filter(|p| crate::gate::is_global(p) || !crate::gate::doc_like(p)).collect::<Vec<_>>())
-        .and_then(|v| serde_json::to_string(&v).ok());
+    let pr = Proof { state: "live", hat: 0.0, good, bad, runs: GOOD_RUNS, fails: 0, cold_ms: good_runs[0].ms };
+    Ok(Done::Saved(finish(ws, id, &pr, until, say)?))
+}
+
+/// What the proof found, for `finish`.
+pub struct Proof {
+    pub state: &'static str,
+    pub hat: f64,
+    pub good: i64,
+    /// The version that fails the check. None = no proof (a guard only).
+    pub bad: Option<i64>,
+    pub runs: usize,
+    pub fails: usize,
+    /// How long the first good run took (spec 17: over 10 s skips the mutants).
+    pub cold_ms: u64,
+}
+
+/// What a promise watches (spec 18): the files the bad-to-good change touched. Docs and tests do not count, lock files and settings do.
+pub fn watched_json(ws: &Ws, bad: &[u8; 32], good: &[u8; 32]) -> Option<String> {
+    let v: Vec<String> = crate::findbreak::changed_files_opt(ws, bad, good)?.into_iter().filter(|p| crate::gate::is_global(p) || !crate::gate::doc_like(p)).collect();
+    serde_json::to_string(&v).ok()
+}
+
+/// After the proof (spec 17), for `promise add` and for a repro that find-break confirmed: the tier, what the promise watches and the mutant
+/// result, written together. Only a live promise with a bad version is assessed for shadow; a flaky one never is.
+pub fn finish(ws: &mut Ws, id: i64, pr: &Proof, until: Instant, say: &dyn Fn(&str)) -> Result<Saved> {
+    let p = get(&ws.conn, id)?.ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
+    let gtree = point_tree(&ws.conn, pr.good)?;
+    let btree = pr.bad.and_then(|b| point_tree(&ws.conn, b).ok());
+    let watched = btree.as_ref().and_then(|bt| watched_json(ws, bt, &gtree));
+    let a = match (&btree, pr.state) {
+        (None, _) => shadow::Assessed { tier: "unproven", note: None, killed: None, tried: None },
+        (Some(_), "flaky") => shadow::Assessed { tier: "advisory", note: None, killed: None, tried: None },
+        (Some(bt), _) => shadow::assess(ws, &p, &spec_of(ws, &p)?.spec, &gtree, bt, pr.cold_ms, until, say),
+    };
     write(ws, |w| {
         w.conn.execute(
-            "UPDATE promises SET tier=?2, state='live', bad_point=?3, flake_hat=0, last_pass_point=?4, watched_json=?5 WHERE id=?1",
-            params![id, tier, bad, good, watched],
+            "UPDATE promises SET tier=?2, state=?3, good_point=?4, bad_point=?5, flake_hat=?6, last_pass_point=?4, watched_json=?7, mutants_killed=?8, mutants_tried=?9, shadow_days=0 WHERE id=?1",
+            params![id, a.tier, pr.state, pr.good, pr.bad, pr.hat, watched, a.killed, a.tried],
         )?;
         Ok(())
     })?;
-    Ok(Done::Saved(Saved { tier, state: "live", good_runs: GOOD_RUNS, good_fails: 0, bad_point: bad }))
+    Ok(Saved { tier: a.tier, state: pr.state, good_runs: pr.runs, good_fails: pr.fails, bad_point: pr.bad, note: a.note })
 }
 
 /// The foreground answer to `promise add` once qualification is done (spec 24).
@@ -542,10 +580,15 @@ pub fn saved_line(db: &Connection, p: &Promise, s: &Saved) -> String {
         (_, "unproven") => format!("Promise #{} \"{name}\" saved as a guard only: no earlier version fails it, so Torpor can't prove it tests the new work.", p.id),
         _ => {
             let bad = s.bad_point.map(|b| point_name(db, b)).unwrap_or_default();
-            format!(
-                "Promise #{} \"{name}\" saved. Proof: passed {} of {} on {good} and failed {BAD_RUNS} of {BAD_RUNS} on {bad}. Advisory for now: Torpor shows failures but does not stop the AI.",
-                p.id, s.good_runs, s.good_runs
-            )
+            let proof = format!("Promise #{} \"{name}\" saved. Proof: passed {} of {} on {good} and failed {BAD_RUNS} of {BAD_RUNS} on {bad}.", p.id, s.good_runs, s.good_runs);
+            match (s.tier, &s.note) {
+                ("shadow", _) => format!(
+                    "{proof} In shadow for now: Torpor will say when it would have stopped the AI, but does not stop it yet. It starts to stop it after one real catch or three clean days, or when you run: torpor promise block {}",
+                    p.id
+                ),
+                (_, Some(n)) => format!("{proof} Advisory for now: Torpor shows failures but does not stop the AI, because {}.", n.trim_end_matches('.')),
+                _ => format!("{proof} Advisory for now: Torpor shows failures but does not stop the AI."),
+            }
         }
     }
 }
@@ -643,7 +686,21 @@ pub fn dispute(db: &Connection, p: &Promise, why: &str, now: i64) -> Result<()> 
     if matches!(p.state.as_str(), "live" | "flaky") {
         db.execute("UPDATE promises SET state='disputed' WHERE id=?1", [p.id])?;
     }
+    end_shadow_wait(db, p.id)
+}
+
+/// A dispute, a drop, a flaky or a quarantine call ends a shadow wait (spec 17): no catch stays open and the clean days start again.
+pub fn end_shadow_wait(db: &Connection, id: i64) -> Result<()> {
+    db.execute("UPDATE promises SET shadow_days=0 WHERE id=?1", [id])?;
+    db.execute("DELETE FROM meta WHERE key IN (?1,?2)", params![format!("would:{id}"), format!("shadow_day:{id}")])?;
     Ok(())
+}
+
+/// Shadow becomes blocking (spec 17). False when the promise is not in shadow. `catch`: a true catch ended the wait.
+pub fn promote(db: &Connection, id: i64, catch: bool) -> Result<bool> {
+    let n = db.execute("UPDATE promises SET tier='blocking', catches=catches+?2 WHERE id=?1 AND tier='shadow'", params![id, catch as i64])?;
+    db.execute("DELETE FROM meta WHERE key IN (?1,?2)", params![format!("would:{id}"), format!("shadow_day:{id}")])?;
+    Ok(n > 0)
 }
 
 /// How many disputes the user has upheld in the last 7 days, over all promises.
@@ -690,7 +747,7 @@ pub fn drop_promise(db: &Connection, p: &Promise, now: i64) -> Result<()> {
         settle_disputes(db, p.id, true, now)?;
     }
     db.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1", [p.id])?;
-    Ok(())
+    end_shadow_wait(db, p.id)
 }
 
 // ---------------------------------------------------------------- what Stop says

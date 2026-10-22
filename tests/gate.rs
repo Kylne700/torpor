@@ -196,6 +196,49 @@ fn b2_the_seeded_regression_blocks_20_of_20() {
 }
 
 #[test]
+fn b2_a_check_that_fails_one_run_in_three_at_random_never_blocks_20_of_20() {
+    // /api/randflaky answers 500 to one request in three, with no seed: every run of this test sees different luck. 4 sessions in parallel, 5 trials
+    // each: save the check (the 5-run proof sees the flakiness 87% of the time), then four turns of edits with the gate on.
+    let steps = r#"[{"http":{"path":"/api/randflaky"},"expect":{"status":200},"why":"the login endpoint answers"}]"#;
+    let trials: Vec<(u32, String, String)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| {
+                sc.spawn(|| {
+                    (0..5)
+                        .map(|i| {
+                            let mut s = story();
+                            let o = add(&mut s, &spec("login endpoint answers", START, "{}", steps));
+                            let saved = if o.code == 0 { s.q_str("SELECT tier||' '||state FROM promises").unwrap() } else { "not saved".to_string() };
+                            s.stop();
+                            let mut blocks = 0;
+                            for r in 0..4 {
+                                s.prompt(&format!("change {r}"));
+                                s.edit("server.js", &(SERVER.to_string() + &format!("// {i} {r}\n")));
+                                if blocked(&s.stop()).is_some() {
+                                    blocks += 1;
+                                }
+                            }
+                            (blocks, saved, s.q_str("SELECT tier||' '||state FROM promises").unwrap_or_default())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    let blocked_trials = trials.iter().filter(|t| t.0 > 0).count();
+    let mut tally = std::collections::BTreeMap::<String, u32>::new();
+    for t in &trials {
+        *tally.entry(format!("{} -> {}", t.1, t.2)).or_default() += 1;
+    }
+    eprintln!("B2 random flaky: {blocked_trials} of {} trials blocked; saved as -> at the end: {tally:?}", trials.len());
+    assert_eq!(trials.len(), 20);
+    assert_eq!(blocked_trials, 0, "{tally:?}");
+    // The proof sees it (P(no trial of 20 is flagged) is below 1e-15), so the claim is not empty.
+    assert!(trials.iter().any(|t| t.1 == "advisory flaky"), "{tally:?}");
+}
+
+#[test]
 fn an_unproven_promise_that_fails_and_then_passes_on_one_version_turns_flaky() {
     let mut s = story();
     let counter = s.env.home.join("flaky-count");

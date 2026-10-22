@@ -451,6 +451,50 @@ fn stop(reason: impl Into<String>) -> Stopped {
     Stopped { judged: unr(reason), tail: String::new() }
 }
 
+/// What differs from a plain run: files written over the copy after it is made (`None` deletes the file) and variables added to the app's
+/// environment for this run only (a value for `NODE_OPTIONS` is appended to the spec's).
+#[derive(Default, Clone)]
+pub struct Opts {
+    pub overlay: Vec<(String, Option<Vec<u8>>)>,
+    pub env: Vec<(String, String)>,
+}
+
+/// May a changed copy write this path? Not one that leaves the copy, not an `.env*` file, not inside a dependency folder.
+pub fn overlay_ok(rel: &str) -> bool {
+    safe_rel(rel) && !is_dotenv(rel) && !rel.split('/').any(|c| DEP_DIRS.iter().any(|(d, _)| *d == c))
+}
+
+/// Each path is removed and written new, so a link in its place is replaced, never followed; a path that leaves the copy, a dependency
+/// folder (linked to the live project) or an `.env*` file is refused.
+fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)]) -> Result<()> {
+    let root = fs::canonicalize(app)?;
+    for (rel, content) in overlay {
+        if !overlay_ok(rel) {
+            return Err(Error::Msg(format!("{rel} is not a file Torpor changes")));
+        }
+        let dest = app.join(rel);
+        let parent = dest.parent().unwrap_or(app);
+        if content.is_some() {
+            fs::create_dir_all(parent)?;
+        }
+        if !fs::canonicalize(parent).is_ok_and(|p| p.starts_with(&root)) {
+            return Err(Error::Msg(format!("{rel} leaves the copy")));
+        }
+        let mode = match fs::symlink_metadata(&dest) {
+            Ok(m) if m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0 => 0o755,
+            _ => 0o644,
+        };
+        match fs::remove_file(&dest) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        if let Some(bytes) = content {
+            OpenOptions::new().write(true).create_new(true).mode(mode).open(&dest)?.write_all(bytes)?;
+        }
+    }
+    Ok(())
+}
+
 /// A started app in a scratch copy. Field order is drop order: the app is stopped, then the folder goes, then the lock is released.
 pub struct Run {
     pub port: u16,
@@ -469,6 +513,11 @@ impl Run {
 
     /// Everything up to "the app answers its ready path" (spec 16). Err = UNRUNNABLE with the reason.
     pub fn start(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> std::result::Result<Run, Stopped> {
+        Run::start_with(ws, spec, tree, &Opts::default())
+    }
+
+    /// `start`, with files written over the copy and variables added for this run only (a mutant, a dependency-recording run).
+    pub fn start_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &Opts) -> std::result::Result<Run, Stopped> {
         let rand = runner::new_rand();
         let port = free_port().map_err(|e| stop(format!("no free port ({e})")))?;
         for (k, v) in &spec.env {
@@ -486,8 +535,16 @@ impl Run {
         if let Some(dep) = made.needs_install {
             return Err(stop(format!("needs-install: the saved version's lockfile differs from the one in the project, so {dep} cannot be reused")));
         }
+        apply_overlay(&scratch.app, &opts.overlay).map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
         let spec_env: BTreeMap<String, String> = spec.env.iter().map(|(k, v)| (k.clone(), spec::subst(v, &rand, port))).collect();
-        let (env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
+        let (mut env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
+        for (k, v) in &opts.env {
+            match env.iter_mut().find(|(n, _)| n == k) {
+                Some((_, old)) if k == "NODE_OPTIONS" => *old = format!("{old} {v}"),
+                Some((_, old)) => *old = v.clone(),
+                None => env.push((k.clone(), v.clone())),
+            }
+        }
         let text = dotenv(&dotenv_part);
         for name in [".env.torpor", ".env"] {
             fs::write(scratch.app.join(name), &text).map_err(|e| stop(format!("no .env in the scratch copy ({e})")))?;
@@ -530,9 +587,13 @@ pub struct RunResult {
 
 /// One run of a check against one saved tree, in a fresh scratch copy. `min_n` = the assertion count the promise had when it was saved.
 pub fn run_once(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>) -> RunResult {
+    run_once_with(ws, spec, tree, min_n, &Opts::default())
+}
+
+pub fn run_once_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>, opts: &Opts) -> RunResult {
     let t0 = Instant::now();
     let ms = |t: Instant| t.elapsed().as_millis() as u64;
-    match Run::start(ws, spec, tree) {
+    match Run::start_with(ws, spec, tree, opts) {
         Err(s) => RunResult { judged: s.judged, ms: ms(t0), tail: s.tail },
         Ok(run) => {
             let mut lines = vec![serde_json::json!({"p": "SETUP_OK"}).to_string()];

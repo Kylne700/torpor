@@ -19,6 +19,7 @@ pub mod retention;
 pub mod rewind;
 pub mod scan;
 pub mod scratch;
+pub mod shadow;
 pub mod spec;
 pub mod status;
 pub mod store;

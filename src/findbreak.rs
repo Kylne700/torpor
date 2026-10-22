@@ -2,7 +2,7 @@
 //! everything below them runs real checks on saved versions and says the result in words.
 use crate::capture;
 use crate::cli::{err, open_here, out, usage};
-use crate::promise::{self, Done, LIVE_MAX, Saved};
+use crate::promise::{self, Done, LIVE_MAX};
 use crate::promise_cmd::{self, fail_p, get_live, num, read_check};
 use crate::runner::Verdict;
 use crate::scratch::{self, RunResult};
@@ -610,7 +610,7 @@ fn why_not(db: &Connection, f: &Found) -> String {
 
 /// Spec 19: "A repro check used here becomes a promise (source repro) whose good point is the confirmed parent." Needs a confirmed single
 /// culprit with a save point, and 5 judged runs on the parent; otherwise it is not saved and says why.
-fn complete(ws: &mut Ws, id: i64, f: &Found) -> Result<Done> {
+fn complete(ws: &mut Ws, id: i64, f: &Found, say: &dyn Fn(&str)) -> Result<Done> {
     let Outcome::One { parent, culprit, sure: true, .. } = f.out else {
         let why = why_not(&ws.conn, f);
         return promise::not_saved(ws, id, why);
@@ -627,12 +627,9 @@ fn complete(ws: &mut Ws, id: i64, f: &Found) -> Result<Done> {
     let fails = f.runs.iter().filter(|(s, r)| *s == parent && probe_of(r) == Probe::Fail).count();
     let state = if fails > 0 { "flaky" } else { "live" };
     let hat = fails as f64 / judged as f64;
-    let (good, bad) = (g.last, c.first);
-    promise::write(ws, |w| {
-        w.conn.execute("UPDATE promises SET tier='advisory', state=?2, good_point=?3, bad_point=?4, flake_hat=?5, last_pass_point=?3 WHERE id=?1", params![id, state, good, bad, hat])?;
-        Ok(())
-    })?;
-    Ok(Done::Saved(Saved { tier: "advisory", state, good_runs: judged, good_fails: fails, bad_point: Some(bad) }))
+    let cold_ms = f.runs.iter().find(|(s, r)| *s == parent && probe_of(r) != Probe::Skip).map_or(0, |(_, r)| r.ms);
+    let pr = promise::Proof { state, hat, good: g.last, bad: Some(c.first), runs: judged, fails, cold_ms };
+    Ok(Done::Saved(promise::finish(ws, id, &pr, Instant::now() + Duration::from_secs(promise::QUALIFY_SECS), say)?))
 }
 
 struct Proved {
@@ -654,7 +651,7 @@ fn prove_full(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Proved> {
         _ => None,
     };
     store(ws, &f, Some(id), &p.spec_id, proof)?;
-    let done = complete(ws, id, &f)?;
+    let done = complete(ws, id, &f, say)?;
     Ok(Proved { line, code, done })
 }
 
