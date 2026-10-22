@@ -9,6 +9,7 @@ pub mod restore;
 pub mod runner;
 pub mod retention;
 pub mod scan;
+pub mod scratch;
 pub mod spec;
 pub mod status;
 pub mod store;

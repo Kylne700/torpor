@@ -65,6 +65,7 @@ pub struct Req<'a> {
     /// Session that runs this scan.
     pub session: &'a str,
     /// Points to write, in order. All share the new tree; the first carries the changes.
+    /// Empty: a snapshot, which stores the tree and returns its id without writing any point.
     pub points: Vec<PointSpec>,
     /// Turn this scan belongs to for attribution; None means between turns.
     pub turn: Option<i64>,
@@ -984,6 +985,11 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                 del.execute([g])?;
             }
         }
+    }
+    if req.points.is_empty() {
+        // Snapshot (promise checks on the live tree): trees and blobs only; no point, no watermark, no mode change.
+        // shortcut: nothing names this tree, so GC sweeps it after the grace period; a check run keeps only its id.
+        return Ok(out);
     }
     meta_set(db, "consumed_event_id", &max_ev.to_string())?;
     update_mode(db, sc.elapsed_ms, file_count)?;
