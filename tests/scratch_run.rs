@@ -166,7 +166,8 @@ fn the_app_runs_alone_on_its_own_port_with_its_own_home_and_no_env_files_b7() {
     for k in ["HOME", "TMPDIR", "PORT", "MODE"] {
         assert!(env.contains(&k), "{k} missing in {env:?}");
     }
-    for k in env.iter().filter(|k| !["PATH", "LANG", "LC_ALL", "TERM", "SHELL", "USER", "HOME", "TMPDIR", "PORT", "MODE", "CARGO_TARGET_DIR", "CARGO_HOME", "RUSTUP_HOME", "NVM_DIR", "VOLTA_HOME", "PNPM_HOME", "BUN_INSTALL", "PYENV_ROOT", "PWD", "SHLVL", "_", "OLDPWD"].contains(k)) {
+    // __CF_USER_TEXT_ENCODING: macOS sets it inside every new process (uid and text encoding); Torpor does not pass it.
+    for k in env.iter().filter(|k| !["PATH", "LANG", "LC_ALL", "TERM", "SHELL", "USER", "HOME", "TMPDIR", "PORT", "MODE", "CARGO_TARGET_DIR", "CARGO_HOME", "RUSTUP_HOME", "NVM_DIR", "VOLTA_HOME", "PNPM_HOME", "BUN_INSTALL", "PYENV_ROOT", "PWD", "SHLVL", "_", "OLDPWD", "__CF_USER_TEXT_ENCODING"].contains(k)) {
         panic!("the app sees an unexpected variable {k}");
     }
     let files: Vec<&str> = who["files"].as_array().unwrap().iter().filter_map(|v| v.as_str()).collect();
