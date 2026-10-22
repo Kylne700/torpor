@@ -257,6 +257,27 @@ fn the_copy_is_byte_exact_without_env_files_and_outward_links() {
 }
 
 #[test]
+fn chained_links_that_lead_out_of_the_copy_are_not_recreated() {
+    let mut fx = fixture(&[("src/a.txt", "A\n")]);
+    std::fs::create_dir_all(fx.proj.join("d")).unwrap();
+    // `d/b` is the project's own folder and `d/c` goes on from there to the folder above it: each looks inward on its own.
+    std::os::unix::fs::symlink("..", fx.proj.join("d/b")).unwrap();
+    std::os::unix::fs::symlink("b/..", fx.proj.join("d/c")).unwrap();
+    std::os::unix::fs::symlink("../src/a.txt", fx.proj.join("d/in")).unwrap();
+    let tree = fx.snap();
+    let dest = fx._tmp.path().join("copy");
+    std::fs::create_dir_all(&dest).unwrap();
+    let names = |d: &Path| -> Vec<String> { let mut v: Vec<String> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect(); v.sort(); v };
+    let before = names(fx._tmp.path());
+    scratch::materialize(&fx.ws, &tree, &dest).unwrap();
+    for gone in ["d/b", "d/c"] {
+        assert!(dest.join(gone).symlink_metadata().is_err(), "{gone} must not be in the copy");
+    }
+    assert_eq!(std::fs::read_link(dest.join("d/in")).unwrap(), Path::new("../src/a.txt"), "a link that stays inside is kept");
+    assert_eq!(names(fx._tmp.path()), before, "nothing was written next to the copy");
+}
+
+#[test]
 fn dependency_folders_are_linked_only_when_the_lockfiles_match() {
     let mut fx = fixture(&[("package-lock.json", "{\"lockfileVersion\":3}\n"), ("package.json", "{}\n")]);
     std::fs::create_dir_all(fx.proj.join("node_modules/dep")).unwrap();

@@ -202,6 +202,7 @@ pub struct Made {
 pub fn materialize(ws: &Ws, tree: &[u8; 32], app: &Path) -> Result<Made> {
     // No store lock here: a blob that vanished or changed is an error (the read re-hashes), which makes the run UNRUNNABLE.
     let entries = flatten_tree(ws, &ws.conn, tree)?;
+    let mut links: Vec<&str> = Vec::new();
     for (path, e) in &entries {
         if !safe_rel(path) {
             continue;
@@ -228,6 +229,7 @@ pub fn materialize(ws: &Ws, tree: &[u8; 32], app: &Path) -> Result<Made> {
                     fs::create_dir_all(parent)?;
                 }
                 symlink(std::ffi::OsStr::from_bytes(&target), &dest)?;
+                links.push(path);
             }
             _ => {} // 's' (secret), 'x' (not saved), and .env* files
         }
@@ -247,7 +249,26 @@ pub fn materialize(ws: &Ws, tree: &[u8; 32], app: &Path) -> Result<Made> {
             needs_install = Some(dep.to_string());
         }
     }
+    drop_outward_links(app, &links)?;
     Ok(Made { needs_install })
+}
+
+/// Removes the saved links that resolve outside the copy or to the copy's own folder. The text check in `link_escapes` cannot see chains: `d/b -> ..`
+/// and `d/c -> b/..` each look inward, yet `d/c` leads out through `d/b`. A link that ends inside a linked dependency folder stays (those point out on purpose).
+/// shortcut: a link that cannot be resolved now (dangling or a loop) is kept, and one that starts to resolve only after the app creates something is not seen.
+fn drop_outward_links(app: &Path, links: &[&str]) -> Result<()> {
+    let root = fs::canonicalize(app)?;
+    let deps: Vec<PathBuf> = DEP_DIRS.iter().filter_map(|(d, _)| fs::canonicalize(app.join(d)).ok()).collect();
+    // All are judged before any is removed, so the answer does not depend on the order of the links.
+    let out: Vec<&str> = links
+        .iter()
+        .copied()
+        .filter(|l| fs::canonicalize(app.join(l)).is_ok_and(|t| t == root || !(t.starts_with(&root) || deps.iter().any(|d| t.starts_with(d)))))
+        .collect();
+    for l in out {
+        fs::remove_file(app.join(l))?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- the app's environment
@@ -490,6 +511,10 @@ fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)]) -> Result<()
         let dest = app.join(rel);
         let parent = dest.parent().unwrap_or(app);
         if content.is_some() {
+            // The missing folders are made below the nearest one that exists: a link in the way must not lead out of the copy before anything is made.
+            if !parent.ancestors().find_map(|a| fs::canonicalize(a).ok()).is_some_and(|p| p.starts_with(&root)) {
+                return Err(Error::Msg(format!("{rel} leaves the copy")));
+            }
             fs::create_dir_all(parent)?;
         }
         if !fs::canonicalize(parent).is_ok_and(|p| p.starts_with(&root)) {
@@ -674,6 +699,32 @@ mod tests {
         remove_scratch(&base, &inside);
         assert!(!inside.exists());
         assert!(outside.join("f").exists(), "a link inside the scratch folder is unlinked, never followed");
+    }
+
+    #[test]
+    fn chained_links_that_lead_out_are_dropped_and_no_folder_is_made_through_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, out, live) = (tmp.path().join("app"), tmp.path().join("out"), tmp.path().join("live"));
+        for d in ["app/d", "app/src", "app/bin", "out", "live/node_modules/.bin"] {
+            fs::create_dir_all(tmp.path().join(d)).unwrap();
+        }
+        fs::write(app.join("src/a.txt"), "A").unwrap();
+        fs::write(live.join("node_modules/.bin/tool"), "T").unwrap();
+        symlink(live.join("node_modules"), app.join("node_modules")).unwrap(); // a dependency link, made on purpose
+        // Every one of these passes the text check; `d/c` leads out only through `d/b` (which is the copy's own folder).
+        let links = [("d/b", ".."), ("d/c", "b/.."), ("d/in", "../src/a.txt"), ("d/dangling", "../nothing"), ("bin/tool", "../node_modules/.bin/tool"), ("bin/up", "../node_modules/..")];
+        for (l, t) in links {
+            assert!(!link_escapes(l, t.as_bytes()), "{l}");
+            symlink(t, app.join(l)).unwrap();
+        }
+        drop_outward_links(&app, &links.map(|(l, _)| l)).unwrap();
+        let present = |l: &str| app.join(l).symlink_metadata().is_ok();
+        assert_eq!(links.map(|(l, _)| present(l)), [false, false, true, true, true, false], "d/b, d/c and bin/up are dropped; the rest stays");
+        // Nothing is made below a link that leads out, even one that got through.
+        symlink("../../out", app.join("d/o")).unwrap();
+        let r = apply_overlay(&app, &[("d/o/e/f.txt".to_string(), Some(b"x".to_vec()))]);
+        assert!(matches!(&r, Err(Error::Msg(m)) if m.contains("leaves the copy")), "{r:?}");
+        assert!(!out.join("e").exists(), "a folder was made outside the copy");
     }
 
     fn alive(pid: &str) -> bool {
