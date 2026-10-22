@@ -134,13 +134,13 @@ Measured on the tree at commit db4750a (this file is the only change after it).
 | 5 DOM runner and `torpor runner install` | NOT built (S2c) | | |
 | 6 Undo with checks (spec 20) | NOT built (S2c) | | |
 | 7 README (spec 28) | done | 6860892 | README.md, src/cli.rs (help line), tests/findbreak.rs (shell-made break test) |
-| 7 A10 re-run | done, passed (S2b.3) | this file's commit | tests/a10_real.rs (unchanged) |
+| 7 A10 re-run | done, passed (S2b.3) | b29f09d | tests/a10_real.rs (the test logic is unchanged; `a10_run` now puts a committed `dist/<platform>/torpor` back after the run, S2b.5) |
 
 Also in S2b: the A6 fix 332447d (a CI race: git's background maintenance wrote a lock file inside the project while a Torpor step ran; `maintenance.auto` is now false in that test's repo) and 401b07a (macOS adds `__CF_USER_TEXT_ENCODING` to every process env, allowed in the B7 env check). Both came from the lead's CI notes.
 
 ## S2b.2 How to run the checks, and the latest results
 
-Measured on the working tree that this commit contains: the tree of the previous commit plus the test and `free_port` changes named in S2b.5 and S2b.6, and this file.
+Measured on the tree of commit b29f09d; later commits change only this file.
 
 | Command | Result |
 |---------|--------|
@@ -150,7 +150,7 @@ Measured on the working tree that this commit contains: the tree of the previous
 | `cargo test --test budget -- --nocapture` | ok in 17.8 s: `B6: lines per turn <= 986 tokens (storm turn 986, cap 1000), tokens per cycle [3995, 3990, 3990] (cap 4000), rebuilds [556, 556] tokens (cap 2000), session total 11975` |
 | `CARGO_TARGET_DIR=target/dist cargo build --release` (the plain binary that ships) | 7,621,000 bytes (budget: under 12,000,000; S2a: 7,130,856) |
 | `sh tests/release_ignores_fault_env.sh target/dist/release/torpor` | ok |
-| privacy script | tree files with denylist hits 0; files with a home path 0; history lines 2 (the known two); HEAD message hits 0; 45 commits before this one |
+| privacy script | tree files with denylist hits 0; files with a home path 0; history lines 2 (the known two); HEAD message hits 0; 46 commits at b29f09d. Two other counts are not 0 and are the same as at 655f115 (the S2a hand-off): key-like pattern files 8 (the detection patterns of the secret scanner in src/promise.rs, src/spec.rs, src/texts.rs) and `{{PLACEHOLDER}}` files 1 (a template in src/destructive.rs). Tree emails 12, all example, test or loopback addresses (`example.com`, `example.test`, `b.test`, `b.c`, `db.example.com`, `127.0.0.1`). |
 
 - The 3 ignored tests are the same as in S2a: `a10_real` x2 (real Claude Code) and `a5_latency` (quiet machine).
 - Passed per test binary (debug run): lib unit tests 87, a2_property 4, a3_crash 2, a4_failopen 6, a6_writes 1, a9_destructive 10, budget 1, cli 16, contract 14, findbreak 12, gate 13, inject 1, launcher 7, p10 3, promise 17, promote 9, rebuild 12, restore 9, retention 7, rewind 3, schema_v2 5, scratch_run 6, secrets 3, sim 4, status 13, undo 21 (a10_real and a5_latency run 0: their tests are the ignored ones); the release run has the same numbers
@@ -200,8 +200,9 @@ Measured on the working tree that this commit contains: the tree of the previous
   - Before the fix: the gate and promise test binaries, 2 copies of each at once, 5 rounds = 20 binary runs, 4 of them failed.
   - Fix, tests only: in fault-inject builds `TORPOR_TEST_PORTS=lo-hi` makes `free_port` pick a random free port inside that window; tests/common/mod.rs gives every test its own window of 100 ports below the system range (220 windows, from a counter and the process id). The product path is unchanged.
   - After the fix: the same loop, 10 rounds = 40 binary runs, 0 failed (at the old rate of 4 in 20, the chance of 0 in 40 is about 0.01 %). That loop ran the first version of the window pick; I then rewrote its arithmetic in u32 so that no window can overflow, and the full suites in S2b.2 ran with that final version.
-  - Residual in the tests: tests/scratch_run.rs calls `Run::start` inside the test process (6 tests, kernel-picked ports, no window). A collision there is possible; the rate is NOT measured.
+  - Residual in the tests: tests/scratch_run.rs calls `Run::start` inside the test process (6 tests, kernel-picked ports from 32768 up, no window; the test windows end at 31999, so the two never meet). A collision among those 6 tests is possible; the rate is NOT measured (they passed in both full runs).
   - Residual in the product: between `free_port()` and the app's bind a foreign process (or a second Torpor) can take the port. Then the app dies (UNRUNNABLE, the Stop is not blocked and the promise is run again at the next Stop), or a healthy server of someone else answers the check, which can give a wrong PASS (a missed catch) or a wrong FAIL (a promise turns flaky and advisory). A wrong block needs 3 of 3 FAIL on three fresh ports plus a control PASS, which this cannot produce in practice. A slow-starting app makes the window longer. Fix for S2c: pick the port late, retry once when the app exits at once, check who owns the port (a start command that daemonizes would break a plain "our child owns it" test, so it needs care).
+- NOT VERIFIED: the new restore branch of `a10_run` (it puts a committed `dist/<platform>/torpor` back) compiles but has never run, because A10 may be run only once. It runs only when `a10_run` reaches its end: a panic after the copy leaves the tracked binary overwritten, and `git checkout -- dist/linux-x64/torpor` puts it back.
 - Odds for a check that fails 1 time in 3 at random (computed, not measured, except the 20-trial test): `(2/3)^5` = 13.2 % pass the 5-run proof (state `unproven`); 1 to 4 FAIL of 5 saves it as advisory `flaky` (the usual case, 17 of 20 trials in the B2 test); 5 of 5 FAIL (0.4 %) is not saved. If such a check were at blocking: per gate evaluation 66.7 % show nothing, 29.6 % end mixed (flaky), 2.5 % block (3 of 3 FAIL and a control PASS) and 1.2 % are set aside (control FAIL), so about 7 % of such checks would block once before they are demoted. The protection is the proof, oracle and mutant steps plus the 3-of-3 rule, not a guarantee; no text may say that a flaky check can never block. There is no confirming rerun of a catch (spec-literal): a lucky 3 of 3 FAIL followed by a later PASS counts as a true catch (3.7 % per evaluation for such a check).
 - README comparison left out: the sentence that Torpor turns a user's complaint or confirmation into a check, and that no other tool does, is not in README.md. The first half depends on a real AI following the skill (only simulated, see above) and the second half is the lead's research statement (REV 12), which I cannot verify. The other claims in the README are tested. The lead can add the sentence from spec 28 after a real run.
 
