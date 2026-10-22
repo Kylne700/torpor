@@ -141,14 +141,15 @@ pub fn run(event: &str) -> i32 {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(own_ms));
             if sh.out_started.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+                // A check app that the gate started must not outlive the hook. First, so nothing below can keep it alive;
+                // it takes no lock and waits about a second at most.
+                crate::scratch::kill_live_groups();
                 if let Ok(g) = sh.ws.lock() {
                     log_fault_line(&g.0, &g.2, &ev, "timeout", &format!("no answer within {own_ms} ms"));
                 }
                 if let Some(v) = sh.fallback.try_lock().ok().and_then(|g| g.clone()) {
                     write_out(&v);
                 }
-                // A check app that the gate started must not outlive the hook.
-                crate::scratch::kill_live_groups();
                 // SAFETY: _exit ends the process at once; nothing was written to stdout.
                 unsafe { libc::_exit(0) }
             }

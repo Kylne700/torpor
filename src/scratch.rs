@@ -15,6 +15,7 @@ use std::os::unix::fs::{OpenOptionsExt, symlink};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -331,18 +332,58 @@ struct Tail {
     eof: bool,
 }
 
-/// Process groups of the apps this process started and has not stopped yet. Only the hook watchdog reads it (`kill_live_groups`),
-/// so a hook that ends at its deadline does not leave its own apps running. Never a group id saved by an earlier process.
-static LIVE: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+/// Process groups of the apps this process started and has not stopped yet (0 = free slot). Only the hook watchdog reads it
+/// (`kill_live_groups`), so a hook that ends at its deadline does not leave its own apps running. Never a group id saved by an
+/// earlier process. No lock on purpose: the watchdog must reach every id whatever another thread holds, or died holding.
+/// shortcut: 64 apps at once, far above what one hook starts (a full table stops the new app and fails the run), raise it if that changes.
+const LIVE_SLOTS: usize = 64;
+static LIVE: [AtomicI32; LIVE_SLOTS] = [const { AtomicI32::new(0) }; LIVE_SLOTS];
+/// Spawns in flight: the group of an app that is being started is not in `LIVE` until `Command::spawn` has returned.
+static SPAWNING: AtomicUsize = AtomicUsize::new(0);
+/// The watchdog waits at most this long for a spawn in flight (it fires at 30 s of a 45 s hook timeout), then kills what it has.
+const SPAWN_WAIT_MS: u64 = 1000;
+
+/// Counts one spawn in flight until it is dropped.
+struct Spawning<'a>(&'a AtomicUsize);
+
+impl<'a> Spawning<'a> {
+    fn begin(n: &'a AtomicUsize) -> Self {
+        n.fetch_add(1, Ordering::SeqCst);
+        Spawning(n)
+    }
+}
+
+impl Drop for Spawning<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn live_add(table: &[AtomicI32], pg: i32) -> bool {
+    table.iter().any(|s| s.compare_exchange(0, pg, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+}
+
+fn live_del(table: &[AtomicI32], pg: i32) {
+    for s in table {
+        let _ = s.compare_exchange(pg, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// SIGKILL every group in `table`, after waiting up to `wait` for the spawns in flight to register theirs. No lock, no unbounded wait.
+fn kill_groups(table: &[AtomicI32], spawning: &AtomicUsize, wait: Duration) {
+    let end = Instant::now() + wait;
+    while spawning.load(Ordering::SeqCst) > 0 && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for pg in table.iter().map(|s| s.load(Ordering::SeqCst)).filter(|p| *p > 1) {
+        // SAFETY: the ids are groups this process created and has not yet reaped through App::drop.
+        unsafe { libc::kill(-pg, libc::SIGKILL) };
+    }
+}
 
 /// SIGKILL every app group this process started. For the watchdog thread right before `_exit`.
 pub fn kill_live_groups() {
-    if let Ok(g) = LIVE.try_lock() {
-        for &pg in g.iter().filter(|p| **p > 1) {
-            // SAFETY: the ids are groups this process created and has not yet reaped through App::drop.
-            unsafe { libc::kill(-pg, libc::SIGKILL) };
-        }
-    }
+    kill_groups(&LIVE, &SPAWNING, Duration::from_millis(SPAWN_WAIT_MS));
 }
 
 /// The server in its own process group. Dropping it stops the whole group (SIGTERM, then SIGKILL after 3 s).
@@ -377,9 +418,7 @@ impl Drop for App {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Ok(mut g) = LIVE.lock() {
-            g.retain(|p| *p != self.pgid); // only now: until the group is gone the watchdog may still need to kill it
-        }
+        live_del(&LIVE, self.pgid); // only now: until the group is gone the watchdog may still need to kill it
     }
 }
 
@@ -417,16 +456,20 @@ impl App {
         let (rd, wr) = std::io::pipe()?;
         let mut c = Command::new("sh");
         c.arg("-c").arg(cmd).current_dir(cwd).env_clear().envs(env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(wr.try_clone()?).stderr(wr).process_group(0);
+        let spawning = Spawning::begin(&SPAWNING);
         let child = c.spawn()?;
-        drop(c); // closes our copies of the write end, so the reader sees the end when the group is gone
-        let tail = Arc::new(Mutex::new(Tail::default()));
-        let t2 = tail.clone();
-        std::thread::spawn(move || pump(rd, log, t2));
         let pgid = child.id() as i32;
-        if let Ok(mut g) = LIVE.lock() {
-            g.push(pgid);
+        let registered = live_add(&LIVE, pgid);
+        drop(spawning);
+        // From here on `app` owns the group: every way out below (an error, a panic) drops it, and that stops the group.
+        let app = App { child, pgid, tail: Arc::new(Mutex::new(Tail::default())) };
+        if !registered {
+            return Err(Error::msg("too many apps are running at once"));
         }
-        Ok(App { child, pgid, tail })
+        drop(c); // closes our copies of the write end, so the reader sees the end when the group is gone
+        let t2 = app.tail.clone();
+        std::thread::Builder::new().spawn(move || pump(rd, log, t2))?;
+        Ok(app)
     }
 
     /// The exit text if the leader has ended.
@@ -755,6 +798,54 @@ mod tests {
         assert!(!alive(&pid), "the grandchild is gone");
         assert!(!group_alive(leader), "the group is empty");
         assert!(fs::read_to_string(tmp.path().join("log")).unwrap().contains("child="));
+    }
+
+    /// A sleeping process in a group of its own, the way an app is started.
+    fn group() -> Child {
+        Command::new("sleep").arg("120").process_group(0).spawn().unwrap()
+    }
+
+    #[test]
+    fn the_kill_takes_no_lock_waits_for_spawns_in_flight_but_only_so_long() {
+        use std::os::unix::process::ExitStatusExt;
+        let table: [AtomicI32; 2] = Default::default();
+        let none = AtomicUsize::new(0);
+        // Slots: a full table says so, a freed slot is used again, and a freed group is not signalled.
+        let (mut a, mut b) = (group(), group());
+        let (ia, ib) = (a.id() as i32, b.id() as i32);
+        assert!(live_add(&table, ia) && live_add(&table, ib) && !live_add(&table, 99_999));
+        live_del(&table, ib);
+        kill_groups(&table, &none, Duration::from_millis(50));
+        assert_eq!(a.wait().unwrap().signal(), Some(9));
+        assert!(b.try_wait().unwrap().is_none(), "b was freed first, so it was left alone");
+        b.kill().unwrap();
+        b.wait().unwrap();
+        // A spawn in flight registers its group while the watchdog waits: that group is killed too.
+        live_del(&table, ia);
+        let in_flight = AtomicUsize::new(0);
+        let (t, f) = (&table, &in_flight);
+        let mut c = std::thread::scope(|s| {
+            let guard = Spawning::begin(f);
+            let h = s.spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                let c = group();
+                assert!(live_add(t, c.id() as i32));
+                drop(guard);
+                c
+            });
+            kill_groups(t, f, Duration::from_secs(10));
+            h.join().unwrap()
+        });
+        assert_eq!(c.wait().unwrap().signal(), Some(9));
+        // A spawn that never ends holds the watchdog up for the limit and no longer.
+        let stuck = AtomicUsize::new(1);
+        let mut d = group();
+        live_del(&table, c.id() as i32);
+        assert!(live_add(&table, d.id() as i32));
+        let t0 = Instant::now();
+        kill_groups(&table, &stuck, Duration::from_millis(200));
+        assert!((200..5000).contains(&(t0.elapsed().as_millis() as u64)), "{:?}", t0.elapsed());
+        assert_eq!(d.wait().unwrap().signal(), Some(9));
     }
 
     #[test]
