@@ -6,14 +6,17 @@ pub mod hook;
 pub mod mask;
 pub mod merge;
 pub mod restore;
+pub mod runner;
 pub mod retention;
 pub mod scan;
+pub mod spec;
 pub mod status;
 pub mod store;
 pub mod texts;
 pub mod transcript;
 pub mod turn;
 pub mod util;
+pub mod vault;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
