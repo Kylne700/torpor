@@ -106,8 +106,9 @@ fn a_stop_chain_whose_payloads_have_no_prompt_id_blocks_at_most_twice() {
 fn a_fail_followed_by_an_unrunnable_rerun_is_not_a_flake_and_the_promise_stays_blocking() {
     let mut s = story();
     // While `arm` exists the app starts once: the next start (the re-run of a FAIL) exits 1, so that run is UNRUNNABLE.
-    let (arm, flag) = (s.env.home.join("arm"), s.env.home.join("flag"));
-    let cmd = format!("if [ -e '{}' ]; then if [ -e '{}' ]; then exit 1; fi; touch '{}'; fi; node server.js --port {{port}}", arm.display(), flag.display(), flag.display());
+    // The folder is named once: macOS temp paths are long and the cmd limit is 300 characters.
+    let arm = s.env.home.join("arm");
+    let cmd = format!("D='{}'; if [ -e \"$D/arm\" ]; then if [ -e \"$D/flag\" ]; then exit 1; fi; touch \"$D/flag\"; fi; node server.js --port {{port}}", s.env.home.display());
     let start = json!({"cmd": cmd, "ready": "/login", "timeout_s": 30}).to_string();
     { let o = add(&mut s, &spec("login works", &start, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
     set(&s, "UPDATE promises SET tier='blocking' WHERE id=1");
