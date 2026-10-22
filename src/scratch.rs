@@ -577,8 +577,9 @@ fn free_port(attempt: usize) -> Result<u16> {
     Ok(l.local_addr()?.port())
 }
 
-/// Who holds the socket that listens on a port.
+/// Who holds the socket that listens on a port. Only the Linux `holder_of` finds an App or an Other.
 #[derive(Debug, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum Holder {
     /// A process of the app (its group, or started by one of its processes).
     App,
@@ -589,15 +590,20 @@ enum Holder {
 }
 
 /// The sockets that listen on `port` in the text of /proc/net/tcp or tcp6, as the "socket:[inode]" text a link in /proc/<pid>/fd shows.
-/// A line reads `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`; state 0A is LISTEN, the port is in hex.
+/// A line reads `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`; state 0A is LISTEN, address and port are in hex.
+/// Only the addresses that a client at 127.0.0.1 reaches count: 127.0.0.1, any IPv4 address, any IPv6 address (it takes IPv4 too) and
+/// ::ffff:127.0.0.1. A listener on ::1 or 127.0.0.2 can sit beside another process on 127.0.0.1:port and never answers that client.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn listening_sockets(table: &str, port: u16) -> Vec<String> {
+    const REACHED: [&str; 4] = ["0100007F", "00000000", "00000000000000000000000000000000", "0000000000000000FFFF00000100007F"];
     let rows = table.lines().skip(1).map(|l| l.split_whitespace().collect::<Vec<_>>());
-    rows.filter(|f| f.get(3) == Some(&"0A") && f.get(1).and_then(|a| a.rsplit(':').next()).and_then(|p| u16::from_str_radix(p, 16).ok()) == Some(port))
+    rows.filter(|f| f.get(3) == Some(&"0A") && f.get(1).and_then(|a| a.split_once(':')).is_some_and(|(addr, p)| REACHED.contains(&addr) && u16::from_str_radix(p, 16) == Ok(port)))
         .filter_map(|f| f.get(9).map(|i| format!("socket:[{i}]")))
         .collect()
 }
 
 /// The processes of an app: its group and everything started below them, from (pid, parent, group) of every process.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn app_pids(procs: &[(u32, u32, i32)], pgid: i32) -> std::collections::BTreeSet<u32> {
     let mut ours: std::collections::BTreeSet<u32> = procs.iter().filter(|p| p.2 == pgid).map(|p| p.0).collect();
     while let Some(add) = procs.iter().find(|p| ours.contains(&p.1) && !ours.contains(&p.0)).map(|p| p.0) {
@@ -895,9 +901,13 @@ mod tests {
             0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111 1 0000000000000000 100 0 0 10 0\n\
             1: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000        0 222 1 0000000000000000 100 0 0 10 0\n\
             2: 00000000:1F91 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 333 1 0000000000000000 100 0 0 10 0\n\
-            3: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 444 1 0000000000000000 100 0 0 10 0\n";
-        // 0x1F90 is 8080. A connected socket (state 01) is no listener, and the IPv6 form counts.
-        assert_eq!(listening_sockets(table, 8080), ["socket:[111]", "socket:[444]"]);
+            3: 00000000000000000000000000000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 444 1 0000000000000000 100 0 0 10 0\n\
+            4: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 555 1 0000000000000000 100 0 0 10 0\n\
+            5: 0200007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 666 1 0000000000000000 100 0 0 10 0\n\
+            6: 0000000000000000FFFF00000100007F:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 777 1 0000000000000000 100 0 0 10 0\n";
+        // 0x1F90 is 8080. A connected socket (state 01) is no listener, the IPv6 forms count, and so do not the listeners on ::1 (555) and
+        // 127.0.0.2 (666): a client at 127.0.0.1 never reaches them.
+        assert_eq!(listening_sockets(table, 8080), ["socket:[111]", "socket:[444]", "socket:[777]"]);
         assert_eq!(listening_sockets(table, 8081), ["socket:[333]"]);
         assert!(listening_sockets(table, 9).is_empty() && listening_sockets("", 8080).is_empty());
     }

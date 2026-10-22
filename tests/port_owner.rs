@@ -48,6 +48,7 @@ impl Other {
         fs::read_to_string(&self.log).unwrap_or_default().lines().map(String::from).collect()
     }
 
+    #[cfg(target_os = "linux")]
     fn alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
@@ -60,11 +61,12 @@ impl Drop for Other {
     }
 }
 
-/// The login promise is saved. Its app then waits a second before it starts, so the other process answers first.
-fn slow_login() -> Sim {
+/// The login promise is saved. Its app then waits `secs` before it starts (only when slow.flag exists, so saving stays fast), and the
+/// other process is asked for the ready path while the app is still alive.
+fn slow_login(secs: &str) -> Sim {
     let mut s = story();
-    let slow = r#"{"cmd":"if [ -f slow.flag ]; then sleep 1; fi; node server.js --port {port}","ready":"/login","timeout_s":30}"#;
-    let o = add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS));
+    let slow = r#"{"cmd":"if [ -f slow.flag ]; then sleep SECS; fi; node server.js --port {port}","ready":"/login","timeout_s":30}"#.replace("SECS", secs);
+    let o = add(&mut s, &spec("login works", &slow, "{}", LOGIN_STEPS));
     assert_eq!(o.code, 0, "{}", why(&o));
     s.outside_edit("slow.flag", "x");
     s
@@ -72,7 +74,7 @@ fn slow_login() -> Sim {
 
 #[test]
 fn an_app_that_ends_at_once_because_its_port_is_taken_is_started_once_more() {
-    let s = slow_login();
+    let s = slow_login("0.3"); // the app must end within 3 s of its start, also on a slow runner
     let other = Other::start(503);
     let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &other.port.to_string())]);
     assert_eq!(c.code, 0, "{}", why(&c));
@@ -85,7 +87,7 @@ fn an_app_that_ends_at_once_because_its_port_is_taken_is_started_once_more() {
 #[cfg(target_os = "linux")]
 #[test]
 fn an_answer_from_another_process_is_not_the_apps_and_the_app_is_started_once_more() {
-    let s = slow_login();
+    let s = slow_login("1");
     let mut other = Other::start(200);
     let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &other.port.to_string())]);
     assert_eq!(c.code, 0, "{}", why(&c));
@@ -98,7 +100,7 @@ fn an_answer_from_another_process_is_not_the_apps_and_the_app_is_started_once_mo
 #[cfg(target_os = "linux")]
 #[test]
 fn a_port_that_stays_taken_makes_the_check_unrunnable_and_the_other_process_is_left_alone() {
-    let s = slow_login();
+    let s = slow_login("1");
     let mut other = Other::start(200);
     let (p, pid) = (other.port, other.child.id());
     let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &format!("{p},{p}"))]);
