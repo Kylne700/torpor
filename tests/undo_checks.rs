@@ -1,5 +1,5 @@
 //! Undo with checks (spec 20): the result is built in a scratch copy first and the promises that watch the undone files run on it.
-//! A promise that passes now and fails there stops the undo (exit 3; only the user can go on, with `--force`); anything else is only reported.
+//! A promise that passes now and fails there stops the undo (exit 3; only the user can go on, with `--force`), and so does an app that starts now and not there; anything else is only reported.
 mod common;
 use common::app::*;
 use common::*;
@@ -112,15 +112,36 @@ fn a_dry_run_names_the_checks_and_runs_none() {
 }
 
 #[test]
-fn an_undo_after_which_the_app_does_not_start_is_reported_and_goes_ahead() {
-    // Spec 18: a check that cannot run never blocks, whatever the reason.
+fn an_undo_after_which_the_app_does_not_start_is_refused_and_force_goes_ahead() {
+    // Spec 20: the same check starts the app on the project as it is now and not on the result, so the undo is the cause.
     let mut s = promised();
     rewrite(&mut s, "this is not javascript (\n");
     rewrite(&mut s, SERVER);
+    let before = oracle(s.proj());
+    let (points, restores) = (s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let o = s.cli(&["undo", "5"]);
+    assert_eq!(o.code, 3, "{}", why(&o));
+    let head = "Undoing turn 5 stops the app from starting (promise #1 (login works)), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo 5 --force\nStart: the app did not start (";
+    assert!(o.stdout.starts_with(head), "{}", o.stdout);
+    assert_eq!(oracle(s.proj()), before, "a refused undo must not write");
+    assert_eq!((s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores")), (points, restores), "a refused undo leaves no save point and no restore row");
+    // The runs happened all the same: none could run in the copy and the check passes on the project as it is.
+    assert_eq!((undo_runs(&s, "UNRUNNABLE") > 0, undo_runs(&s, "PASS")), (true, 1), "{}", runs(&s));
+    let o = s.cli(&["undo", "5", "--force"]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(server(&s).starts_with("this is not javascript"));
+}
+
+#[test]
+fn an_undo_after_which_the_app_does_not_start_either_way_is_reported_and_goes_ahead() {
+    // Spec 18: a check that cannot run never blocks. The app does not start on the project as it is now either, so the undo is not the cause.
+    let mut s = promised();
+    rewrite(&mut s, "this is not javascript (\n");
+    rewrite(&mut s, "this is not javascript (\n// note\n");
     let o = s.cli(&["undo", "5"]);
     assert_eq!(o.code, 0, "{}", why(&o));
     assert!(o.stdout.contains("\nPromise #1 (login works) did not count: it could not run (the app did not start"), "{}", o.stdout);
-    assert!(server(&s).starts_with("this is not javascript"));
+    assert_eq!(server(&s), "this is not javascript (\n");
 }
 
 // ---------------------------------------------------------------- the checks run without the store lock (S2c-fix 7)

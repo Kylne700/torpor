@@ -2,12 +2,14 @@
 //! that watch the undone files run on it. A promise that passes now and fails there stops the undo (exit 3; the user can go on anyway with `--force`).
 //! The checks start the app and take a while, so they run without the store lock (merge.rs plans under the lock, lets go, and plans again after).
 //! What they need from the plan is made while the undo still holds its transaction: merged bytes exist only there (`ready`).
-//! A deadline bounds them. A check that cannot run, is flaky, ran out of time or already fails now never stops the undo; it is reported.
+//! A deadline bounds them. A check that is flaky, ran out of time or already fails now never stops the undo; it is reported. Neither does one that cannot run,
+//! except when the app does not start on the result and the same check starts it on the project as it is now: then the undo is the cause.
 use crate::gate;
 use crate::promise::{self, Call, Promise};
 use crate::restore::{Act, Plan};
 use crate::runner::{self, Verdict};
 use crate::scratch::{self, Opts, RunResult};
+use crate::spec::Spec;
 use crate::store::Ws;
 use crate::util::now_ns;
 use std::time::{Duration, Instant};
@@ -18,6 +20,8 @@ const CHECK_SECS: u64 = 90;
 const RUN_WAIT_MS: u64 = 5000;
 /// Saving the project as it is now, for the checks; the 90 seconds above include it.
 const SAVE_SECS: u64 = 30;
+/// How the reason of a check starts when the app did not come up (scratch.rs): the one reason that can stop an undo.
+const NO_START: &str = "the app did not start";
 /// Names listed in a dry run; the rest are counted.
 const NAMES_MAX: usize = 5;
 /// A file bigger than this is left out of the changed copy.
@@ -73,6 +77,14 @@ fn changed_copy(ws: &Ws, plan: &Plan) -> (Opts, usize) {
         }
     }
     (o, left_out)
+}
+
+/// The same check on the project as it is now. Only a check that passes there is broken by this undo (spec 20); a control that runs late or
+/// cannot run is no pass. Its runs are kept too.
+fn passes_now(ws: &Ws, spec: &Spec, live: &[u8; 32], id: i64, out: &mut Checks) -> bool {
+    let mut now = promise::check_tree(ws, spec, live);
+    out.runs.push((id, std::mem::take(&mut now.runs)));
+    now.call == Call::Pass
 }
 
 /// What the checks of one undo will run: the promises its files reach, and its result as a changed copy of the project.
@@ -143,12 +155,16 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
             Call::Pass => passed.push(p),
             Call::Flaky => out.notes.push(format!("Promise {name} did not count: it is flaky.")),
             Call::Unrunnable if c.reason.contains(runner::OUT_OF_TIME) => late += 1,
-            Call::Unrunnable => out.notes.push(format!("Promise {name} did not count: it could not run ({}).", promise::clean(c.reason.trim_end_matches('.'), 160))),
+            Call::Unrunnable => {
+                let why = promise::clean(c.reason.trim_end_matches('.'), 160);
+                if c.reason.starts_with(NO_START) && passes_now(ws, &l.spec, &live, p.id, &mut out) {
+                    out.refuse = Some(format!("Undoing turn {k} stops the app from starting (promise {name}), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force\nStart: {why}."));
+                    return out;
+                }
+                out.notes.push(format!("Promise {name} did not count: it could not run ({why})."));
+            }
             Call::Fail => {
-                // Only a check that passes on the project as it is now is broken by this undo (spec 20).
-                let mut now = promise::check_tree(ws, &l.spec, &live);
-                out.runs.push((p.id, std::mem::take(&mut now.runs)));
-                if now.call != Call::Pass {
+                if !passes_now(ws, &l.spec, &live, p.id, &mut out) {
                     out.notes.push(format!("Promise {name} did not count: it does not pass now either."));
                     continue;
                 }
