@@ -1,6 +1,6 @@
 {
   "name": "torpor",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Save points for every turn, shell edits included. Go back, undo one turn, see what changed.",
   "author": { "name": "Kylne700" },
   "homepage": "https://github.com/Kylne700/torpor",

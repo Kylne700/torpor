@@ -144,7 +144,7 @@ struct Cli {
 }
 
 fn cli(t: &Path, args: &[&str]) -> Cli {
-    let bin = t.join("home/bin/2.0.0/torpor");
+    let bin = t.join(format!("home/bin/{}/torpor", env!("CARGO_PKG_VERSION")));
     assert!(bin.is_file(), "the launcher did not install the binary into the store");
     for attempt in 0..4 {
         let o = Command::new(&bin)
@@ -229,7 +229,7 @@ fn a10_assert() {
     log.say(format!("run: {}", run.trim()));
 
     // The launcher installed the plain binary that was given.
-    let installed = blake3::hash(&fs::read(t.join("home/bin/2.0.0/torpor")).expect("installed binary")).to_hex().to_string();
+    let installed = blake3::hash(&fs::read(t.join(format!("home/bin/{}/torpor", env!("CARGO_PKG_VERSION")))).expect("installed binary")).to_hex().to_string();
     assert_eq!(installed, fs::read_to_string(t.join("bin.blake3")).unwrap(), "the installed binary is not the plain release binary");
 
     // Heartbeats for the six events.

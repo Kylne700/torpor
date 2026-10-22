@@ -1,7 +1,7 @@
 #!/bin/sh
 # Torpor launcher (spec 9.3). Hooks never fail and never print: with no binary, `torpor hook ...` exits 0.
 # V must equal "version" in .claude-plugin/plugin.json (a test checks it).
-V=2.0.0
+V=2.1.0
 H=${TORPOR_HOME:-$HOME/.torpor}
 
 # Fast path: the installed copy. No fork, no uname.
@@ -30,12 +30,12 @@ if [ -z "$t" ] || [ ! -f "$src" ]; then
   exit 1
 fi
 
-# Install: copy next to a temp name, then an atomic rename. A stable path outlives plugin updates.
+# Install: copy next to a temp name, check that the copy says it is version $V, then an atomic rename. A stable path outlives plugin updates.
 d=$H/bin/$V
 [ -d "$H" ] || mkdir -p -m 700 "$H" 2>/dev/null
 mkdir -p "$d" 2>/dev/null
 tmp=$d/.torpor-$$.tmp
-if cp "$src" "$tmp" 2>/dev/null && chmod 755 "$tmp" 2>/dev/null && mv -f "$tmp" "$d/torpor" 2>/dev/null; then
+if cp "$src" "$tmp" 2>/dev/null && chmod 755 "$tmp" 2>/dev/null && [ "$("$tmp" version 2>/dev/null)" = "torpor $V" ] && mv -f "$tmp" "$d/torpor" 2>/dev/null; then
   # The shim `$H/bin/torpor` runs the newest installed version. shortcut: a path with a double quote in it breaks the shim.
   newest=$(for x in "$H"/bin/*/torpor; do [ -x "$x" ] && basename "$(dirname "$x")"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
   s=$H/bin/.torpor-shim-$$.tmp
@@ -44,5 +44,7 @@ if cp "$src" "$tmp" 2>/dev/null && chmod 755 "$tmp" 2>/dev/null && mv -f "$tmp" 
   exec "$d/torpor" "$@"
 fi
 rm -f "$tmp" 2>/dev/null
-# Could not install (read-only home?): run the shipped binary where it is.
+rmdir "$d" 2>/dev/null
+# Could not install (read-only home?) or the shipped binary is not version $V (a stale dist/): run it where it is and install nothing,
+# because the fast path above never checks the version again.
 exec "$src" "$@"

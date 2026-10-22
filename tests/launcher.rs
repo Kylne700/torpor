@@ -20,6 +20,23 @@ fn launcher_version_equals_manifest_and_cargo() {
     assert_eq!(mode & 0o111, 0o111, "launcher must be executable");
 }
 
+/// Spec 12, mode B: the exact description, a body of at most 60 lines, and a check in it that the real lint accepts.
+#[test]
+fn the_skill_has_the_exact_description_a_short_body_and_a_check_the_lint_accepts() {
+    let text = read("skills/torpor/SKILL.md");
+    let (front, body) = text.strip_prefix("---\n").and_then(|t| t.split_once("\n---\n")).expect("front matter");
+    let want = "Use when the user says something works now, or that something which worked is broken, or asks to undo or find what broke. Torpor save points, promises and checks.";
+    assert!(front.lines().any(|l| l == format!("description: {want}")), "description: {front}");
+    assert!(front.lines().any(|l| l == "name: torpor"));
+    assert!(body.lines().count() <= 60, "the body has {} lines", body.lines().count());
+    for must in ["torpor promise add -", "torpor find-break", "--check -", "torpor undo <turn>", "torpor promise dispute <id>", "timeout 600000"] {
+        assert!(body.contains(must), "the body does not say: {must}");
+    }
+    let json = body.split("```\n").nth(1).expect("a fenced check in the body");
+    let l = torpor::spec::lint(json).unwrap_or_else(|e| panic!("the example check is rejected: {e:?}"));
+    assert_eq!(l.spec.name, "login works");
+}
+
 #[test]
 fn hooks_json_matches_the_spec() {
     let h: Value = serde_json::from_str(&read("hooks/hooks.json")).unwrap();
@@ -89,6 +106,41 @@ fn launcher_installs_then_takes_the_fast_path() {
     assert_eq!((o.code, o.stdout.trim().to_string()), (0, format!("torpor {v}")), "fast path");
     let o = version(&shim_path);
     assert_eq!((o.code, o.stdout.trim().to_string()), (0, format!("torpor {v}")), "shim");
+}
+
+/// A shipped binary of another version (a stale dist/ after a plugin update) runs where it is and is never installed:
+/// the fast path would otherwise use it for ever without looking at its version again.
+#[test]
+fn launcher_runs_a_binary_of_another_version_in_place_and_installs_nothing() {
+    let mut sim = Sim::new();
+    let root = make_plugin_root(sim.env._tmp.path(), false);
+    let d = root.join("dist").join(dist_target());
+    std::fs::create_dir_all(&d).unwrap();
+    let stub = d.join("torpor");
+    std::fs::write(&stub, "#!/bin/sh\ncase \"$1\" in\n  version) echo 'torpor 0.0.1' ;;\n  hook) ;;\n  *) echo \"stub ran in place: $*\" ;;\nesac\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let launcher = root.join("bin/torpor");
+    let run = |args: &[&str], stdin: &[u8]| {
+        let mut c = cmd_with(&launcher, &sim.env);
+        c.args(args);
+        run_cmd(c, stdin)
+    };
+    // Twice: the second run is not a fast path, because nothing was installed.
+    for _ in 0..2 {
+        let o = run(&["version"], b"");
+        assert_eq!((o.code, o.stdout.trim()), (0, "torpor 0.0.1"), "the stub ran where it is; stderr: {}", o.stderr);
+        let o = run(&["status", "--all"], b"");
+        assert_eq!(o.stdout.trim(), "stub ran in place: status --all");
+    }
+    let bin = sim.env.thome.join("bin");
+    let left: Vec<_> = std::fs::read_dir(&bin).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+    assert!(left.is_empty(), "no copy, no temp file, no shim: {left:?}");
+    // A hook still ends well and says nothing.
+    sim.pid = "p1".into();
+    let payload = sim.payload("SessionStart", json!({"source": "startup"})).to_string();
+    let o = run(&["hook", "SessionStart"], payload.as_bytes());
+    check_contract("SessionStart", &o);
+    assert_eq!(o.stdout, "");
 }
 
 #[test]
