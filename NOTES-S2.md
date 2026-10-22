@@ -360,3 +360,73 @@ All from the repo folder, on the code of ee4a7d3 (the commit of these notes chan
 
 - Lead: Opus review of cd017e3..ee4a7d3; push to s2 and CI (macOS: the real-browser test is ignored there, one port_owner test runs there); release v2.2.0 (the bot makes dist/); tag `pre-event-base` on the last pre-event commit before Oct 26 16:00 UTC (the README says Oct 26, 12:00 PM GMT-5 = 17:00 UTC); decide the two open questions (S2c.4 items 6 and 8).
 - S3 (the event, from Oct 26 17:00 UTC): S2b.7 item 4: one real-AI run in real Claude Code with a promise (an extra ignored test next to a10_real), a rerun to confirm a catch, `sourceRoot`, a measured cold start; then the README comparison decision.
+
+## S2c fixes (stage S2c-fix)
+
+Fix agent: S2c-fix (Sonnet), started at 385af5a, branch main, nothing pushed, no tags. Written Oct 22; the hand-off date was Oct 24 06:00 UTC. Input: the S2c review (12 findings: 0 HIGH, 2 MED, 10 LOW) and the fix brief, both in scratch/ outside this repo. All 10 steps of the brief are done, in its order, one commit each ("S2c-fix N: ..."). The version stays 2.2.0; dist/, CI files, tags and remotes were not touched. scratch/torpor-s2c-ci.md did not exist at the last check.
+
+## S2c-fix.1 Status per step
+
+| Step | Finding | State | Commit | Tests (each failed before the change and passes after) |
+|------|---------|-------|--------|-------|
+| 1 | 3: `undo --force` is user-only | DONE | 617b673 | `user_only_args` arm in destructive.rs; rows in tests/cli.rs `user_only_commands_refuse_inside_claude_code`, tests/a9_destructive.rs `off_on_forget_retain_are_for_the_user_only` and the destructive.rs unit table. Refusal text "To do it anyway, run this in your own terminal: torpor undo K --force" (tests/undo_checks.rs follows); SKILL.md "If an undo is refused, tell the user; only they can force it." |
+| 2 | 1, part 1: the README undo line is true | DONE | c826c9a | docs only: "so that nothing changes meanwhile" is gone; a Limits bullet said what the lock did until step 7 replaced it |
+| 3 | 5: the runner download follows no redirect | DONE | b8c975f | install.mjs `fetch(..., { redirect: 'error' })`, error "the registry sent a redirect, so nothing was installed". tests/runner_install.rs `a_registry_that_redirects_installs_nothing_and_the_other_host_is_never_asked`: a stand-in registry answers 302 to a second 127.0.0.1 server that holds the real package; exit 1, one request to the first, none to the second, nothing installed |
+| 4 | 7, 11, 9: docs | DONE | a20b581 | docs only (README, SKILL.md): loopback means 127.x.x.x, ::1 and localhost on any port; the env lint recognises URLs, host:port and host-named variables, not every bare host name; a port holder Torpor cannot see is trusted; a kill can leave the browser runner, its browser and a temp folder behind. The optional sweep of old `/tmp/tp-*` folders was skipped, as the brief says |
+| 5 | 6: the Chromium fallback | DONE | 6841920 | src/dom.rs: a browser counts as installed only with `chromium-<rev>/INSTALLATION_COMPLETE`; the fallback runs `install --no-shell chromium`; the question and README say what it fetches ("a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers"). tests/runner_install.rs `a_browser_download_that_stopped_half_way_is_offered_again_and_a_finished_one_is_not`; with the old dom.rs 2 of the 8 tests in that file fail. The download itself was never run |
+| 6 | 8: temp folder and run token fail closed | DONE | a93de86 | `ShortTmp::make` makes a new 0700 folder, never reuses a name, 8 tries; `runner::random_bytes/new_rand/new_nonce`; no random numbers means UNRUNNABLE "the system gave no random numbers" and no app is started. Tests: src/dom.rs `a_taken_folder_name_is_never_used_and_no_random_name_means_no_folder`, tests/promise.rs `a_check_without_random_numbers_is_unrunnable_and_starts_no_app` (fault `TORPOR_TEST_NO_RANDOM=rand\|nonce`, also listed in tests/release_ignores_fault_env.sh) |
+| 7 | 1, part 2: undo checks run without the store lock | DONE | 7b02152 | flow in item 4 below. tests/undo_checks.rs: `hooks_go_on_while_an_undo_checks_its_result` (a hook makes its save point while the check's app is held at its start; the old code gave three "busy" faults), `an_undo_whose_plan_changed_during_its_checks_writes_nothing_and_a_second_try_goes_through` (old code: exit 4, now 3), `an_undo_checks_the_merged_file_and_not_the_one_on_disk` (passes on the old code too; it fails when the merged bytes are not kept for the check). README undo bullet and Limits bullet say what is true now |
+| 8 | 2: an undo after which the app does not start is refused | DONE | 0b2d4a0 | tests/undo_checks.rs `an_undo_after_which_the_app_does_not_start_is_refused_and_force_goes_ahead` (the old test turned around: exit 3 with the refusal text, nothing written, `--force` exits 0) and `an_undo_after_which_the_app_does_not_start_either_way_is_reported_and_goes_ahead` (exit 0 and a note; refusing without the control run makes it fail). README (undo bullet, Limits) and spec 16, 18, 20 say it |
+| 9 | 4: page checks are judged from memory | DONE | 9b5c52e | `Tail` keeps the first 1 MiB of runner output in memory (`App::head`); `run_steps` judges from it and never reads runner.log back. tests/dom_run.rs `an_app_that_rewrites_the_runner_log_after_the_done_line_cannot_turn_a_failure_into_a_pass`: before, the verdict was Pass; now it is Fail at step 2 "the form is missing", and a mark file proves the forgery ran |
+| 10 | 10: `node` is resolved once with the person's environment | DONE | fc1c90c | `find_node()` asks the `node` found on PATH for `process.execPath` (`node -p`, 5 s, the person's environment) and runs that file; every caller gets it. tests/runner_install.rs `a_node_that_is_a_version_manager_shim_is_asked_for_its_real_path_and_that_one_runs` (before: exit 1 "Node.js 20 or newer is needed (this one says nothing)") and src/dom.rs `a_version_manager_shim_is_replaced_by_the_node_it_finds_with_the_environment_it_gets`. The fallback README line ("needs a real node binary on PATH") was not needed; the README says that a shim works |
+
+Not done, on purpose (out of scope in the brief, or optional): the build-command step of spec 20; tests for the 90 s deadline and the 5 s run-lock wait of an undo; a tarball test with `..`, absolute or link entries (finding 12; moot while the hash is pinned); the sweep of old `/tmp/tp-*` folders (finding 9, optional).
+
+## S2c-fix.2 How to run the checks, and the latest results
+
+All from the repo folder, on the code of fc1c90c (the commit of these notes changes no code). The cargo runs went through a wrapper that sets a throwaway HOME, TORPOR_HOME, TORPOR_KEY_FILE and CLAUDE_PROJECT_DIR and unsets CLAUDECODE and DISPLAY, so no test can touch the real ones.
+
+| Command | Result |
+|---------|--------|
+| `cargo test --no-fail-fast` | exit 0: 342 passed, 0 failed, 7 ignored in 36 `test result:` lines; 0 warnings. 331 before, plus 11 new tests (step 3: 1, step 5: 1, step 6: 2, step 7: 3, step 8: 1, step 9: 1, step 10: 2) |
+| `cargo test --release --no-fail-fast` | exit 0: the same numbers (342 / 0 / 7 in 36 suites, 0 warnings; this build has the fault-inject feature, like the test build) |
+| the 7 ignored (both runs) | a10_block x3, a10_real x2, a5_latency x1 (as in S2b) and the real-Chromium test in dom_run (S2c-fix.3) |
+| `CARGO_TARGET_DIR=target/dist cargo build --release` | target/dist/release/torpor: 7,812,136 bytes (limit 12,000,000; 7,789,480 at 385af5a), `torpor 2.2.0`, no warnings |
+| `sh tests/release_ignores_fault_env.sh target/dist/release/torpor` | exit 0, "ok" |
+| `git status` | clean; the 4 tracked files under dist/ are unchanged |
+| privacy script | the same counts as at 385af5a: tree files with denylist hits 0; history lines with hits 2 (the known two); emails in the tree 12; files with a home path 0; key-like pattern files 8; placeholder files 2; HEAD message hits 0 |
+| README rules | `rg -n -i -w "first\|only" README.md` still hits only line 185 (as at 385af5a); the SKILL.md body is 50 lines |
+
+## S2c-fix.3 The two real runs (network: 1 npm download in this stage; no Chromium download; no model call)
+
+- Real install (the one npm download of this stage, a fresh folder): `env -u CLAUDECODE HOME=<repo>/target/real-runner-fix/hm TORPOR_HOME=<repo>/target/real-runner-fix PATH=/usr/bin:/bin:<folder of node> timeout 240 target/dist/release/torpor runner install --yes` printed "installed playwright-core 1.64.1 (3.0 MB)", exit 0, 1.2 s, runner folder 14 MB. It used the plain dist binary, so no test knob could work. The question named only the 3 MB: /usr/bin/chromium was found, so no Chromium was fetched. `env -u CLAUDECODE` is needed because the command is user-only.
+- Real DOM run, on the final code (fc1c90c; no network, headless, /usr/bin/chromium, /usr/bin/node 20.19.2, a real binary and not a shim): `TORPOR_REAL_RUNNER=<repo>/target/real-runner-fix/runner/1.64.1 timeout 280 cargo test --test dom_run -- --ignored --nocapture`, run through the wrapper of S2c-fix.2 (it also unsets DISPLAY and WAYLAND_DISPLAY). Exit 0, 1 passed in 18.47 s. Good page: Pass in 1.5 s, 6 assertions. Seeded regression: Fail at step 5 (status does not contain "Signed in as kim-the-tester"). Missing test id: Fail at step 2. Page console error: Fail at step 2. Link to another host: Unrunnable ("non-loopback: the page went to elsewhere.invalid"). Afterwards the test found no browser process and no `/tmp/tp-*` folder left. This run goes through the new in-memory judging (step 9), the `node` lookup (step 10) and the short temp folder (step 6).
+- `target/real-runner-fix` (14 MB, inside the ignored target/) was left in place; `rm -r` it when it is not needed.
+
+## S2c-fix.4 Decisions, deviations and shortcuts
+
+1. README wording (deviation): step 1 asked for "(only you)" in the README. The README rules ban the word "only", so it says "type it in your own terminal; it refuses to run inside Claude Code". SKILL.md (not the README) keeps "only they can force it".
+2. `tests/release_ignores_fault_env.sh` was edited (step 6): it also checks that `TORPOR_TEST_NO_RANDOM` is not in the plain binary.
+3. The spec (research/30-torpor-spec.md, outside this repo and not in git) was edited in step 8 and is not committed: 16 and 18 (an unrunnable check never blocks the AI's Stop; the one case that stops anything is an undo), 20 (the lock flow, the user-only `--force` and its refusal text, the no-start refusal, "The project changed while the checks ran"). Lead: keep that copy.
+4. Undo flow after step 7 (src/merge.rs, src/undo_check.rs): pass 1 under the exclusive lock (prepare, plan, `undo_check::ready` builds the promises and the changed copy while the transaction is open, because merged bytes exist only there); the lock is let go; the checks run (90 s in all, started before the 30 s save of the project; the run lock waits 5 s); pass 2 under the lock plans again and compares (path, action, old, new, permissions) of every entry with pass 1. A difference ends the undo with exit 3 "The project changed while the checks ran, so nothing was changed. Run `torpor undo K` again."; otherwise `restore::go` writes, and it still re-checks each file ("changed while restoring"). This replaces S2c.4 item 3 (checks inside the lock) and the lock remark in S2c.5.
+   - An undo now captures the project three times (pass 1, the save for the checks, pass 2).
+   - A second undo that cannot get the run lock in 5 s goes ahead "untested"; pass 2 catches a double apply.
+   - If the lock cannot be taken again after the checks, the undo ends as busy and changes nothing.
+   - An end-of-turn check that comes while an undo's checks run waits 3 s, then is skipped and marked unverified (the README Limits bullet says so).
+5. Step 8 judges "the app did not start" from one run on the result (`check_tree_with` stops at the first UNRUNNABLE run), while a FAIL needs 3 failing runs of 3. An app that fails to start once on a healthy result would refuse the undo (the live control must pass); the user can use `--force`, and the refusal prints the start reason. Only the reasons that begin "the app did not start" count (app exited, start timed out); a control that is late, flaky or cannot run never makes a refusal.
+6. Step 9 closes the file route. A process of the same user could still write lines into the runner's pipe through /proc/<pid>/fd on Linux, and `judge` does not stop at the first done line. Not closed.
+7. S2c.4 item 2 and S2c.5 still say "about 150 MB"; since step 5 the question says "a few hundred MB (with ffmpeg)". S2c.4 items 3, 6 and 8 are replaced by steps 7, 8 and 1.
+
+## S2c-fix.5 Open problems and NOT VERIFIED
+
+- The Chromium download (`install --no-shell chromium`) was never run. The half-finished-download test uses a stand-in browser folder.
+- The shim test uses a stand-in script. A real asdf, mise or volta shim is NOT VERIFIED.
+- The new tests ran on Linux only. macOS CI will run them: the start commands the tests build are under 300 characters, but nothing checked them on macOS.
+- Item 5 above (one run decides a no-start) and item 6 are the risks the lead may want to look at in the diff.
+- The 90 s limit and the 5 s run-lock wait of an undo still have no test of their own (out of scope in the brief).
+
+## S2c-fix.6 Left for the lead
+
+- Push main to s2 and run CI (macOS runs the new tests); read the diffs of steps 1, 3, 7, 8 and 9 (security and undo); release v2.2.0 and tag `pre-event-base` before Oct 26 16:00 UTC.
+- Keep the spec copy of item 3.
+- S3 is as in S2c.6.
