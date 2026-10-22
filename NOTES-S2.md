@@ -298,3 +298,64 @@ Caveats:
 - skills/torpor/SKILL.md still says "A promise is a small check that proves one thing works." (README was fixed; the brief did not list SKILL.md). Change it to "checks that one thing works" with the next edit.
 - Still true from S2b.7 (next steps for S2c): DOM runner and `torpor runner install`, undo with checks, port ownership in the product.
 - When S2c adds `torpor runner install` (the one allowed download), the README's new Limits bullet "Network use" (Torpor itself sends HTTP to 127.0.0.1 and to no other host) and the bullet about rejected environment values and step URLs become wrong: spec 28 wants "network use is localhost checks plus the one confirmed runner download". Change both in the same commit that adds the download.
+
+
+# S2c: DOM runner, undo with checks, port ownership, 2.2.0
+
+Build agent: S2c (Sonnet), started at eadc9f3 (v2.1.0 plus the release bot's dist/ commit), branch main, nothing pushed. Written Oct 22; the hand-off date was Oct 24 12:00 UTC.
+
+## S2c.1 Status (against "Next steps for S2c" in S2b.7)
+
+| Item | State | Commit | Tests |
+|------|-------|--------|-------|
+| 1. DOM runner and `torpor runner install` (spec 16, 24) | DONE | cd017e3 | tests/dom_run.rs: 4 with a fake runner and 1 real-Chromium test (ignored, run by hand, S2c.3); tests/runner_install.rs: 6; unit tests in src/dom.rs; the runner-install block of tests/release_ignores_fault_env.sh. README (Install, page checks) and SKILL.md (page steps) updated; the old limit "page steps cannot run yet" is gone |
+| 2. Undo with checks (spec 20) | DONE, except the build-command step (S2c.4 item 4) | 5924245 | tests/undo_checks.rs: 6; tests/undo.rs: 2 expectations updated; unit tests: `gate::meets` 1, overlay exec bit 1 |
+| 3. Port ownership (S2b.6) | DONE (Linux; macOS trusts the answer) | e7f588c | scratch.rs unit tests: 3; tests/port_owner.rs: 3 (2 are Linux-only); the release script also checks that a plain build has no `TORPOR_TEST_PORT` |
+| Version 2.2.0 | DONE | 8f40b7d | Cargo.toml, Cargo.lock, bin/torpor, plugin.json and the two tests that name the version (a10_block.rs, destructive.rs). dist/ not touched |
+| S2b.7 item 4 (rerun to confirm a catch, `sourceRoot`, cold start, a real-AI run) | NOT DONE: out of scope for S2c | | |
+
+## S2c.2 How to run the checks, and the latest results
+
+All from the repo folder, on the code of 8f40b7d (the commit of these notes changes no code).
+
+| Command | Result |
+|---------|--------|
+| `cargo test --no-fail-fast` | exit 0: 331 passed, 0 failed, 7 ignored in 36 `test result:` lines; no warnings. 317 after item 1, plus 6 undo_checks, 1 `gate::meets`, 1 overlay exec bit, 3 scratch port-ownership unit tests, 3 port_owner |
+| `cargo test --release --no-fail-fast` | exit 0: the same numbers (this build has the fault-inject feature, like the test build) |
+| the 7 ignored (both runs) | a10_block x3, a10_real x2, a5_latency x1 (as in S2b) and the real-Chromium test in dom_run (S2c.3) |
+| `CARGO_TARGET_DIR=target/dist cargo build --release` | target/dist/release/torpor: 7,789,352 bytes (limit 12,000,000), `torpor 2.2.0` |
+| `sh tests/release_ignores_fault_env.sh target/dist/release/torpor` | ok; it now also checks that TORPOR_TEST_REGISTRY, TORPOR_TEST_INTEGRITY, TORPOR_TEST_NO_BROWSER and TORPOR_TEST_PORT are not in the plain binary |
+| `git status` | clean; the 4 tracked files under dist/ are unchanged |
+| privacy script | tree files with denylist hits 0; history lines with hits 2 (as before); emails in the tree 12; files with a home path 0; key-like pattern files 8; placeholder files 2; HEAD message hits 0 |
+| mutation check of the port tests (once, by hand; the source was restored and compared with cmp) | foreign-answer check off: 2 of the 3 port_owner tests fail; retry off: all 3 fail |
+
+## S2c.3 The two real runs (network: 1 of the 2 allowed npm downloads used; no Chromium download; no model call)
+
+- Real install: `env -u CLAUDECODE HOME=<repo>/target/real-runner-home/hm TORPOR_HOME=<repo>/target/real-runner-home PATH=/usr/bin:/bin:<folder of node> timeout 240 target/dist/release/torpor runner install --yes` gave "installed playwright-core 1.64.1 (3.0 MB)", exit 0, about 1 s. `env -u CLAUDECODE` is needed because the command is user-only and the agent shell has CLAUDECODE set (the first try was refused for that reason, as designed).
+- Real DOM run: `TORPOR_REAL_RUNNER=<repo>/target/real-runner-home/runner/1.64.1 timeout 280 cargo test --test dom_run -- --ignored --nocapture`: 1 passed in 17.11 s. Fixture app, its /dom page, system /usr/bin/chromium, headless (no DISPLAY). Good page: PASS in 1.1 s with 6 assertions. The seeded regression: FAIL at step 5 in 6.1 s. A missing test id: FAIL in 6.0 s (it waits out the locator timeout). `?err=1` (a console error): FAIL in 1.0 s. A link to another host: UNRUNNABLE in 1.1 s ("non-loopback: the page went to elsewhere.invalid"). No browser process and no /tmp/tp-* folder was left. The agent browser, its profile and the user's Brave were not used.
+
+## S2c.4 Decisions, deviations and shortcuts (each in code also has a comment)
+
+1. Browser runner temp folder (deviation): each run gets a short folder (`ShortTmp`, /tmp/tp-*) as TMPDIR, because Chromium's socket path is too long inside the scratch folder (seen in the first real run). It goes with the run.
+2. `torpor runner install` is user-only (refused under CLAUDECODE, listed in destructive.rs) and asks first; `--yes` skips the question. It installs playwright-core only: npm registry, hash checked before unpacking, no npm, no install script. It uses a Chromium that is already on the computer. When none is found the question names "about 150 MB more for a Chromium from Playwright's servers" (a fixed estimate, never run here: S2c.5).
+3. Undo checks run inside the undo's store lock and open transaction, 90 s in all (src/undo_check.rs). This breaks the old rule (scratch.rs doc, promise.rs `write`: no store lock or transaction across a run). Why: the undo must decide before it writes, and a lock released in between lets the project change under the check. Cost: for up to 90 s a hook that wants the store lock waits 100 ms and goes on as Busy (fail open: its capture is skipped and the next save point holds the change). That can only meet a user who runs `torpor undo` in a second terminal while Claude Code works; when the AI runs it, Claude Code waits for the command. The project's run lock is waited for 5 s; if another check holds it, the undo goes ahead and says "Another check is running in this project, so the result is untested."
+4. Spec 20's build-command step (run the newest build command on the result) is NOT done: it needs exit codes of build commands (P1).
+5. The undo's scratch copy leaves out links, permission-only changes on a file that stays, secret files, `.env` files, dependency folders and files over 16 MB. The report says how many ("N changes ... were not part of the check") and README Limits says it. An overlay file is executable when the file it replaces was, or when the undo brings back an executable (`Opts.exec`).
+6. Spec 18 (line 518) applied: a check that cannot run never blocks, also when the app no longer starts after the undo ("did not count: it could not run (...)"). OPEN QUESTION for the lead: should an app that no longer starts after an undo block it?
+7. Which promises run: `gate::eligible && gate::meets` (a watched file is in the undo, or there is no dependency record and a relevant non-doc file is). A FAIL in the copy blocks only when the same promise passes on the live project now (the control run). Flaky, unrunnable, out of time and already failing never block. The runs are stored after the restore with kind `undo` and no tree, so they never count toward a flake estimate or a last verdict.
+8. `--force` skips the checks and adds no note. It is NOT user-only: the AI could type it (SKILL.md says never to add it). OPEN QUESTION for the lead: put `undo --force` on the user-only list in destructive.rs? `--dry-run` names the promises it would check and runs none.
+9. Port ownership (scratch.rs): the port is picked after the copy is made, once per start; the early env check uses a provisional port (40000) because the spec's env rule only counts digits. One retry in all, for "the app ended within 3 s of its start before any ready answer" and for "a 2xx came from a process that is not the app". The second failure is UNRUNNABLE and names the pid. On Linux the holder is read from /proc/net/tcp, /proc/net/tcp6 and the fd links of every process Torpor may read; the app is its process group plus everything below it by parent pid. No visible holder (another user's or root's sockets) is trusted. Elsewhere it is trusted too (`shortcut:` comment: no lsof for macOS).
+10. Seams, fault-inject builds only: TORPOR_TEST_REGISTRY, TORPOR_TEST_INTEGRITY, TORPOR_TEST_NO_BROWSER, TORPOR_TEST_PORT (the ports of the 1st and 2nd start, comma separated; read before the older TORPOR_TEST_PORTS window). A plain build does not carry the strings (release script).
+
+## S2c.5 Open problems and NOT VERIFIED
+
+- The Chromium download of `runner install` was never run (one download was allowed; this computer has /usr/bin/chromium). The "about 150 MB" is a fixed estimate in the question, not a measured size.
+- Real browser runs: Linux and one system Chromium only. macOS and the other browsers the finder looks for (Chrome, Edge, Brave) are NOT VERIFIED; macOS CI runs the fake-runner tests, not the real one.
+- Port ownership on macOS is not checked at all (the answer is trusted). On Linux a server that listens through a helper outside the app's group (a daemon that left its group, a container proxy that runs as the user) looks like another process, and the check is reported as could not run. That fails safe (never blocks) but loses the check.
+- The undo checks' 90 s limit and the 5 s "another check is running" path have no test (they need a slow app and a held run lock). The hook behavior during the undo's lock (S2c.4 item 3) is read from the lock code, not tested.
+- Both real runs used the fixture app only; a project with a bundler dev server was not tried.
+
+## S2c.6 Left for the lead and for S3
+
+- Lead: Opus review of cd017e3..8f40b7d; push to s2 and CI (macOS: the real-browser test is ignored there, one port_owner test runs there); release v2.2.0 (the bot makes dist/); tag `pre-event-base` on the last pre-event commit before Oct 26 16:00 UTC (the README says Oct 26, 12:00 PM GMT-5 = 17:00 UTC); decide the two open questions (S2c.4 items 6 and 8).
+- S3 (the event, from Oct 26 17:00 UTC): S2b.7 item 4: one real-AI run in real Claude Code with a promise (an extra ignored test next to a10_real), a rerun to confirm a catch, `sourceRoot`, a measured cold start; then the README comparison decision.
