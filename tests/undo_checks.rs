@@ -262,3 +262,21 @@ fn an_undo_checks_the_merged_file_and_not_the_one_on_disk() {
     assert!(o.stdout.starts_with("Undoing turn 4 breaks promise #1 (login works), so nothing was changed."), "{}", o.stdout);
     assert_eq!(oracle(s.proj()), before);
 }
+
+#[test]
+fn an_app_that_fails_only_its_first_start_does_not_stop_an_undo() {
+    // S2d 1: one failed start is a hiccup; the second start on the result passes, so the undo goes ahead.
+    let mut s = story();
+    let d = tempfile::Builder::new().prefix("torpor-meet").tempdir().unwrap();
+    let start = r#"{"cmd":"if [ -f hiccup.flag ] && [ ! -f $D/seen ]; then touch $D/seen; exit 1; fi; node server.js --port {port}","ready":"/login","timeout_s":40}"#;
+    let env = format!(r#"{{"D":"{}"}}"#, d.path().display());
+    let o = add(&mut s, &spec("login works", start, &env, LOGIN_STEPS));
+    assert_eq!(o.code, 0, "{}", why(&o));
+    s.stop();
+    rewrite(&mut s, &format!("{SERVER}\n// note\n"));
+    s.outside_edit("hiccup.flag", "x");
+    let o = s.cli(&["undo", "4"]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(d.path().join("seen").exists(), "the first start never failed, the test checks nothing");
+    assert!(!o.stdout.contains("did not start"), "{}", o.stdout);
+}

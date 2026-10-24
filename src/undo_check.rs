@@ -151,6 +151,11 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         };
         let mut c = promise::check_tree_with(ws, &l.spec, &live, &opts);
         out.runs.push((p.id, std::mem::take(&mut c.runs)));
+        // A start that fails once may be a hiccup: only a second failed start on the result can refuse the undo.
+        if c.call == Call::Unrunnable && c.reason.starts_with(NO_START) && !runner::out_of_time() {
+            c = promise::check_tree_with(ws, &l.spec, &live, &opts);
+            out.runs.push((p.id, std::mem::take(&mut c.runs)));
+        }
         match c.call {
             Call::Pass => passed.push(p),
             Call::Flaky => out.notes.push(format!("Promise {name} did not count: it is flaky.")),
