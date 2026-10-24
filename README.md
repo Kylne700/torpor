@@ -6,6 +6,33 @@ Undo for Claude Code. Torpor saves your project folder at the start and at the e
 
 Torpor is built by an AI coding agent team (Claude Code) working for its author, Kylne700.
 
+## Install
+
+```
+claude plugin marketplace add Kylne700/torpor && claude plugin install torpor@kylne700 --scope user
+```
+
+Restart Claude Code, or run `/reload-plugins`. More install options, the status line and the browser runner are under Install in detail.
+
+## A 60 second look
+
+`demo/run.sh` plays a whole story offline with the real program in a throwaway folder (it needs `node` and a built binary). The AI fixes a login, saves a check that it works, and a later turn breaks it with `sed -i`:
+
+```
+$ torpor find-break --check -
+Looking for the turn that broke promise #1 "login works".
+  run 1: the end of turn 6: FAIL
+  run 4: the start of turn 4: PASS
+  run 5: the start of turn 5: FAIL
+Turn 4 broke it (99%, 6 runs). Undo that turn: torpor undo 4
+
+$ torpor undo 2
+Undoing turn 2 breaks promise #1 (login works), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo 2 --force
+Failing step: after sign-in the account data shows.
+```
+
+Torpor named the turn that broke the app, and refused an undo that would have broken it again. A promise that is proven and trusted can also stop the AI at the end of a turn, one time per change.
+
 ## Pre-event declaration
 
 Torpor's engine (save points, undo with checks, find-break, promise checks and page checks in a browser) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo with checks, recovery, find-break, promise checks and page checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
@@ -30,7 +57,7 @@ Torpor's engine (save points, undo with checks, find-break, promise checks and p
 Torpor: save point 7 · turn 1 changed 3 files (2 edits, 1 shell) · undo it: torpor undo 1
 ```
 
-## Install
+## Install in detail
 
 In Claude Code:
 
@@ -187,6 +214,14 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **The record of which files an app ran works for Node apps.** For other apps, a promise runs after every turn that changes a file other than docs and tests.
 - **Built for Claude Code.** Other tools are not supported.
 - **Windows is not supported yet.** Torpor is built and tested on Linux. The macOS and static Linux builds are made by the project's CI and have not been run by hand. Behavior in a normal interactive Claude Code session (the permission prompt for commands that reach outside) has not been checked by hand yet.
+
+## Troubleshooting
+
+- **No line appears after a turn.** Run `~/.torpor/bin/torpor status`. If the file is missing, restart Claude Code once so the plugin can copy its program. `torpor quiet off` brings the line back if you hid it.
+- **`torpor` is not found in a terminal.** Use `~/.torpor/bin/torpor`, or add `~/.torpor/bin` to your PATH.
+- **A check says it could not run.** Torpor never stops the AI or an undo for that. Run `torpor promise show ID` to see why (often the app did not start or `node` is missing).
+- **Page checks do nothing.** They need a Chromium-family browser and the runner: `torpor runner install` in your own terminal.
+- **The demo cannot find a binary.** Build the program with `cargo build` before the demo, or set `TORPOR_BIN`.
 
 ## Privacy
 

@@ -1,10 +1,20 @@
 {
   "name": "torpor",
   "version": "2.2.0",
-  "description": "Save points for every turn, shell edits included. Go back, undo one turn, see what changed.",
-  "author": { "name": "Kylne700" },
+  "description": "Undo for Claude Code: save points for every turn (shell edits included), undo one turn, find the turn that broke it, checks for what you said works.",
+  "author": {
+    "name": "Kylne700"
+  },
   "homepage": "https://github.com/Kylne700/torpor",
   "repository": "https://github.com/Kylne700/torpor",
   "license": "MIT OR Apache-2.0",
-  "keywords": ["undo", "rewind", "checkpoint", "save points"]
+  "keywords": [
+    "undo",
+    "rewind",
+    "checkpoint",
+    "save points",
+    "find-break",
+    "regression",
+    "claude-code"
+  ]
 }
