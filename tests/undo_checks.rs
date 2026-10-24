@@ -280,3 +280,42 @@ fn an_app_that_fails_only_its_first_start_does_not_stop_an_undo() {
     assert!(d.path().join("seen").exists(), "the first start never failed, the test checks nothing");
     assert!(!o.stdout.contains("did not start"), "{}", o.stdout);
 }
+
+// ---------------------------------------------------------------- the build step (S2d 7)
+
+/// Turn 1 writes an `app.py` that does not compile, turn 2 fixes it and the AI builds (`python3 -m compileall`, exit 0), turn 3 only adds a note.
+/// No promise exists.
+fn built() -> Sim {
+    let mut s = Sim::new();
+    s.session_start();
+    s.prompt("write the app");
+    s.write_tool("app.py", "x = (\n");
+    s.stop();
+    s.prompt("fix the app");
+    s.edit("app.py", "x = 1\n");
+    assert_eq!(s.bash("python3 -m compileall -q ."), 0);
+    s.stop();
+    s.prompt("add a note");
+    s.write_tool("notes.txt", "n\n");
+    s.stop();
+    s
+}
+
+#[test]
+fn an_undo_after_which_the_last_build_fails_is_refused_and_force_goes_ahead() {
+    let s = built();
+    let o = s.cli(&["undo", "2"]);
+    assert_eq!(o.code, 3, "{}", why(&o));
+    assert!(o.stdout.starts_with("Undoing turn 2 stops the build `python3 -m compileall -q .` from passing, so nothing was changed."), "{}", o.stdout);
+    assert_eq!(fs::read_to_string(s.path("app.py")).unwrap(), "x = 1\n", "a refused undo writes nothing");
+    assert_eq!(s.cli(&["undo", "2", "--force"]).code, 0);
+    assert_eq!(fs::read_to_string(s.path("app.py")).unwrap(), "x = (\n");
+}
+
+#[test]
+fn an_undo_that_keeps_the_build_passing_says_so() {
+    let s = built();
+    let o = s.cli(&["undo", "3"]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(o.stdout.contains("The build `python3 -m compileall -q .` still passes on the result."), "{}", o.stdout);
+}

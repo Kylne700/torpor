@@ -21,6 +21,8 @@ const RUN_WAIT_MS: u64 = 5000;
 /// Saving the project as it is now, for the checks; the 90 seconds above include it.
 const SAVE_SECS: u64 = 30;
 /// How the reason of a check starts when the app did not come up (scratch.rs): the one reason that can stop an undo.
+/// One build command, on the result and again on the project as it is.
+const BUILD_SECS: u64 = 40;
 const NO_START: &str = "the app did not start";
 /// Names listed in a dry run; the rest are counted.
 const NAMES_MAX: usize = 5;
@@ -106,7 +108,7 @@ pub fn ready(ws: &Ws, plan: &Plan, dry_run: bool) -> Result<Ready, Checks> {
             return Err(out);
         }
     };
-    if picked.is_empty() {
+    if picked.is_empty() && (dry_run || build_command(ws).is_none()) {
         if !dry_run {
             out.notes.push("No checks cover these files, so the result is untested.".to_string());
         }
@@ -183,6 +185,10 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
             }
         }
     }
+    build_step(ws, &live, &opts, k, &mut out);
+    if out.refuse.is_some() {
+        return out;
+    }
     if late > 0 {
         out.notes.push(format!("{} did not run: the {CHECK_SECS} seconds for checks were up.", plural(late, "check", "checks")));
     }
@@ -196,6 +202,41 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
     out
 }
 
+/// The newest Bash command of this project that ended with 0 and looks like a plain build (no pipes, quotes, `;`, `&` or masked parts).
+fn build_command(ws: &Ws) -> Option<String> {
+    let mut q = ws.conn.prepare("SELECT cmd_preview FROM tool_events WHERE tool_name='Bash' AND exit_code=0 AND failed=0 AND cmd_preview IS NOT NULL ORDER BY id DESC LIMIT 300").ok()?;
+    let rows = q.query_map([], |r| r.get::<_, String>(0)).ok()?;
+    rows.flatten().map(|c| c.trim().to_string()).find(|c| is_build(c))
+}
+
+fn is_build(c: &str) -> bool {
+    const HEADS: [&str; 13] = [
+        "npm run build", "pnpm build", "pnpm run build", "yarn build", "yarn run build", "bun run build", "tsc", "npx tsc", "cargo build", "cargo check",
+        "python -m compileall", "python3 -m compileall", "npm run typecheck",
+    ];
+    let plain = c.chars().all(|ch| ch.is_ascii_alphanumeric() || " _./:=@-".contains(ch));
+    plain && HEADS.iter().any(|h| c == *h || c.strip_prefix(h).is_some_and(|rest| rest.starts_with(' ')))
+}
+
+/// Spec 20 item 1: the build command the AI last ran with success must still succeed on the result. It refuses the undo only when it fails
+/// there and passes on the project as it is (the control). A build that cannot run or is cut by the clock is only a note.
+fn build_step(ws: &Ws, live: &[u8; 32], opts: &Opts, k: i64, out: &mut Checks) {
+    let Some(cmd) = build_command(ws) else { return };
+    if runner::out_of_time() {
+        out.notes.push(format!("The build `{cmd}` did not run: the {CHECK_SECS} seconds for checks were up."));
+        return;
+    }
+    let limit = Duration::from_secs(BUILD_SECS);
+    match scratch::run_command(ws, live, opts, &cmd, limit) {
+        Some(true) => out.notes.push(format!("The build `{cmd}` still passes on the result.")),
+        Some(false) => match scratch::run_command(ws, live, &Opts::default(), &cmd, limit) {
+            Some(true) => out.refuse = Some(format!("Undoing turn {k} stops the build `{cmd}` from passing, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force")),
+            _ => out.notes.push(format!("The build `{cmd}` did not count: it does not pass on the project as it is either.")),
+        },
+        None => out.notes.push(format!("The build `{cmd}` did not count: it could not run in time.")),
+    }
+}
+
 /// The raw runs into `promise_runs`, kind undo, once the undo has ended: a refusal rolls its transaction back, and the runs happened all the same.
 /// No tree id: the result is no saved version, and a run without one never counts toward a promise's flake estimate.
 pub fn record(ws: &Ws, runs: &[(i64, Vec<RunResult>)]) {
@@ -207,6 +248,21 @@ pub fn record(ws: &Ws, runs: &[(i64, Vec<RunResult>)]) {
                 continue;
             }
             let _ = promise::record(&ws.conn, *id, "undo", None, r, now);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_build;
+
+    #[test]
+    fn only_plain_build_commands_count() {
+        for c in ["npm run build", "cargo check --all", "tsc -p .", "python3 -m compileall -q ."] {
+            assert!(is_build(c), "{c}");
+        }
+        for c in ["npm run builder", "cargo build && rm -rf x", "tsc | tee log", "cargo test", "npm run build -- --token=[hidden]", "ls"] {
+            assert!(!is_build(c), "{c}");
         }
     }
 }

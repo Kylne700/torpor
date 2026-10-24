@@ -144,6 +144,21 @@ fn remove_scratch(base: &Path, dir: &Path) {
     }
 }
 
+/// Run `cmd` (`sh -c`, the sanitized environment of an app) in a scratch copy of `tree` with `opts` laid over it.
+/// `Some(true)` = it ended with 0, `Some(false)` = it ended otherwise, `None` = it could not run or ran past `limit` (or the thread's deadline).
+pub fn run_command(ws: &Ws, tree: &[u8; 32], opts: &Opts, cmd: &str, limit: Duration) -> Option<bool> {
+    let _lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).ok()?;
+    let sc = Scratch::create(ws).ok()?;
+    materialize(ws, tree, &sc.app).ok()?;
+    apply_overlay(&sc.app, &opts.overlay, &opts.exec).ok()?;
+    let (env, _) = app_env(&ws.dir, &sc.dir, &BTreeMap::new(), 0);
+    let mut app = App::spawn(cmd, &sc.app, &env, sc.dir.join("cmd.log")).ok()?;
+    if !app.wait_end(limit) {
+        return None; // dropping `app` stops the group
+    }
+    Some(app.exited_ok())
+}
+
 /// Leftovers of runs that were killed. Called with the run lock held, so no app of this project is alive: a folder with a `*.pgid` file (written
 /// when an app started) is a leftover, and its groups are killed, but only for a folder younger than 1 h, so a group id that the system gave to
 /// someone else since is not hit. A folder without one may be held by this very process (a saved copy, the coverage run): only old ones go.
@@ -535,6 +550,11 @@ impl App {
             }
             std::thread::sleep(Duration::from_millis(15));
         }
+    }
+
+    /// True when the leader ended with exit code 0 (call after `wait_end` said true).
+    pub fn exited_ok(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(st)) if st.success())
     }
 
     /// Wait up to 2 s for the reader to have written everything the group printed.
