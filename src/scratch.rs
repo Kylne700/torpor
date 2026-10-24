@@ -178,8 +178,8 @@ fn reap_dir(base: &Path) {
                 continue;
             }
             left_by_a_run = true;
-            if let Some(pg) = fs::read_to_string(f.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()).filter(|pg| *pg > 1 && age <= STALE_SCRATCH_SECS) {
-                // SAFETY: the group id was written by the process that started this group; it is killed only while the folder is young.
+            if let Some(pg) = fs::read_to_string(f.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()).filter(|pg| *pg > 1 && age <= STALE_SCRATCH_SECS && group_works_in(*pg, &e.path())) {
+                // SAFETY: the group id was written by the process that started this group, and a live member still works in its folder (not a reused id).
                 unsafe { libc::kill(-pg, libc::SIGKILL) };
             }
         }
@@ -187,6 +187,17 @@ fn reap_dir(base: &Path) {
             remove_scratch(base, &e.path());
         }
     }
+}
+
+/// True when a live process of group `pg` has its working folder inside `dir`, so a reused group id is never killed.
+/// shortcut: reads /proc, so off Linux nothing is killed (leftovers stay, as before S2d); add a libproc check if macOS needs it.
+fn group_works_in(pg: i32, dir: &Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else { return false };
+    fs::read_dir("/proc").into_iter().flatten().flatten().any(|p| {
+        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { return false };
+        // SAFETY: getpgid only reads the group id of a process.
+        (unsafe { libc::getpgid(pid) }) == pg && fs::read_link(p.path().join("cwd")).is_ok_and(|c| c.starts_with(&dir))
+    })
 }
 
 /// A tree path that stays inside the folder: plain names only.
@@ -1143,16 +1154,25 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_killed_run_leaves_a_group_that_the_next_run_reaps() {
         use std::os::unix::process::CommandExt;
         let tmp = tempfile::tempdir().unwrap();
         let (base, run) = (tmp.path().join("scratch"), tmp.path().join("scratch/run1"));
         fs::create_dir_all(&run).unwrap();
-        let mut c = std::process::Command::new("sleep").arg("120").process_group(0).spawn().unwrap();
+        let mut c = std::process::Command::new("sleep").arg("120").current_dir(&run).process_group(0).spawn().unwrap();
         let pg = c.id() as i32;
         fs::write(run.join("server.log.pgid"), pg.to_string()).unwrap();
         assert!(group_alive(pg));
+        let mut other = std::process::Command::new("sleep").arg("120").process_group(0).spawn().unwrap(); // a group that works elsewhere
+        let other_pg = other.id() as i32;
+        let run2 = tmp.path().join("scratch/run2");
+        fs::create_dir_all(&run2).unwrap();
+        fs::write(run2.join("server.log.pgid"), other_pg.to_string()).unwrap();
         reap_dir(&base);
+        assert!(group_alive(other_pg), "a group id whose processes work elsewhere is not killed");
+        other.kill().unwrap();
+        other.wait().unwrap();
         c.wait().unwrap(); // reaps the killed leader, so the group id empties
         assert!(!group_alive(pg) && !run.exists(), "the group is gone and so is the folder");
     }

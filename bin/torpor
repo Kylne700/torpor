@@ -1,7 +1,7 @@
 #!/bin/sh
 # Torpor launcher (spec 9.3). Hooks never fail and never print: with no binary, `torpor hook ...` exits 0.
 # V must equal "version" in .claude-plugin/plugin.json (a test checks it).
-V=2.2.0
+V=2.3.0
 H=${TORPOR_HOME:-$HOME/.torpor}
 
 # Fast path: the installed copy. No fork, no uname.
