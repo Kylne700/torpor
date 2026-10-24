@@ -411,3 +411,29 @@ fn bad_arguments_and_bad_checks_are_refused_without_a_search() {
     assert_eq!(s.q_i64("SELECT count(*) FROM promises"), 0);
     assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs"), 0);
 }
+
+#[test]
+fn a_break_that_was_fixed_and_came_back_is_named_with_a_warning() {
+    // S2d 5: turn 2 breaks the app, turn 3 fixes it, turn 4 breaks it again. The latest break is the answer; the older failure is said.
+    let mut s = Sim::new();
+    s.session_start();
+    for (i, (text, file, body)) in [
+        ("make a login page", "server.js", SERVER.to_string()),
+        ("tidy up the server", "server.js", broken_server()),
+        ("fix the login", "server.js", SERVER.to_string()),
+        ("tidy up the server again", "server.js", broken_server()),
+        ("add a todo list", "todo.txt", "- ship it\n".to_string()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        s.prompt(text);
+        if i == 0 { s.write_tool(file, &body) } else { s.edit(file, &body) };
+        s.stop();
+    }
+    s.prompt("login is broken, what changed?");
+    let o = s.cli_env_stdin(&["find-break", "--check", "-"], &[("CLAUDECODE", "1")], &login());
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(o.stdout.contains("Turn 4 broke it ("), "{}", why(&o));
+    assert!(o.stdout.contains("Possibly more than one break"), "{}", why(&o));
+}

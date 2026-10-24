@@ -400,8 +400,8 @@ struct Found {
 
 /// Spec 19 steps 1-5. `hint` = a save point believed to work (tried first); `flake` = the stored flake estimate; `proof` = top up the
 /// confirmed parent to the 5 runs a promise needs.
-// shortcut: assumes that once broken it stays broken; a revert in between hides the culprit, so the answer may be wrong. Upgrade: probe
-// each side of the answer and say "it was broken, then fixed" when a revert shows.
+// shortcut: assumes that once broken it stays broken; one older state is probed (S2d 5) and a failure there is reported as "possibly more
+// than one break", but a revert hiding between two probed states still goes unseen. Upgrade: probe every boundary.
 fn search(ws: &mut Ws, spec: &Spec, hint: Option<i64>, flake: Option<f64>, proof: bool, say: &dyn Fn(&str)) -> Result<Found> {
     let states = load_states(ws)?;
     let open = open_turn(&ws.conn);
@@ -492,7 +492,16 @@ fn decide(env: &mut Env, open: Option<i64>, hint: Option<usize>, flake: Option<f
             }
         }
     }
+    // S2d 5: the answer assumes it broke once. One older boundary that fails would mean it broke, worked again, and broke again.
+    if sure && parent > 0 && !env.out_of_time() && !env.runs.iter().any(|(x, r)| *x < parent && probe_of(r) == Probe::Fail) {
+        env.probe(parent - 1);
+    }
     Outcome::One { parent, culprit: hi, p, sure }
+}
+
+/// An older state than the parent failed too: the history is not "worked, then broke once".
+fn broke_before(f: &Found, parent: usize) -> bool {
+    f.runs.iter().any(|(x, r)| *x < parent && probe_of(r) == Probe::Fail)
 }
 
 // ---------------------------------------------------------------- saying it
@@ -542,6 +551,9 @@ fn report(ws: &Ws, f: &Found, flake: Option<f64>) -> (String, i32) {
             };
             if !sure {
                 s.push_str(" (not confirmed: the time ran out)");
+            }
+            if broke_before(f, *parent) {
+                s.push_str(" Possibly more than one break: an older version failed too, so it may have broken, worked, and broken again.");
             }
             (s, 0)
         }
