@@ -230,6 +230,28 @@ impl Drop for ShortTmp {
     }
 }
 
+/// Delete the `tp-*` folders (see `ShortTmp`) that are older than `age`, are real folders and belong to this user: a killed check leaves them.
+pub fn reap_tmp(age: Duration) {
+    let mut bases = vec![std::env::temp_dir(), PathBuf::from("/tmp")];
+    bases.dedup();
+    for b in bases {
+        reap_tmp_in(&b, age);
+    }
+}
+
+fn reap_tmp_in(base: &Path, age: Duration) {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no arguments and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    for e in fs::read_dir(base).into_iter().flatten().flatten() {
+        let Ok(m) = e.path().symlink_metadata() else { continue };
+        let old = m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d >= age);
+        if e.file_name().to_string_lossy().starts_with("tp-") && m.is_dir() && m.uid() == me && old {
+            let _ = fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 fn error_line(where_: &str, msg: &str) -> String {
     json!({"p": "ERROR", "where": where_, "msg": msg}).to_string()
 }
@@ -412,6 +434,18 @@ mod tests {
     fn linted(steps: &str) -> Spec {
         let raw = format!(r#"{{"v":1,"name":"page check","why":"the page works","start":{{"cmd":"node server.js --port {{port}}","ready":"/login","timeout_s":30}},"env":{{}},"steps":{steps}}}"#);
         spec::lint(&raw).unwrap_or_else(|p| panic!("lint: {p:?}")).spec
+    }
+
+    #[test]
+    fn reap_tmp_removes_only_old_own_tp_folders() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("tp-old"), d.path().join("keep"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        reap_tmp_in(d.path(), Duration::from_secs(3600));
+        assert!(a.exists() && b.exists(), "a new folder stays");
+        reap_tmp_in(d.path(), Duration::ZERO);
+        assert!(!a.exists() && b.exists(), "an old tp- folder goes, other names stay");
     }
 
     #[test]

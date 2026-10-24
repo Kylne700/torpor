@@ -144,14 +144,32 @@ fn remove_scratch(base: &Path, dir: &Path) {
     }
 }
 
-/// Leftovers of runs that were killed (older than 1 h).
+/// Leftovers of runs that were killed. Called with the run lock held, so no app of this project is alive: a folder with a `*.pgid` file (written
+/// when an app started) is a leftover, and its groups are killed, but only for a folder younger than 1 h, so a group id that the system gave to
+/// someone else since is not hit. A folder without one may be held by this very process (a saved copy, the coverage run): only old ones go.
+/// Old temp folders of the browser go too.
 fn gc_scratch(ws: &Ws) {
-    let base = ws.dir.join("scratch");
-    let Ok(rd) = fs::read_dir(&base) else { return };
+    reap_dir(&ws.dir.join("scratch"));
+    dom::reap_tmp(Duration::from_secs(STALE_SCRATCH_SECS));
+}
+
+fn reap_dir(base: &Path) {
+    let Ok(rd) = fs::read_dir(base) else { return };
     for e in rd.flatten() {
-        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > STALE_SCRATCH_SECS);
-        if old {
-            remove_scratch(&base, &e.path());
+        let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(u64::MAX, |d| d.as_secs());
+        let mut left_by_a_run = false;
+        for f in fs::read_dir(e.path()).into_iter().flatten().flatten() {
+            if !f.file_name().to_string_lossy().ends_with(".pgid") {
+                continue;
+            }
+            left_by_a_run = true;
+            if let Some(pg) = fs::read_to_string(f.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()).filter(|pg| *pg > 1 && age <= STALE_SCRATCH_SECS) {
+                // SAFETY: the group id was written by the process that started this group; it is killed only while the folder is young.
+                unsafe { libc::kill(-pg, libc::SIGKILL) };
+            }
+        }
+        if left_by_a_run || age > STALE_SCRATCH_SECS {
+            remove_scratch(base, &e.path());
         }
     }
 }
@@ -458,6 +476,7 @@ impl App {
         let mut child = c.spawn()?;
         let pgid = child.id() as i32;
         let registered = live_add(&LIVE, pgid);
+        let _ = fs::write(format!("{}.pgid", log.display()), pgid.to_string()); // for the next run's reaping if this process is killed
         drop(spawning);
         let to_child = child.stdin.take();
         // From here on `app` owns the group: every way out below (an error, a panic) drops it, and that stops the group.
@@ -1101,5 +1120,20 @@ mod tests {
         assert!(t.elapsed() >= Duration::from_millis(200));
         drop(first);
         assert!(RunLock::acquire(&ws, 100).is_ok());
+    }
+
+    #[test]
+    fn a_killed_run_leaves_a_group_that_the_next_run_reaps() {
+        use std::os::unix::process::CommandExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let (base, run) = (tmp.path().join("scratch"), tmp.path().join("scratch/run1"));
+        fs::create_dir_all(&run).unwrap();
+        let mut c = std::process::Command::new("sleep").arg("120").process_group(0).spawn().unwrap();
+        let pg = c.id() as i32;
+        fs::write(run.join("server.log.pgid"), pg.to_string()).unwrap();
+        assert!(group_alive(pg));
+        reap_dir(&base);
+        c.wait().unwrap(); // reaps the killed leader, so the group id empties
+        assert!(!group_alive(pg) && !run.exists(), "the group is gone and so is the folder");
     }
 }
