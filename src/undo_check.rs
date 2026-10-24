@@ -21,6 +21,23 @@ const RUN_WAIT_MS: u64 = 5000;
 /// Saving the project as it is now, for the checks; the 90 seconds above include it.
 const SAVE_SECS: u64 = 30;
 /// How the reason of a check starts when the app did not come up (scratch.rs): the one reason that can stop an undo.
+/// The two limits, with test overrides (fault-inject builds only, like the other TORPOR_TEST_* variables).
+fn check_secs() -> u64 {
+    #[cfg(feature = "fault-inject")]
+    if let Some(v) = std::env::var("TORPOR_TEST_CHECK_SECS").ok().and_then(|s| s.parse().ok()) {
+        return v;
+    }
+    CHECK_SECS
+}
+
+fn run_wait_ms() -> u64 {
+    #[cfg(feature = "fault-inject")]
+    if let Some(v) = std::env::var("TORPOR_TEST_RUN_WAIT_MS").ok().and_then(|s| s.parse().ok()) {
+        return v;
+    }
+    RUN_WAIT_MS
+}
+
 /// One build command, on the result and again on the project as it is.
 const BUILD_SECS: u64 = 40;
 const NO_START: &str = "the app did not start";
@@ -127,7 +144,7 @@ pub fn ready(ws: &Ws, plan: &Plan, dry_run: bool) -> Result<Ready, Checks> {
 pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
     let mut out = Checks::default();
     let Ready { picked, opts, left_out } = ready;
-    let _deadline = runner::Deadline::set(Instant::now() + Duration::from_secs(CHECK_SECS));
+    let _deadline = runner::Deadline::set(Instant::now() + Duration::from_secs(check_secs()));
     let live = match scratch::snapshot(ws, Duration::from_secs(SAVE_SECS)) {
         Ok(t) => t,
         Err(e) => {
@@ -136,7 +153,7 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         }
     };
     let ws = &*ws;
-    let Ok(_held) = scratch::hold_run_lock(ws, RUN_WAIT_MS) else {
+    let Ok(_held) = scratch::hold_run_lock(ws, run_wait_ms()) else {
         out.notes.push("Another check is running in this project, so the result is untested.".to_string());
         return out;
     };
@@ -190,7 +207,7 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         return out;
     }
     if late > 0 {
-        out.notes.push(format!("{} did not run: the {CHECK_SECS} seconds for checks were up.", plural(late, "check", "checks")));
+        out.notes.push(format!("{} did not run: the {} seconds for checks were up.", plural(late, "check", "checks"), check_secs()));
     }
     if !passed.is_empty() {
         let list = passed.iter().map(|p| gate::short_name(p)).collect::<Vec<_>>().join(", ");
@@ -223,7 +240,7 @@ fn is_build(c: &str) -> bool {
 fn build_step(ws: &Ws, live: &[u8; 32], opts: &Opts, k: i64, out: &mut Checks) {
     let Some(cmd) = build_command(ws) else { return };
     if runner::out_of_time() {
-        out.notes.push(format!("The build `{cmd}` did not run: the {CHECK_SECS} seconds for checks were up."));
+        out.notes.push(format!("The build `{cmd}` did not run: the {} seconds for checks were up.", check_secs()));
         return;
     }
     let limit = Duration::from_secs(BUILD_SECS);

@@ -319,3 +319,34 @@ fn an_undo_that_keeps_the_build_passing_says_so() {
     assert_eq!(o.code, 0, "{}", why(&o));
     assert!(o.stdout.contains("The build `python3 -m compileall -q .` still passes on the result."), "{}", o.stdout);
 }
+
+// ---------------------------------------------------------------- the limits (S2d 8)
+
+#[test]
+fn an_undo_whose_checks_run_past_their_seconds_goes_ahead_and_says_so() {
+    let (mut s, d) = slow_promised();
+    rewrite(&mut s, &format!("// tidy\n{SERVER}"));
+    s.outside_edit("slow.flag", "x"); // the app waits up to 20 s at its start
+    let t = Instant::now();
+    let o = s.cli_env(&["undo", "4"], &[("TORPOR_TEST_CHECK_SECS", "3")]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(o.stdout.contains("1 check did not run: the 3 seconds for checks were up."), "{}", o.stdout);
+    assert!(t.elapsed() < Duration::from_secs(15), "the undo ran {:?}", t.elapsed());
+    assert_eq!(server(&s), SERVER);
+    drop(d);
+}
+
+#[test]
+fn an_undo_that_finds_the_run_lock_taken_waits_its_time_and_goes_ahead() {
+    let (mut s, _d) = slow_promised();
+    rewrite(&mut s, &format!("// tidy\n{SERVER}"));
+    let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(s.ws_dir().join("run.lock")).unwrap();
+    lock.lock().unwrap();
+    let t = Instant::now();
+    let o = s.cli_env(&["undo", "4"], &[("TORPOR_TEST_RUN_WAIT_MS", "400")]);
+    assert_eq!(o.code, 0, "{}", why(&o));
+    assert!(o.stdout.contains("Another check is running in this project, so the result is untested."), "{}", o.stdout);
+    assert!(t.elapsed() < Duration::from_secs(10), "the undo waited {:?}", t.elapsed());
+    assert_eq!(server(&s), SERVER);
+    drop(lock);
+}
