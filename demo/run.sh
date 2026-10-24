@@ -75,7 +75,7 @@ printf '%s' "$SPEC" | ai promise add -
 stop
 prompt "tidy up the code"
 edit_tool Edit notes.txt "v2"
-shell "sed -i 's/const BROKEN = false;/const BROKEN = true;/' server.js"
+shell "perl -pi -e 's/const BROKEN = false;/const BROKEN = true;/' server.js"
 stop
 prompt "add a readme"
 edit_tool Write README.md "# demo"
@@ -97,7 +97,7 @@ say "log"; you log -n 6
 say "a blocking check stops the AI once"
 you promise block 1
 prompt "speed up the server"
-shell "sed -i 's/const BROKEN = false;/const BROKEN = true;/' server.js"
+shell "perl -pi -e 's/const BROKEN = false;/const BROKEN = true;/' server.js"
 say "the AI tries to finish:"; stop
 say "and again (Torpor blocks only once for the same change):"; stop
 echo; echo "demo done"
