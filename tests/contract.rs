@@ -251,9 +251,19 @@ fn session_start_says_when_the_disk_is_almost_full() {
     let st = s.status();
     assert_eq!(st.code, 0);
     assert!(st.stdout.contains("disk"), "status should name the disk problem: {}", st.stdout);
-    // With room again the same session start has nothing to say.
+    // With room again the welcome (S2d 4) comes, once.
     s.extra_env.clear();
-    silent("session start with room", &s.second_session().session_start());
+    assert!(s.second_session().session_start().text().starts_with("Torpor is saving this folder"));
+    silent("session start after the welcome", &s.second_session().session_start());
+}
+
+#[test]
+fn session_start_welcomes_once_per_folder() {
+    let mut s = Sim::new();
+    write_files(s.proj(), &[("a.txt", "A1\n")]);
+    assert_eq!(s.session_start().text(), "Torpor is saving this folder at the start and end of every turn. See the turns: torpor log. Undo one: torpor undo N.");
+    silent("second session start", &s.second_session().session_start());
+    silent("same session again", &s.session_start());
 }
 
 #[test]

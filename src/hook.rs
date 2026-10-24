@@ -508,7 +508,14 @@ fn start_notice(cx: &Cx) -> Result<Option<Value>> {
     if let Some(p) = problems.first() {
         return Ok(Some(sys_message(&format!("Torpor: {p}"))));
     }
-    Ok(gate::silent(db).then(|| sys_message(gate::SILENT_NOTICE)))
+    if gate::silent(db) {
+        return Ok(Some(sys_message(gate::SILENT_NOTICE)));
+    }
+    // S2d 4: one welcome per folder, said at the first session that has nothing more urgent to say.
+    if meta_get(db, "welcome_said").is_none() && guarded(cx, || meta_set(db, "welcome_said", "1")).is_some() {
+        return Ok(Some(sys_message("Torpor is saving this folder at the start and end of every turn. See the turns: torpor log. Undo one: torpor undo N.")));
+    }
+    Ok(None)
 }
 
 /// Spec 13: the promise vault against its chain. `once`: a mismatch is told one time (Stop); SessionStart tells it every time.
