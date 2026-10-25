@@ -16,7 +16,7 @@ Restart Claude Code, or run `/reload-plugins`. More install options, the status 
 
 ## A 60 second look
 
-`demo/run.sh` plays a whole story offline with the real program in a throwaway folder (it needs `node` and a built binary). The AI fixes a login, saves a check that it works, and a later turn breaks it with `perl -pi`:
+To watch it, run `git clone https://github.com/Kylne700/torpor && cd torpor && sh demo/run.sh`. The demo plays a whole story offline with the real program in a throwaway folder (it needs `node`; it runs the program committed in `dist/`, so there is nothing to build). The AI fixes a login, saves a check that it works, and a later turn breaks it with `perl -pi`:
 
 ```
 $ torpor find-break --check -
@@ -41,7 +41,7 @@ Torpor named the turn that broke the app, and refused an undo that would have br
 
 ## Pre-event declaration
 
-Torpor's engine (save points, undo with checks, find-break, promise checks and page checks in a browser) is written from 2026-10-21 to 2026-10-25, before the Meta hackathon starts on Oct 26, 12:00 PM GMT-5 (17:00 UTC). It is open source (MIT OR Apache-2.0) and makes no AI model calls. Save points, undo with checks, recovery, find-break, promise checks and page checks are in this version now. The last commit before the event will be tagged `pre-event-base`. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
+Torpor's engine (save points, undo with checks, find-break, promise checks and page checks in a browser) was written from 2026-10-21 up to the commit tagged `pre-event-base`. That commit comes before the Meta hackathon starts (Oct 26, 12:00 PM Eastern Time, as the event page says). Torpor is open source (MIT OR Apache-2.0) and makes no AI model calls. Everything that uses Meta AI will be built during the event, after it starts. Without those parts, your own coding agent writes the promise checks, and Torpor itself calls no model.
 
 ## What it does today
 
@@ -160,7 +160,7 @@ A promise is a small check. It checks that one thing works, for example "sign-in
 
 **Three levels.**
 
-- **Advisory.** Every new promise starts here. When it fails at the end of a turn, you see a note and the AI is told once. It never stops the AI.
+- **Advisory.** A new promise starts here, unless it qualifies for shadow (next item). When it fails at the end of a turn, you see a note and the AI is told once. It never stops the AI.
 - **In shadow.** A proven promise starts here when it came from your own words, when the words in its check match yours, and when the check also fails on a copy of the working version with part of the fix undone. Torpor says when it would have stopped the AI, and does not stop it.
 - **Blocking.** A promise in shadow starts to stop the AI after one real catch (it would have stopped the AI, and a later version fixed it), or after it passed on three different days (UTC) with no false alarm. `torpor promise block 2` skips the wait.
 
@@ -216,7 +216,7 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **A passing check does not prove the app is right.** It says that one thing worked when it ran.
 - **Torpor cannot know what a check was meant to test.** It checks that the check uses words from yours and that it fails when part of the fix is undone. A check that fails at random can pass its proof by luck, and Torpor calls a check flaky (advisory, never stops the AI) when it has seen it pass and fail on the same version, not before. To stop the AI, a check must fail 3 fresh runs in a row while it still passes on the last version that worked. That makes a false stop rare, not impossible.
 - **Slow apps cannot stop the AI.** At the end of a turn Torpor has 30 seconds, and its checks get up to 20 of them. An app that starts or answers slower than that has its check cut off, and the turn ends.
-- **The AI that wrote a check knows what is in it.** Torpor hides the stored check from the AI. This version runs in mode B (your own coding agent writes the checks), and in mode B, the agent that wrote a check knows its source for that session, so hiding it protects only later sessions.
+- **The AI that wrote a check knows what is in it.** Torpor hides the stored check from the AI. In this version your own coding agent writes the checks, so the agent that wrote a check knows its source for that session, and hiding it protects only later sessions.
 - **The record of which files an app ran works for Node apps.** For other apps, a promise runs after every turn that changes a file other than docs and tests.
 - **Built for Claude Code.** Other tools are not supported.
 - **Windows is not supported yet.** Torpor is built and tested on Linux. The macOS and static Linux builds are made by the project's CI and have not been run by hand. Behavior in a normal interactive Claude Code session (the permission prompt for commands that reach outside) has not been checked by hand yet.
@@ -227,13 +227,17 @@ Torpor follows Claude Code's own cleanup setting (30 days unless you changed it)
 - **`torpor` is not found in a terminal.** Use `~/.torpor/bin/torpor`, or add `~/.torpor/bin` to your PATH.
 - **A check says it could not run.** Torpor never stops the AI or an undo for that. Run `torpor promise show ID` to see why (often the app did not start or `node` is missing).
 - **Page checks do nothing.** They need a Chromium-family browser and the runner: `torpor runner install` in your own terminal.
-- **The demo cannot find a binary.** Build the program with `cargo build` before the demo, or set `TORPOR_BIN`.
+- **The demo does not start.** It needs `node` and a program for your system under `dist/` (64-bit Linux or macOS). To use your own build instead, run `cargo build --release` first (the demo prefers `target/release/torpor`), or set `TORPOR_BIN` to the program's full path.
 
 ## Privacy
 
 Torpor stores its records on this computer and never uploads them. Your AI agent still sends your prompts and files to its provider, as before.
 
 Torpor makes no AI model calls. Its network use is plain HTTP to 127.0.0.1 (this computer), to run your promise checks against your app in a scratch copy. In a page check, the browser reaches this computer and nothing else. Torpor makes one download, `torpor runner install`, after you confirm. It fetches public files (the playwright-core package, and a Chromium with ffmpeg when none is found) and uploads nothing of your project. The command wrapped by `torpor statusline --` is your own command, and it does what it did before.
+
+## Build and test
+
+`cargo build --release` builds the program (Rust 1.89 or newer). `cargo test` runs more than 350 tests; CI runs them on Linux and macOS and builds the static Linux program. [docs/RELEASING.md](docs/RELEASING.md) says how a release is made.
 
 ## License
 
