@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -76,9 +77,10 @@ jobs:
       - name: The shipped binary ignores every test variable
         run: sh tests/release_ignores_fault_env.sh target/dist/release/torpor
 
-  # Windows is not supported yet (the code uses Unix file APIs). This job shows when that changes; it never fails the run.
+  # Windows is not supported yet (the code uses Unix file APIs). Run this job by hand (Actions > CI > Run workflow) to see when that changes.
   windows:
     name: Windows (experimental)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     continue-on-error: true
     steps:
