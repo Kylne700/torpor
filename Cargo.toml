@@ -1,6 +1,6 @@
 [package]
 name = "torpor"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2024"
 rust-version = "1.89"
 description = "Save points for every turn of a Claude Code session, shell edits included. Go back, undo one turn, see what changed."

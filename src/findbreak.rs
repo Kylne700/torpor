@@ -553,7 +553,7 @@ fn report(ws: &Ws, f: &Found, flake: Option<f64>) -> (String, i32) {
                 s.push_str(" (not confirmed: the time ran out)");
             }
             if broke_before(f, *parent) {
-                s.push_str(" Possibly more than one break: an older version failed too, so it may have broken, worked, and broken again.");
+                s.push_str("\nPossibly more than one break: an older version failed too, so it may have broken, worked, and broken again.");
             }
             (s, 0)
         }

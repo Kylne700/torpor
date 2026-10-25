@@ -1,6 +1,6 @@
 {
   "name": "torpor",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Undo for Claude Code: save points for every turn (shell edits included), undo one turn, find the turn that broke it, checks for what you said works.",
   "author": {
     "name": "Kylne700"

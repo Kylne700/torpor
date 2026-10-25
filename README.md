@@ -16,15 +16,21 @@ Restart Claude Code, or run `/reload-plugins`. More install options, the status 
 
 ## A 60 second look
 
-`demo/run.sh` plays a whole story offline with the real program in a throwaway folder (it needs `node` and a built binary). The AI fixes a login, saves a check that it works, and a later turn breaks it with `sed -i`:
+`demo/run.sh` plays a whole story offline with the real program in a throwaway folder (it needs `node` and a built binary). The AI fixes a login, saves a check that it works, and a later turn breaks it with `perl -pi`:
 
 ```
 $ torpor find-break --check -
+This check is promise #1 already.
 Looking for the turn that broke promise #1 "login works".
-  run 1: the end of turn 6: FAIL
-  run 4: the start of turn 4: PASS
-  run 5: the start of turn 5: FAIL
-Turn 4 broke it (99%, 6 runs). Undo that turn: torpor undo 4
+  run 1: the end of turn 6: FAIL (0.6 s)
+  run 2: the end of turn 6: FAIL (0.6 s)
+  run 3: the end of turn 6: FAIL (0.6 s)
+  run 4: the start of turn 4: PASS (0.6 s)
+  run 5: the start of turn 5: FAIL (0.6 s)
+  run 6: the start of turn 5: FAIL (0.6 s)
+  run 7: the start of turn 2: FAIL (0.6 s)
+Turn 4 broke it (99%, 7 runs). Undo only turn 4: torpor undo 4
+Possibly more than one break: an older version failed too, so it may have broken, worked, and broken again.
 
 $ torpor undo 2
 Undoing turn 2 breaks promise #1 (login works), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo 2 --force
@@ -42,7 +48,7 @@ Torpor's engine (save points, undo with checks, find-break, promise checks and p
 - **Save points at both ends of every turn.** Torpor saves the project when you send a prompt and again when Claude stops. After each shell command Claude runs, it also checks what changed. So `sed -i`, `rm`, a formatter or a build step is recorded, not just the files Claude edits with its own edit tools. Changes you make yourself between turns are recorded too, and marked as made outside the chat.
 - **Go back.** `torpor back` puts the whole folder back to an earlier state. The state you left is saved, so going back can be undone too.
 - **Undo one turn.** `torpor undo 7` takes out what turn 7 changed and keeps the work done after it. Text files are merged line by line. If your later work touches the same lines, Torpor lists the files and changes nothing. Before it writes, it builds the result in a scratch copy and runs the promises that cover those files. If one passes now and would fail after the undo, Torpor changes nothing and says which. `torpor undo 7 --force` goes on anyway (type it in your own terminal; it refuses to run inside Claude Code).
-- **Find the turn that broke it.** Tell Claude that something that worked is broken, then run `torpor find-break`. It lists what changed since the last version that worked. With a check (your AI writes it), Torpor runs the check on older versions and names the turn that made it fail, also when a shell command made the change. A change you made yourself between turns is named too. `torpor undo` then takes out that one turn.
+- **Find the turn that broke it.** Tell Claude that something that worked is broken, then run `torpor find-break`. It lists what changed since the last version that worked. With a check (your AI writes it), Torpor runs the check on older versions and names the turn that made it fail, also when a shell command made the change. `torpor find-break --promise 1` does the same with the check of promise 1, which Torpor already keeps. A change you made yourself between turns is named too. `torpor undo` then takes out that one turn.
 - **Keep what you said works.** Tell Claude "login works now" and your AI writes a small check for exactly that. Torpor tests the check before it keeps it, and runs it after later turns. When a later turn breaks it, you see a note at the end of that turn. A promise you can trust may also stop the AI (see Promises below).
 - **Page checks.** A check can click and type in a real page, not just call the app's HTTP routes. Torpor runs it in a headless Chromium-family browser that is already on your computer. The browser reaches this computer's loopback addresses (127.x.x.x, ::1, localhost), on any port, and nothing else. This needs a small runner that you install yourself (see Install).
 - **Recover.** If a restore is cut short (power loss, a closed terminal), `torpor recover` finishes it. Restores are journaled, so a cut-short one can be finished.
@@ -119,7 +125,7 @@ Inside Claude Code the plugin puts `torpor` on the PATH of the Bash tool, so Cla
 | `torpor init` | Report what the initial scan of this folder found: file counts, secret files, files skipped. |
 | `torpor gc` | Free the space used by old save points. |
 | `torpor keep "login works"` | Save a version you want to come back to. `--check -` also saves a promise. |
-| `torpor find-break` | Which turn broke it. `--check -` runs a check (the AI writes it) on older versions. |
+| `torpor find-break` | Which turn broke it. `--check -` runs a check (the AI writes it) on older versions; `--promise 1` runs the check of promise 1. |
 | `torpor promise list` | The promises and how far each one is proven. `torpor promise show 2` shows one. |
 | `torpor check 2` / `--all` | Run checks against the folder as it is now. |
 | `torpor promise add -` | Save a check read from standard input. Your AI runs this. |
