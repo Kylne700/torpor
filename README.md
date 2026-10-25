@@ -242,3 +242,5 @@ Torpor makes no AI model calls. Its network use is plain HTTP to 127.0.0.1 (this
 ## License
 
 MIT OR Apache-2.0, at your option. See `LICENSE-MIT` and `LICENSE-APACHE`.
+
+The programs in `dist/` also contain third-party code; its licenses and notices are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
