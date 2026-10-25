@@ -3,7 +3,9 @@
 use crate::restore::{self, Target};
 use crate::store::*;
 use crate::util::*;
-use crate::{capture, destructive, dom, history, hook, merge, promise_cmd, retention, scan, status};
+use crate::{
+    capture, destructive, dom, history, hook, merge, promise_cmd, retention, scan, status,
+};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -83,9 +85,18 @@ pub(crate) fn fail(e: &Error) -> i32 {
 pub fn run(args: Vec<String>) -> i32 {
     let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     // Commands that only the user may run: an agent's shell has CLAUDECODE set (spec 7.2, 8).
-    if destructive::user_only_args(&a).is_some() && std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
-        let typed: String = a.join(" ").chars().filter(|c| !c.is_control()).take(60).collect();
-        err(&format!("Run this in your own terminal: ~/.torpor/bin/torpor {typed}\n"));
+    if destructive::user_only_args(&a).is_some()
+        && std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty())
+    {
+        let typed: String = a
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(60)
+            .collect();
+        err(&format!(
+            "Run this in your own terminal: ~/.torpor/bin/torpor {typed}\n"
+        ));
         return 3;
     }
     match a.first().copied() {
@@ -120,7 +131,9 @@ pub fn run(args: Vec<String>) -> i32 {
             0
         }
         Some(other) => {
-            err(&format!("Torpor does not know the command '{other}'. Try: torpor help\n"));
+            err(&format!(
+                "Torpor does not know the command '{other}'. Try: torpor help\n"
+            ));
             2
         }
     }
@@ -153,7 +166,10 @@ fn status_cmd(args: &[&str]) -> i32 {
             let mut problems = status::global_faults(&home_dir());
             problems.push("No Torpor hook has run in this folder yet. If Claude Code asked whether you trust this folder, answer yes; hooks wait for that.".to_string());
             if json {
-                out(&format!("{}\n", serde_json::json!({"saving": false, "points": 0, "problems": problems})));
+                out(&format!(
+                    "{}\n",
+                    serde_json::json!({"saving": false, "points": 0, "problems": problems})
+                ));
             } else {
                 out("Torpor has no save points for this folder yet.\nProblems:\n");
                 for p in problems {
@@ -184,7 +200,11 @@ fn log_cmd(args: &[&str]) -> i32 {
     while let Some(a) = it.next() {
         match *a {
             "--json" => json = true,
-            "-n" => match it.next().and_then(|v| v.parse::<usize>().ok()).filter(|k| (1..=10_000).contains(k)) {
+            "-n" => match it
+                .next()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|k| (1..=10_000).contains(k))
+            {
                 Some(k) => n = k,
                 None => return usage(U),
             },
@@ -228,7 +248,10 @@ fn show_cmd(args: &[&str]) -> i32 {
     let now = now_ns();
     let (found, what) = match (turn, point) {
         (Some(k), _) => (history::show_turn(&ws, k, now), format!("turn {k}")),
-        (_, p) => (history::show_point(&ws, p.unwrap_or(0), now), format!("save point {}", p.unwrap_or(0))),
+        (_, p) => (
+            history::show_point(&ws, p.unwrap_or(0), now),
+            format!("save point {}", p.unwrap_or(0)),
+        ),
     };
     match found {
         Ok(Some((_, j))) if json => {
@@ -265,10 +288,20 @@ fn gc_cmd(args: &[&str]) -> i32 {
         Ok(retention::GcOutcome::Done(s)) => {
             let (n, oldest): (i64, Option<i64>) = ws
                 .conn
-                .query_row("SELECT COUNT(*),MIN(created_at) FROM points WHERE dropped=0 AND visible=1", [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .query_row(
+                    "SELECT COUNT(*),MIN(created_at) FROM points WHERE dropped=0 AND visible=1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
                 .unwrap_or((0, None));
-            let back = oldest.map(|o| format!(" (back to {})", local_md(o))).unwrap_or_default();
-            out(&format!("Freed {}. Kept {n} save point{}{back}.\n", human_bytes(s.bytes), if n == 1 { "" } else { "s" }));
+            let back = oldest
+                .map(|o| format!(" (back to {})", local_md(o)))
+                .unwrap_or_default();
+            out(&format!(
+                "Freed {}. Kept {n} save point{}{back}.\n",
+                human_bytes(s.bytes),
+                if n == 1 { "" } else { "s" }
+            ));
             0
         }
         // A session is in use: cleanup waits. Silent for the background run, a refusal for the person typing it.
@@ -294,7 +327,10 @@ fn quiet_cmd(args: &[&str]) -> i32 {
     // `quiet on` means the end-of-turn line is off.
     match meta_set(&ws.conn, "quiet", if on { "1" } else { "0" }) {
         Ok(()) => {
-            out(&format!("The end-of-turn line is now {}.\n", if on { "off" } else { "on" }));
+            out(&format!(
+                "The end-of-turn line is now {}.\n",
+                if on { "off" } else { "on" }
+            ));
             0
         }
         Err(e) => fail(&e),
@@ -325,16 +361,30 @@ fn back_cmd(args: &[&str]) -> i32 {
                 opts.dry_run = true;
                 continue;
             }
-            "--turn" => it.next().and_then(|v| v.parse::<i64>().ok()).filter(|k| *k >= 1).map(Target::Turn),
-            "--id" => it.next().and_then(|v| v.parse::<i64>().ok()).filter(|k| *k >= 1).map(Target::Id),
-            n => n.parse::<usize>().ok().filter(|k| *k >= 1).map(Target::Back),
+            "--turn" => it
+                .next()
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|k| *k >= 1)
+                .map(Target::Turn),
+            "--id" => it
+                .next()
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|k| *k >= 1)
+                .map(Target::Id),
+            n => n
+                .parse::<usize>()
+                .ok()
+                .filter(|k| *k >= 1)
+                .map(Target::Back),
         };
         match (t, target) {
             (Some(t), None) => target = Some(t),
             _ => return usage(U),
         }
     }
-    let Some(target) = target else { return usage(U) };
+    let Some(target) = target else {
+        return usage(U);
+    };
     let mut ws = match open_here() {
         Ok(ws) => ws,
         Err(e) => return fail(&e),
@@ -391,7 +441,12 @@ fn grouped(n: usize) -> String {
 
 /// "a, b, c and 4 more".
 fn short_list(items: &[String], max: usize) -> String {
-    let mut s = items.iter().take(max).cloned().collect::<Vec<_>>().join(", ");
+    let mut s = items
+        .iter()
+        .take(max)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     if items.len() > max {
         s.push_str(&format!(" and {} more", items.len() - max));
     }
@@ -411,21 +466,47 @@ fn init_cmd(args: &[&str]) -> i32 {
         Err(e) => return fail(&e),
     };
     let db = &ws.conn;
-    let checks = if meta_get(db, "mode").as_deref() == Some("fast") { "checks after every shell command" } else { "checks at the end of each turn" };
-    out(&format!("Torpor is set up for this folder. First scan: {} files in {} ms ({checks}).\n", grouped(sc.file_count()), sc.elapsed_ms));
+    let checks = if meta_get(db, "mode").as_deref() == Some("fast") {
+        "checks after every shell command"
+    } else {
+        "checks at the end of each turn"
+    };
+    out(&format!(
+        "Torpor is set up for this folder. First scan: {} files in {} ms ({checks}).\n",
+        grouped(sc.file_count()),
+        sc.elapsed_ms
+    ));
     let files = || sc.entries.iter().filter(|e| e.kind != scan::EKind::Dir);
-    let secret: Vec<String> = files().filter(|e| e.secret).map(|e| e.path.clone()).collect();
+    let secret: Vec<String> = files()
+        .filter(|e| e.secret)
+        .map(|e| e.path.clone())
+        .collect();
     if !secret.is_empty() {
-        out(&format!("Secret files are saved encrypted and never shown: {}.\n", short_list(&secret, 5)));
+        out(&format!(
+            "Secret files are saved encrypted and never shown: {}.\n",
+            short_list(&secret, 5)
+        ));
     }
-    let precious: Vec<String> = files().filter(|e| e.precious && !e.secret).map(|e| e.path.clone()).collect();
+    let precious: Vec<String> = files()
+        .filter(|e| e.precious && !e.secret)
+        .map(|e| e.path.clone())
+        .collect();
     if !precious.is_empty() {
-        out(&format!("Saved even if git ignores them: {}.\n", short_list(&precious, 5)));
+        out(&format!(
+            "Saved even if git ignores them: {}.\n",
+            short_list(&precious, 5)
+        ));
     }
     let skipped: Vec<String> = files()
         .filter_map(|e| {
-            let reason = e.reason.or((e.kind == scan::EKind::File && e.size > capture::cap_for(e)).then_some("too_big"))?;
-            Some(format!("{} ({})", e.path, status::why(reason, &e.path, None)))
+            let reason = e.reason.or((e.kind == scan::EKind::File
+                && e.size > capture::cap_for(e))
+            .then_some("too_big"))?;
+            Some(format!(
+                "{} ({})",
+                e.path,
+                status::why(reason, &e.path, None)
+            ))
         })
         .collect();
     if !skipped.is_empty() {
@@ -434,10 +515,17 @@ fn init_cmd(args: &[&str]) -> i32 {
     for line in status::deep_check_lines(db) {
         out(&format!("{line}\n"));
     }
-    let last: Option<i64> = db.query_row("SELECT MAX(last_at) FROM heartbeat", [], |r| r.get(0)).ok().flatten();
-    let blocked = status::gather(&ws, false, false, now_ns()).map(|r| r.blocking).unwrap_or(false);
+    let last: Option<i64> = db
+        .query_row("SELECT MAX(last_at) FROM heartbeat", [], |r| r.get(0))
+        .ok()
+        .flatten();
+    let blocked = status::gather(&ws, false, false, now_ns())
+        .map(|r| r.blocking)
+        .unwrap_or(false);
     match last {
-        None => out("Hooks: none seen yet. If Claude Code asked whether you trust this folder, answer yes; hooks wait for that.\n"),
+        None => out(
+            "Hooks: none seen yet. If Claude Code asked whether you trust this folder, answer yes; hooks wait for that.\n",
+        ),
         Some(_) if blocked => out("Hooks: they may not be running. See: torpor status\n"),
         Some(t) => out(&format!("Hooks: running (last event {}).\n", local_hhmm(t))),
     }
@@ -450,9 +538,18 @@ const PROBLEM: &str = "torpor · problem: run torpor status";
 
 /// Torpor's part of the status line. Reads the folder from Claude Code's JSON (`workspace.project_dir`, else `cwd`).
 fn statusline_segment(input: &[u8]) -> String {
-    let hint = serde_json::from_slice::<serde_json::Value>(input).ok().and_then(|v| {
-        ["/workspace/project_dir", "/workspace/current_dir", "/cwd"].iter().find_map(|p| v.pointer(p).and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(str::to_string))
-    });
+    let hint = serde_json::from_slice::<serde_json::Value>(input)
+        .ok()
+        .and_then(|v| {
+            ["/workspace/project_dir", "/workspace/current_dir", "/cwd"]
+                .iter()
+                .find_map(|p| {
+                    v.pointer(p)
+                        .and_then(|x| x.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+        });
     let ws = match resolve_root(hint.as_deref()).and_then(|r| Ws::open(&r, false)) {
         Ok(w) => w,
         Err(Error::NotFound(_)) => return "torpor · hooks not running".into(),
@@ -460,7 +557,9 @@ fn statusline_segment(input: &[u8]) -> String {
         Err(_) => return PROBLEM.into(),
     };
     let now = now_ns();
-    let Ok(r) = status::gather(&ws, false, false, now) else { return PROBLEM.into() };
+    let Ok(r) = status::gather(&ws, false, false, now) else {
+        return PROBLEM.into();
+    };
     if r.off {
         return "torpor · off".into();
     }
@@ -475,10 +574,27 @@ fn statusline_segment(input: &[u8]) -> String {
         Some(a) => format!(" · last {a}"),
         None => String::new(),
     };
-    let more = if r.problems.is_empty() { "" } else { " · see torpor status" };
+    let more = if r.problems.is_empty() {
+        ""
+    } else {
+        " · see torpor status"
+    };
     let pr = &r.promises;
-    let promises = if pr.total > 0 { format!(" · {} promise{} ok · caught {}", pr.ok, if pr.ok == 1 { "" } else { "s" }, pr.caught) } else { String::new() };
-    format!("torpor · {} save point{}{promises}{last}{more}", r.points, if r.points == 1 { "" } else { "s" })
+    let promises = if pr.total > 0 {
+        format!(
+            " · {} promise{} ok · caught {}",
+            pr.ok,
+            if pr.ok == 1 { "" } else { "s" },
+            pr.caught
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "torpor · {} save point{}{promises}{last}{more}",
+        r.points,
+        if r.points == 1 { "" } else { "s" }
+    )
 }
 
 /// Run the user's own status line command on the same input; its first line, if it printed one within 2 s.
@@ -498,7 +614,12 @@ fn run_wrapped(cmd: &[String], input: &[u8]) -> Option<String> {
         }
         [] => return None,
     };
-    let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = c
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
     let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let data = input.to_vec();
     std::thread::spawn(move || {
@@ -528,13 +649,18 @@ pub(crate) fn stdin_is_tty() -> bool {
 
 /// One line, always exit 0 (spec 8): a status bar must never show an error.
 fn statusline_cmd(args: &[&str]) -> i32 {
-    let wrapped: Vec<String> = args.iter().position(|a| *a == "--").map(|i| args[i + 1..].iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+    let wrapped: Vec<String> = args
+        .iter()
+        .position(|a| *a == "--")
+        .map(|i| args[i + 1..].iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
     let mut input = Vec::new();
     if !stdin_is_tty() {
         let _ = std::io::stdin().take(1 << 20).read_to_end(&mut input);
     }
     std::panic::set_hook(Box::new(|_| {}));
-    let ours = std::panic::catch_unwind(|| statusline_segment(&input)).unwrap_or_else(|_| PROBLEM.to_string());
+    let ours = std::panic::catch_unwind(|| statusline_segment(&input))
+        .unwrap_or_else(|_| PROBLEM.to_string());
     match run_wrapped(&wrapped, &input) {
         Some(first) => out(&format!("{first} · {ours}\n")),
         None => out(&format!("{ours}\n")),
@@ -559,7 +685,11 @@ fn off_on_cmd(args: &[&str], off: bool) -> i32 {
     };
     match meta_set(&ws.conn, "off", if off { "1" } else { "0" }) {
         Ok(()) => {
-            out(if off { "Torpor stopped saving this folder. Turn it back on with: torpor on\n" } else { "Torpor is saving this folder again.\n" });
+            out(if off {
+                "Torpor stopped saving this folder. Turn it back on with: torpor on\n"
+            } else {
+                "Torpor is saving this folder again.\n"
+            });
             0
         }
         Err(e) => fail(&e),
@@ -569,7 +699,9 @@ fn off_on_cmd(args: &[&str], off: bool) -> i32 {
 fn retain_cmd(args: &[&str]) -> i32 {
     const U: &str = "retain <days>";
     let [d] = args else { return usage(U) };
-    let Some(days) = d.parse::<i64>().ok().filter(|d| (1..=3650).contains(d)) else { return usage(U) };
+    let Some(days) = d.parse::<i64>().ok().filter(|d| (1..=3650).contains(d)) else {
+        return usage(U);
+    };
     let ws = match open_or_create() {
         Ok(ws) => ws,
         Err(e) => return fail(&e),
@@ -579,9 +711,13 @@ fn retain_cmd(args: &[&str]) -> i32 {
     }
     let (claude, _) = retention::claude_days();
     if days > claude {
-        out(&format!("Save points are now kept for {days} days (longer than Claude Code's {claude}).\n"));
+        out(&format!(
+            "Save points are now kept for {days} days (longer than Claude Code's {claude}).\n"
+        ));
     } else {
-        out(&format!("Claude Code already keeps chats for {claude} days, which is not less than {days}, so save points are kept for {claude} days.\n"));
+        out(&format!(
+            "Claude Code already keeps chats for {claude} days, which is not less than {days}, so save points are kept for {claude} days.\n"
+        ));
     }
     out("The 2 GB limit per project still applies.\n");
     0
@@ -589,16 +725,27 @@ fn retain_cmd(args: &[&str]) -> i32 {
 
 /// Workspace folders of the store: hex-named, with a `root` file.
 fn workspace_dirs(home: &Path) -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(home) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(home) else {
+        return Vec::new();
+    };
     rd.flatten()
         .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| matches!(n.len(), 16 | 20) && n.bytes().all(|b| b.is_ascii_hexdigit())) && p.join("root").is_file())
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                matches!(n.len(), 16 | 20) && n.bytes().all(|b| b.is_ascii_hexdigit())
+            }) && p.join("root").is_file()
+        })
         .collect()
 }
 
 /// Delete one workspace folder once nothing is saving into it. Ok(false): it stayed busy.
 fn remove_workspace(dir: &Path) -> Result<bool> {
-    let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("lock"))?;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("lock"))?;
     let start = Instant::now();
     while f.try_lock().is_err() {
         if start.elapsed() > Duration::from_secs(3) {
@@ -634,11 +781,17 @@ fn runner_cmd(args: &[&str]) -> i32 {
         return 1;
     }
     let dir = dom::runner_dir(&home_dir());
-    let (need_package, need_browser) = (!dom::installed(&dir), dom::find_chromium().is_none() && !dom::own_browser(&dir));
+    let (need_package, need_browser) = (
+        !dom::installed(&dir),
+        dom::find_chromium().is_none() && !dom::own_browser(&dir),
+    );
     if !need_package && !need_browser {
         return match dom::refresh_script(&dir) {
             Ok(_) => {
-                out(&format!("The browser runner is already installed in {}.\n", dir.display()));
+                out(&format!(
+                    "The browser runner is already installed in {}.\n",
+                    dir.display()
+                ));
                 0
             }
             Err(e) => fail(&Error::Io(e)),
@@ -650,7 +803,9 @@ fn runner_cmd(args: &[&str]) -> i32 {
     } else if !stdin_is_tty() {
         // Nothing is downloaded without a person's answer: a script says yes with --yes.
         out(&format!("{question}\n"));
-        err("Nothing was installed. Torpor needs your answer in a terminal; to say yes without one, run: torpor runner install --yes\n");
+        err(
+            "Nothing was installed. Torpor needs your answer in a terminal; to say yes without one, run: torpor runner install --yes\n",
+        );
         return 3;
     } else if !confirmed_yes(&format!("{question} ")) {
         err("Nothing was installed.\n");
@@ -673,7 +828,8 @@ fn confirmed_yes(prompt: &str) -> bool {
     out(prompt);
     let _ = std::io::stdout().flush();
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).is_ok() && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    std::io::stdin().lock().read_line(&mut line).is_ok()
+        && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 fn forget_cmd(args: &[&str]) -> i32 {
@@ -683,7 +839,10 @@ fn forget_cmd(args: &[&str]) -> i32 {
     while let Some(a) = it.next() {
         match *a {
             "--all" => all = true,
-            "--before" => match it.next().and_then(|d| parse_local_date(d).map(|t| (t, d.to_string()))) {
+            "--before" => match it
+                .next()
+                .and_then(|d| parse_local_date(d).map(|t| (t, d.to_string())))
+            {
                 Some(b) => before = Some(b),
                 None => return usage(U),
             },
@@ -705,19 +864,35 @@ fn forget_cmd(args: &[&str]) -> i32 {
         Ok(ws) => ws,
         Err(e) => return fail(&e),
     };
-    let name = ws.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = ws
+        .root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let what = match &before {
-        Some((_, d)) => format!("the save points of {} made before {d}, with the file names and commands recorded for them", ws.root.display()),
+        Some((_, d)) => format!(
+            "the save points of {} made before {d}, with the file names and commands recorded for them",
+            ws.root.display()
+        ),
         None => format!("all of Torpor's records of {}", ws.root.display()),
     };
-    if !confirmed(&format!("This deletes {what}. Your files are not touched.\nType the folder name to confirm: "), &name) {
+    if !confirmed(
+        &format!(
+            "This deletes {what}. Your files are not touched.\nType the folder name to confirm: "
+        ),
+        &name,
+    ) {
         err("Nothing was deleted.\n");
         return 3;
     }
     if let Some((cutoff, d)) = before {
         return match retention::forget_before(&mut ws, cutoff, now_ns()) {
             Ok((n, s)) => {
-                out(&format!("Forgot {n} save point{} made before {d} and freed {}. The newest save point is always kept.\n", if n == 1 { "" } else { "s" }, human_bytes(s.bytes)));
+                out(&format!(
+                    "Forgot {n} save point{} made before {d} and freed {}. The newest save point is always kept.\n",
+                    if n == 1 { "" } else { "s" },
+                    human_bytes(s.bytes)
+                ));
                 0
             }
             Err(e) => fail(&e),
@@ -729,7 +904,9 @@ fn forget_cmd(args: &[&str]) -> i32 {
     }
     match remove_workspace(&ws.dir) {
         Ok(true) => {
-            out("Deleted Torpor's records of this folder. Your files were not touched.\nTorpor starts saving again at your next turn; to keep it from doing that, run: torpor off\n");
+            out(
+                "Deleted Torpor's records of this folder. Your files were not touched.\nTorpor starts saving again at your next turn; to keep it from doing that, run: torpor off\n",
+            );
             0
         }
         Ok(false) => fail(&Error::Busy),
@@ -740,7 +917,11 @@ fn forget_cmd(args: &[&str]) -> i32 {
 fn forget_all() -> i32 {
     let home = home_dir();
     let dirs = workspace_dirs(&home);
-    let prompt = format!("This deletes all of Torpor's records of {} folder{}. Your files are not touched.\nType all to confirm: ", dirs.len(), if dirs.len() == 1 { "" } else { "s" });
+    let prompt = format!(
+        "This deletes all of Torpor's records of {} folder{}. Your files are not touched.\nType all to confirm: ",
+        dirs.len(),
+        if dirs.len() == 1 { "" } else { "s" }
+    );
     if !confirmed(&prompt, "all") {
         err("Nothing was deleted.\n");
         return 3;
@@ -753,10 +934,20 @@ fn forget_all() -> i32 {
         }
     }
     let _ = std::fs::remove_file(home.join("faults.log"));
-    out(&format!("Deleted Torpor's records of {gone} folder{}.\n", if gone == 1 { "" } else { "s" }));
-    out(&format!("Torpor's key file is still at {}; delete it too if you want no trace.\n", key_path().display()));
+    out(&format!(
+        "Deleted Torpor's records of {gone} folder{}.\n",
+        if gone == 1 { "" } else { "s" }
+    ));
+    out(&format!(
+        "Torpor's key file is still at {}; delete it too if you want no trace.\n",
+        key_path().display()
+    ));
     if busy > 0 {
-        err(&format!("{busy} folder{} stayed in use and {} left alone. Close Claude Code and run this again.\n", if busy == 1 { "" } else { "s" }, if busy == 1 { "was" } else { "were" }));
+        err(&format!(
+            "{busy} folder{} stayed in use and {} left alone. Close Claude Code and run this again.\n",
+            if busy == 1 { "" } else { "s" },
+            if busy == 1 { "was" } else { "were" }
+        ));
         return 4;
     }
     0

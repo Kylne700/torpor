@@ -169,14 +169,20 @@ pub fn hard_excluded(e: &ignore::DirEntry) -> bool {
             return true;
         }
         if n == b"target" {
-            return e.path().parent().is_some_and(|p| p.join("Cargo.toml").exists());
+            return e
+                .path()
+                .parent()
+                .is_some_and(|p| p.join("Cargo.toml").exists());
         }
         if n == b"venv" || n == b".venv" {
             return e.path().join("pyvenv.cfg").exists();
         }
         return false;
     }
-    (n.starts_with(b".torpor-") && n.ends_with(b".tmp")) || n.ends_with(b"-wal") || n.ends_with(b"-shm") || n.ends_with(b"-journal")
+    (n.starts_with(b".torpor-") && n.ends_with(b".tmp"))
+        || n.ends_with(b"-wal")
+        || n.ends_with(b"-shm")
+        || n.ends_with(b"-journal")
 }
 
 /// Same rules as `hard_excluded`, for one root-relative path named by an event (no walk).
@@ -193,10 +199,16 @@ pub fn rel_hard_excluded(root: &Path, rel: &str) -> bool {
             if EXCLUDED_DIRS.contains(&n) {
                 return true;
             }
-            if (n == b"target" && dir.join("Cargo.toml").exists()) || ((n == b"venv" || n == b".venv") && dir.join(part).join("pyvenv.cfg").exists()) {
+            if (n == b"target" && dir.join("Cargo.toml").exists())
+                || ((n == b"venv" || n == b".venv") && dir.join(part).join("pyvenv.cfg").exists())
+            {
                 return true;
             }
-        } else if (n.starts_with(b".torpor-") && n.ends_with(b".tmp")) || n.ends_with(b"-wal") || n.ends_with(b"-shm") || n.ends_with(b"-journal") {
+        } else if (n.starts_with(b".torpor-") && n.ends_with(b".tmp"))
+            || n.ends_with(b"-wal")
+            || n.ends_with(b"-shm")
+            || n.ends_with(b"-journal")
+        {
             return true;
         }
         dir.push(part);
@@ -264,11 +276,19 @@ fn entry_from_md(rel: String, md: &std::fs::Metadata, reason: Option<&'static st
     let name_start = rel.rfind('/').map_or(0, |i| i + 1);
     let precious = kind == EKind::File && is_precious_name(&rel[name_start..]);
     let secret = kind == EKind::File && is_secret(&rel);
-    let reason = if kind == EKind::Special && reason.is_none() { Some("special") } else { reason };
+    let reason = if kind == EKind::Special && reason.is_none() {
+        Some("special")
+    } else {
+        reason
+    };
     FEntry {
         path: rel,
         kind,
-        size: if kind == EKind::File || kind == EKind::Link { md.len() } else { 0 },
+        size: if kind == EKind::File || kind == EKind::Link {
+            md.len()
+        } else {
+            0
+        },
         mode: md.mode() & 0o7777,
         mtime_ns: nanos(md.mtime(), md.mtime_nsec()),
         ctime_ns: nanos(md.ctime(), md.ctime_nsec()),
@@ -284,7 +304,10 @@ impl Visitor {
         let rel = p.strip_prefix(&self.root).ok()?;
         match rel.to_str() {
             Some(s) => Some((s.to_string(), true)),
-            None => Some((String::from_utf8_lossy(rel.as_os_str().as_bytes()).into_owned(), false)),
+            None => Some((
+                String::from_utf8_lossy(rel.as_os_str().as_bytes()).into_owned(),
+                false,
+            )),
         }
     }
 
@@ -307,8 +330,16 @@ impl Visitor {
             if !de.file_type().is_ok_and(|t| t.is_file()) {
                 continue;
             }
-            let rel = if dir_rel.is_empty() { n.to_string() } else { format!("{dir_rel}/{n}") };
-            if self.optout.matched_path_or_any_parents(self.root.join(&rel), false).is_ignore() {
+            let rel = if dir_rel.is_empty() {
+                n.to_string()
+            } else {
+                format!("{dir_rel}/{n}")
+            };
+            if self
+                .optout
+                .matched_path_or_any_parents(self.root.join(&rel), false)
+                .is_ignore()
+            {
                 continue;
             }
             if let Ok(md) = de.metadata() {
@@ -353,16 +384,33 @@ impl Visitor {
             Ok(m) => m,
             Err(e) => {
                 // Vanished between listing and stat: not an entry. Anything else: keep it as not saved.
-                let gone = e.io_error().is_some_and(|i| i.kind() == std::io::ErrorKind::NotFound);
+                let gone = e
+                    .io_error()
+                    .is_some_and(|i| i.kind() == std::io::ErrorKind::NotFound);
                 if gone {
                     return WalkState::Continue;
                 }
-                let mut fe = FEntry { path: rel, kind: if ft.is_dir() { EKind::Dir } else { EKind::File }, size: 0, mode: 0o644, mtime_ns: 0, ctime_ns: 0, ino: 0, precious: false, secret: false, reason: Some("unreadable") };
+                let mut fe = FEntry {
+                    path: rel,
+                    kind: if ft.is_dir() { EKind::Dir } else { EKind::File },
+                    size: 0,
+                    mode: 0o644,
+                    mtime_ns: 0,
+                    ctime_ns: 0,
+                    ino: 0,
+                    precious: false,
+                    secret: false,
+                    reason: Some("unreadable"),
+                };
                 if !utf8 {
                     fe.reason = Some("name");
                 }
                 self.acc.entries.push(fe);
-                return if ft.is_dir() { WalkState::Skip } else { WalkState::Continue };
+                return if ft.is_dir() {
+                    WalkState::Skip
+                } else {
+                    WalkState::Continue
+                };
             }
         };
         let fe = entry_from_md(rel, &md, if utf8 { None } else { Some("name") });
@@ -389,7 +437,9 @@ impl Visitor {
 /// Threads for the walk: one for small trees, more past 5,000 files (spec 5.1).
 pub fn thread_count(last_file_count: usize) -> usize {
     if last_file_count > 5000 {
-        std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)
+        std::thread::available_parallelism()
+            .map_or(2, |n| n.get())
+            .clamp(2, 4)
     } else {
         1
     }
@@ -419,7 +469,10 @@ pub fn scan(root: &Path, threads: usize, entry_cap: usize) -> Result<Scan> {
     // shortcut: only the top-level .torporignore can opt a precious file out; nested ones cannot, add them if somebody asks.
     let mut ob = ignore::gitignore::GitignoreBuilder::new(root);
     let _ = ob.add(root.join(".torporignore"));
-    let optout = Arc::new(ob.build().unwrap_or_else(|_| ignore::gitignore::Gitignore::empty()));
+    let optout = Arc::new(
+        ob.build()
+            .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty()),
+    );
     b.build_parallel().run(|| {
         let mut v = Visitor {
             root: root.to_path_buf(),
@@ -433,14 +486,25 @@ pub fn scan(root: &Path, threads: usize, entry_cap: usize) -> Result<Scan> {
         Box::new(move |res| v.visit(res))
     });
     let mut accs = std::mem::take(&mut *shared.lock().map_err(|_| Error::msg("scan lock"))?);
-    let walked: HashSet<String> = accs.iter_mut().flat_map(|a| std::mem::take(&mut a.walked_precious)).collect();
-    let mut out = Scan { cap_hit: cap_hit.load(Ordering::Relaxed), ..Default::default() };
-    out.entries.reserve(accs.iter().map(|a| a.entries.len() + a.extras.len()).sum());
+    let walked: HashSet<String> = accs
+        .iter_mut()
+        .flat_map(|a| std::mem::take(&mut a.walked_precious))
+        .collect();
+    let mut out = Scan {
+        cap_hit: cap_hit.load(Ordering::Relaxed),
+        ..Default::default()
+    };
+    out.entries
+        .reserve(accs.iter().map(|a| a.entries.len() + a.extras.len()).sum());
     let mut unreadable: Vec<String> = Vec::new();
     for a in accs.iter_mut() {
         out.entries.append(&mut a.entries);
         // A precious file the walker already listed is not an extra.
-        out.entries.extend(std::mem::take(&mut a.extras).into_iter().filter(|x| !walked.contains(&x.path)));
+        out.entries.extend(
+            std::mem::take(&mut a.extras)
+                .into_iter()
+                .filter(|x| !walked.contains(&x.path)),
+        );
         unreadable.append(&mut a.unreadable);
     }
     unreadable.sort();
@@ -459,7 +523,11 @@ pub fn deep_check(root: &Path, normal: &[FEntry], budget: Duration) -> Vec<(Stri
     let have: HashSet<&str> = normal.iter().map(|e| e.path.as_str()).collect();
     let mut out: Vec<(String, String)> = Vec::new();
     let mut b = WalkBuilder::new(root);
-    b.standard_filters(false).hidden(false).follow_links(false).same_file_system(true).filter_entry(|e| !hard_excluded(e));
+    b.standard_filters(false)
+        .hidden(false)
+        .follow_links(false)
+        .same_file_system(true)
+        .filter_entry(|e| !hard_excluded(e));
     let mut seen = 0usize;
     for res in b.build() {
         seen += 1;
@@ -520,12 +588,36 @@ mod tests {
 
     #[test]
     fn name_rules() {
-        assert!(is_precious_name(".env") && is_precious_name(".env.local") && is_precious_name("a.SQLITE3") && is_precious_name("x.sql"));
+        assert!(
+            is_precious_name(".env")
+                && is_precious_name(".env.local")
+                && is_precious_name("a.SQLITE3")
+                && is_precious_name("x.sql")
+        );
         assert!(!is_precious_name("environment.ts") && !is_precious_name("db.rs"));
-        assert!(is_secret(".env") && is_secret("a/.env.production") && !is_secret(".env.example") && !is_secret("x/.env.sample"));
-        assert!(is_secret("k/server.pem") && is_secret("id_ed25519") && is_secret("a/.npmrc") && is_secret("terraform.tfstate.backup"));
-        assert!(is_secret("service-account-prod.json") && !is_secret("service.json") && is_secret("deep/.aws/config") && is_secret("h/.config/gcloud/x"));
-        assert!(is_secret(".docker/config.json") && !is_secret(".docker/other.json") && !is_secret("config/gcloud/x"));
+        assert!(
+            is_secret(".env")
+                && is_secret("a/.env.production")
+                && !is_secret(".env.example")
+                && !is_secret("x/.env.sample")
+        );
+        assert!(
+            is_secret("k/server.pem")
+                && is_secret("id_ed25519")
+                && is_secret("a/.npmrc")
+                && is_secret("terraform.tfstate.backup")
+        );
+        assert!(
+            is_secret("service-account-prod.json")
+                && !is_secret("service.json")
+                && is_secret("deep/.aws/config")
+                && is_secret("h/.config/gcloud/x")
+        );
+        assert!(
+            is_secret(".docker/config.json")
+                && !is_secret(".docker/other.json")
+                && !is_secret("config/gcloud/x")
+        );
         assert!(!is_secret("src/main.rs"));
     }
 
@@ -554,17 +646,45 @@ mod tests {
         w(r, "sub/.env.local", "S=2");
         let s = scan(r, 2, ENTRY_CAP).unwrap();
         let p = paths(&s);
-        for want in ["src", "src/a.ts", "target/debug/b", "rust/Cargo.toml", "tool/venv/lib/y.py", "app.db", ".gitignore", ".env", "sub/.env.local"] {
+        for want in [
+            "src",
+            "src/a.ts",
+            "target/debug/b",
+            "rust/Cargo.toml",
+            "tool/venv/lib/y.py",
+            "app.db",
+            ".gitignore",
+            ".env",
+            "sub/.env.local",
+        ] {
             assert!(p.contains(&want.to_string()), "missing {want}: {p:?}");
         }
-        for no in ["node_modules", ".git", "dist", "rust/target", ".venv", "app.db-wal", "notes.txt-journal", "data/other.txt", "x.log", "data/app.sqlite"] {
-            assert!(!p.iter().any(|x| x == no || x.starts_with(&format!("{no}/"))), "unexpected {no}: {p:?}");
+        for no in [
+            "node_modules",
+            ".git",
+            "dist",
+            "rust/target",
+            ".venv",
+            "app.db-wal",
+            "notes.txt-journal",
+            "data/other.txt",
+            "x.log",
+            "data/app.sqlite",
+        ] {
+            assert!(
+                !p.iter()
+                    .any(|x| x == no || x.starts_with(&format!("{no}/"))),
+                "unexpected {no}: {p:?}"
+            );
         }
         let env = s.entries.iter().find(|e| e.path == ".env").unwrap();
         assert!(env.precious && env.secret);
         // The deep check finds data/app.sqlite inside the ignored folder.
         let dc = deep_check(r, &s.entries, Duration::from_secs(1));
-        assert_eq!(dc, vec![("data/app.sqlite".to_string(), "data/".to_string())]);
+        assert_eq!(
+            dc,
+            vec![("data/app.sqlite".to_string(), "data/".to_string())]
+        );
     }
 
     #[test]
@@ -577,7 +697,11 @@ mod tests {
         std::fs::create_dir_all(r.join("empty")).unwrap();
         let s = scan(r, 1, ENTRY_CAP).unwrap();
         let p = paths(&s);
-        assert!(p.contains(&"empty".to_string()) && p.contains(&"keep/y".to_string()) && !p.iter().any(|x| x.starts_with("big")));
+        assert!(
+            p.contains(&"empty".to_string())
+                && p.contains(&"keep/y".to_string())
+                && !p.iter().any(|x| x.starts_with("big"))
+        );
         for i in 0..50 {
             w(r, &format!("many/f{i}"), "z");
         }
@@ -590,14 +714,33 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
         w(r, ".torporignore", "dev.db\n*.sql\n!keep.sql\n");
-        for f in [".env", "dev.db", "dump.sql", "keep.sql", "data/app.sqlite", "data/dump.sql", "sub/x.db"] {
+        for f in [
+            ".env",
+            "dev.db",
+            "dump.sql",
+            "keep.sql",
+            "data/app.sqlite",
+            "data/dump.sql",
+            "sub/x.db",
+        ] {
             w(r, f, "x");
         }
         w(r, "sub/.torporignore", "x.db\n");
         let p = paths(&scan(r, 1, ENTRY_CAP).unwrap());
-        assert!(p.contains(&".env".to_string()) && p.contains(&"data/app.sqlite".to_string()) && p.contains(&"keep.sql".to_string()));
-        assert!(!p.contains(&"dev.db".to_string()) && !p.contains(&"dump.sql".to_string()) && !p.contains(&"data/dump.sql".to_string()));
-        assert!(p.contains(&"sub/x.db".to_string()), "a nested .torporignore does not opt precious files out");
+        assert!(
+            p.contains(&".env".to_string())
+                && p.contains(&"data/app.sqlite".to_string())
+                && p.contains(&"keep.sql".to_string())
+        );
+        assert!(
+            !p.contains(&"dev.db".to_string())
+                && !p.contains(&"dump.sql".to_string())
+                && !p.contains(&"data/dump.sql".to_string())
+        );
+        assert!(
+            p.contains(&"sub/x.db".to_string()),
+            "a nested .torporignore does not opt precious files out"
+        );
     }
 
     #[test]
@@ -613,7 +756,11 @@ mod tests {
         };
         if names {
             std::fs::create_dir(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe"))).unwrap();
-            std::fs::write(r.join(std::ffi::OsStr::from_bytes(b"dir\xfe")).join("in"), "x").unwrap();
+            std::fs::write(
+                r.join(std::ffi::OsStr::from_bytes(b"dir\xfe")).join("in"),
+                "x",
+            )
+            .unwrap();
         }
         let fifo = std::ffi::CString::new(r.join("pipe").as_os_str().as_bytes()).unwrap();
         unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };

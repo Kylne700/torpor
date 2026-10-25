@@ -4,14 +4,14 @@
 use crate::scan::{self, EKind, FEntry};
 use crate::store::*;
 use crate::util::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const NORMAL_CAP: u64 = 2 << 20;
@@ -138,15 +138,20 @@ pub fn join(dir: &str, name: &str) -> String {
 }
 
 fn exec_mode(mode: u32) -> u32 {
-    if mode & 0o111 != 0 {
-        755
-    } else {
-        644
-    }
+    if mode & 0o111 != 0 { 755 } else { 644 }
 }
 
 pub fn x_leaf(path: &str, reason: &str, size: u64, mode: u32) -> Leaf {
-    Leaf { path: path.to_string(), e: TreeEntry { name: name_of(path).to_string(), kind: 'x', mode: exec_mode(mode), id: reason.to_string(), size } }
+    Leaf {
+        path: path.to_string(),
+        e: TreeEntry {
+            name: name_of(path).to_string(),
+            kind: 'x',
+            mode: exec_mode(mode),
+            id: reason.to_string(),
+            size,
+        },
+    }
 }
 
 // ---------------------------------------------------------------- mode (spec 5.10)
@@ -203,7 +208,9 @@ pub struct CacheRow {
 }
 
 fn load_cache(db: &Connection) -> Result<HashMap<String, CacheRow>> {
-    let mut st = db.prepare_cached("SELECT path,size,mtime_ns,ctime_ns,ino,mode,blob_id,kind,written_ns FROM stat_cache")?;
+    let mut st = db.prepare_cached(
+        "SELECT path,size,mtime_ns,ctime_ns,ino,mode,blob_id,kind,written_ns FROM stat_cache",
+    )?;
     let mut rows = st.query([])?;
     let mut m: HashMap<String, CacheRow> = HashMap::new();
     while let Some(r) = rows.next()? {
@@ -214,7 +221,16 @@ fn load_cache(db: &Connection) -> Result<HashMap<String, CacheRow>> {
         };
         m.insert(
             r.get(0)?,
-            CacheRow { size: r.get(1)?, mtime_ns: r.get(2)?, ctime_ns: r.get(3)?, ino: r.get(4)?, mode: r.get(5)?, blob_id, kind: r.get(7)?, written_ns: r.get(8)? },
+            CacheRow {
+                size: r.get(1)?,
+                mtime_ns: r.get(2)?,
+                ctime_ns: r.get(3)?,
+                ino: r.get(4)?,
+                mode: r.get(5)?,
+                blob_id,
+                kind: r.get(7)?,
+                written_ns: r.get(8)?,
+            },
         );
     }
     Ok(m)
@@ -250,8 +266,14 @@ impl StatSnap {
     fn of(md: &std::fs::Metadata) -> StatSnap {
         StatSnap {
             size: md.len(),
-            mtime_ns: md.mtime().saturating_mul(NS_PER_SEC).saturating_add(md.mtime_nsec()),
-            ctime_ns: md.ctime().saturating_mul(NS_PER_SEC).saturating_add(md.ctime_nsec()),
+            mtime_ns: md
+                .mtime()
+                .saturating_mul(NS_PER_SEC)
+                .saturating_add(md.mtime_nsec()),
+            ctime_ns: md
+                .ctime()
+                .saturating_mul(NS_PER_SEC)
+                .saturating_add(md.ctime_nsec()),
             ino: md.ino(),
             mode: md.mode() & 0o7777,
         }
@@ -262,7 +284,11 @@ impl StatSnap {
 }
 
 enum Out {
-    Blob { prep: Prepared, st: StatSnap, kind: char },
+    Blob {
+        prep: Prepared,
+        st: StatSnap,
+        kind: char,
+    },
     X(&'static str, u64),
     Gone,
 }
@@ -278,10 +304,18 @@ const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
 /// open + fstat + read + fstat. Non-blocking open so a FIFO swapped in under us cannot hang the hook.
 fn read_once(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, StatSnap, StatSnap, bool)> {
-    let mut f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
     let before = f.metadata()?;
     if !before.is_file() {
-        return Ok((Vec::new(), StatSnap::of(&before), StatSnap::of(&before), false));
+        return Ok((
+            Vec::new(),
+            StatSnap::of(&before),
+            StatSnap::of(&before),
+            false,
+        ));
     }
     let mut buf = Vec::with_capacity((before.len().min(cap + 1)) as usize);
     f.by_ref().take(cap + 1).read_to_end(&mut buf)?;
@@ -291,7 +325,9 @@ fn read_once(path: &Path, cap: u64) -> std::io::Result<(Vec<u8>, StatSnap, StatS
 
 fn db_is_busy(path: &Path) -> bool {
     let mut magic = [0u8; 16];
-    let ok = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok();
+    let ok = std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok();
     if !ok || &magic != SQLITE_MAGIC {
         return false;
     }
@@ -325,7 +361,17 @@ fn hash_one(ctx: &HashCtx, e: &FEntry) -> Out {
     if e.kind == EKind::Link {
         return match std::fs::read_link(&abs) {
             Ok(t) => match prepare_plain("link", t.as_os_str().as_bytes()) {
-                Ok(prep) => Out::Blob { prep, st: StatSnap { size: e.size, mtime_ns: e.mtime_ns, ctime_ns: e.ctime_ns, ino: e.ino, mode: e.mode }, kind: 'l' },
+                Ok(prep) => Out::Blob {
+                    prep,
+                    st: StatSnap {
+                        size: e.size,
+                        mtime_ns: e.mtime_ns,
+                        ctime_ns: e.ctime_ns,
+                        ino: e.ino,
+                        mode: e.mode,
+                    },
+                    kind: 'l',
+                },
                 Err(_) => Out::X("unreadable", e.size),
             },
             Err(x) if x.kind() == std::io::ErrorKind::NotFound => Out::Gone,
@@ -359,7 +405,11 @@ fn hash_one(ctx: &HashCtx, e: &FEntry) -> Out {
                 prepare_plain("file", &bytes)
             };
             return match made {
-                Ok(prep) => Out::Blob { prep, st: after, kind: if e.secret { 's' } else { 'f' } },
+                Ok(prep) => Out::Blob {
+                    prep,
+                    st: after,
+                    kind: if e.secret { 's' } else { 'f' },
+                },
                 Err(_) => Out::X("unreadable", size),
             };
         }
@@ -370,7 +420,13 @@ fn hash_one(ctx: &HashCtx, e: &FEntry) -> Out {
 /// Hash many files, in parallel when there are enough of them.
 fn hash_all(ctx: &HashCtx, entries: &[&FEntry]) -> Vec<Out> {
     let n = entries.len();
-    let threads = if n < 16 { 1 } else { std::thread::available_parallelism().map_or(2, |c| c.get()).clamp(1, 8) };
+    let threads = if n < 16 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map_or(2, |c| c.get())
+            .clamp(1, 8)
+    };
     if threads == 1 {
         return entries.iter().map(|e| hash_one(ctx, e)).collect();
     }
@@ -445,7 +501,12 @@ pub fn build_trees(leaves: Vec<Leaf>) -> Trees {
     }
     let mut order: Vec<String> = map.keys().cloned().collect();
     order.sort_by_key(|k| std::cmp::Reverse(depth(k)));
-    let mut out = Trees { dirs: HashMap::new(), ids: HashMap::new(), raw: HashMap::new(), root: [0; 32] };
+    let mut out = Trees {
+        dirs: HashMap::new(),
+        ids: HashMap::new(),
+        raw: HashMap::new(),
+        root: [0; 32],
+    };
     for k in order {
         let mut v = map.remove(&k).unwrap_or_default();
         v.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
@@ -453,7 +514,15 @@ pub fn build_trees(leaves: Vec<Leaf>) -> Trees {
         let raw = encode_tree(&v);
         let id = *blake3::hash(&raw).as_bytes();
         if !k.is_empty() {
-            map.entry(parent_of(&k).to_string()).or_default().push(TreeEntry { name: name_of(&k).to_string(), kind: 'd', mode: 755, id: hex(&id), size: 0 });
+            map.entry(parent_of(&k).to_string())
+                .or_default()
+                .push(TreeEntry {
+                    name: name_of(&k).to_string(),
+                    kind: 'd',
+                    mode: 755,
+                    id: hex(&id),
+                    size: 0,
+                });
         } else {
             out.root = id;
         }
@@ -464,7 +533,12 @@ pub fn build_trees(leaves: Vec<Leaf>) -> Trees {
     out
 }
 
-fn load_cached(ws: &Ws, db: &Connection, cache: &mut HashMap<[u8; 32], std::rc::Rc<Vec<TreeEntry>>>, id: &[u8; 32]) -> Result<std::rc::Rc<Vec<TreeEntry>>> {
+fn load_cached(
+    ws: &Ws,
+    db: &Connection,
+    cache: &mut HashMap<[u8; 32], std::rc::Rc<Vec<TreeEntry>>>,
+    id: &[u8; 32],
+) -> Result<std::rc::Rc<Vec<TreeEntry>>> {
     if let Some(t) = cache.get(id) {
         return Ok(t.clone());
     }
@@ -485,7 +559,15 @@ struct DiffOut {
     dirty: Vec<String>,
 }
 
-fn diff_dir(ws: &Ws, db: &Connection, tc: &mut TreeCache, old: Option<[u8; 32]>, dir: &str, new: &Trees, out: &mut DiffOut) -> Result<()> {
+fn diff_dir(
+    ws: &Ws,
+    db: &Connection,
+    tc: &mut TreeCache,
+    old: Option<[u8; 32]>,
+    dir: &str,
+    new: &Trees,
+    out: &mut DiffOut,
+) -> Result<()> {
     let new_id = new.ids.get(dir).copied().unwrap_or([0; 32]);
     if old == Some(new_id) {
         return Ok(());
@@ -523,7 +605,11 @@ fn diff_dir(ws: &Ws, db: &Connection, tc: &mut TreeCache, old: Option<[u8; 32]>,
                     (true, true) => diff_dir(ws, db, tc, unhex32(&o.id), &p, new, out)?,
                     (false, false) => {
                         if !entry_eq(o, n) {
-                            out.changes.push(RawChange { path: p, old: Some(o.clone()), new: Some(n.clone()) });
+                            out.changes.push(RawChange {
+                                path: p,
+                                old: Some(o.clone()),
+                                new: Some(n.clone()),
+                            });
                         }
                     }
                     _ => {
@@ -539,9 +625,20 @@ fn diff_dir(ws: &Ws, db: &Connection, tc: &mut TreeCache, old: Option<[u8; 32]>,
     Ok(())
 }
 
-fn removed(ws: &Ws, db: &Connection, tc: &mut TreeCache, path: &str, o: &TreeEntry, out: &mut DiffOut) -> Result<()> {
+fn removed(
+    ws: &Ws,
+    db: &Connection,
+    tc: &mut TreeCache,
+    path: &str,
+    o: &TreeEntry,
+    out: &mut DiffOut,
+) -> Result<()> {
     if o.kind != 'd' {
-        out.changes.push(RawChange { path: path.to_string(), old: Some(o.clone()), new: None });
+        out.changes.push(RawChange {
+            path: path.to_string(),
+            old: Some(o.clone()),
+            new: None,
+        });
         return Ok(());
     }
     if let Some(id) = unhex32(&o.id) {
@@ -553,9 +650,21 @@ fn removed(ws: &Ws, db: &Connection, tc: &mut TreeCache, path: &str, o: &TreeEnt
     Ok(())
 }
 
-fn added(ws: &Ws, db: &Connection, tc: &mut TreeCache, path: &str, n: &TreeEntry, new: &Trees, out: &mut DiffOut) -> Result<()> {
+fn added(
+    ws: &Ws,
+    db: &Connection,
+    tc: &mut TreeCache,
+    path: &str,
+    n: &TreeEntry,
+    new: &Trees,
+    out: &mut DiffOut,
+) -> Result<()> {
     if n.kind != 'd' {
-        out.changes.push(RawChange { path: path.to_string(), old: None, new: Some(n.clone()) });
+        out.changes.push(RawChange {
+            path: path.to_string(),
+            old: None,
+            new: Some(n.clone()),
+        });
         return Ok(());
     }
     diff_dir(ws, db, tc, None, path, new, out)
@@ -564,7 +673,13 @@ fn added(ws: &Ws, db: &Connection, tc: &mut TreeCache, path: &str, n: &TreeEntry
 /// Every entry of a stored tree as (path, entry), folders included as `d` entries.
 pub fn flatten_tree(ws: &Ws, db: &Connection, tree: &[u8; 32]) -> Result<Vec<(String, TreeEntry)>> {
     let mut out = Vec::new();
-    fn walk(ws: &Ws, db: &Connection, id: &[u8; 32], dir: &str, out: &mut Vec<(String, TreeEntry)>) -> Result<()> {
+    fn walk(
+        ws: &Ws,
+        db: &Connection,
+        id: &[u8; 32],
+        dir: &str,
+        out: &mut Vec<(String, TreeEntry)>,
+    ) -> Result<()> {
         for e in ws.load_tree(db, id)? {
             let p = join(dir, &e.name);
             if e.kind == 'd' {
@@ -583,12 +698,21 @@ pub fn flatten_tree(ws: &Ws, db: &Connection, tree: &[u8; 32]) -> Result<Vec<(St
 }
 
 /// The entry at `path` in a stored tree, if any.
-pub fn lookup_path(ws: &Ws, db: &Connection, tc: &mut TreeCache, tree: &[u8; 32], path: &str) -> Result<Option<TreeEntry>> {
+pub fn lookup_path(
+    ws: &Ws,
+    db: &Connection,
+    tc: &mut TreeCache,
+    tree: &[u8; 32],
+    path: &str,
+) -> Result<Option<TreeEntry>> {
     let mut cur = *tree;
     let parts: Vec<&str> = path.split('/').collect();
     for (i, part) in parts.iter().enumerate() {
         let t = load_cached(ws, db, tc, &cur)?;
-        let found = t.binary_search_by(|e| e.name.as_bytes().cmp(part.as_bytes())).ok().map(|ix| t[ix].clone());
+        let found = t
+            .binary_search_by(|e| e.name.as_bytes().cmp(part.as_bytes()))
+            .ok()
+            .map(|ix| t[ix].clone());
         match found {
             None => return Ok(None),
             Some(e) if i + 1 == parts.len() => return Ok(Some(e)),
@@ -603,11 +727,20 @@ pub fn lookup_path(ws: &Ws, db: &Connection, tc: &mut TreeCache, tree: &[u8; 32]
 }
 
 /// Of `paths`, those whose state (kind, content, mode) differs between two stored trees; absent in both counts as the same.
-pub fn differing_paths(ws: &Ws, db: &Connection, a: &[u8; 32], b: &[u8; 32], paths: &[String]) -> Result<Vec<String>> {
+pub fn differing_paths(
+    ws: &Ws,
+    db: &Connection,
+    a: &[u8; 32],
+    b: &[u8; 32],
+    paths: &[String],
+) -> Result<Vec<String>> {
     let mut tc: TreeCache = HashMap::new();
     let mut out = Vec::new();
     for p in paths {
-        let (x, y) = (lookup_path(ws, db, &mut tc, a, p)?, lookup_path(ws, db, &mut tc, b, p)?);
+        let (x, y) = (
+            lookup_path(ws, db, &mut tc, a, p)?,
+            lookup_path(ws, db, &mut tc, b, p)?,
+        );
         let same = match (&x, &y) {
             (None, None) => true,
             (Some(x), y) => same_state(x, y),
@@ -664,7 +797,11 @@ fn background_ids(db: &Connection) -> Result<Option<String>> {
     for (n, item) in arr.iter().enumerate().take(5) {
         let id = match item {
             serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Object(o) => ["id", "task_id", "taskId", "shell_id", "name"].iter().find_map(|k| o.get(*k).and_then(|x| x.as_str())).map(|s| s.to_string()).unwrap_or_else(|| n.to_string()),
+            serde_json::Value::Object(o) => ["id", "task_id", "taskId", "shell_id", "name"]
+                .iter()
+                .find_map(|k| o.get(*k).and_then(|x| x.as_str()))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| n.to_string()),
             _ => n.to_string(),
         };
         ids.push(trunc_chars(&id, 40));
@@ -684,8 +821,12 @@ fn detect_rewind(ws: &Ws, db: &Connection, unexplained: &[&RawChange]) -> Result
     if unexplained.is_empty() || unexplained.len() > 200 {
         return Ok(None);
     }
-    let mut st = db.prepare_cached("SELECT id,tree_id FROM points WHERE visible=1 AND dropped=0 ORDER BY id DESC LIMIT 200")?;
-    let pts: Vec<(i64, Vec<u8>)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+    let mut st = db.prepare_cached(
+        "SELECT id,tree_id FROM points WHERE visible=1 AND dropped=0 ORDER BY id DESC LIMIT 200",
+    )?;
+    let pts: Vec<(i64, Vec<u8>)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
     let mut tc: TreeCache = HashMap::new();
     'points: for (pid, t) in pts {
         let tid = match blob_id_from_vec(&t) {
@@ -708,7 +849,14 @@ fn detect_rewind(ws: &Ws, db: &Connection, unexplained: &[&RawChange]) -> Result
     Ok(None)
 }
 
-fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, wm: i64, raw: Vec<RawChange>) -> Result<(Vec<ChangeRow>, Option<String>)> {
+fn classify(
+    ws: &Ws,
+    db: &Connection,
+    req: &Req,
+    baseline_at: i64,
+    wm: i64,
+    raw: Vec<RawChange>,
+) -> Result<(Vec<ChangeRow>, Option<String>)> {
     let evs: Vec<Ev> = db
         .prepare_cached("SELECT session_id,turn_id,tool_use_id,tool_name,agent_id,paths_json FROM tool_events WHERE id>?1 ORDER BY id")?
         .query_map([wm], |r| {
@@ -744,9 +892,21 @@ fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, wm: i64, raw:
     let mut rows: Vec<ChangeRow> = Vec::with_capacity(raw.len());
     let mut unexplained: Vec<usize> = Vec::new();
     for c in raw {
-        let mut row = ChangeRow { path: c.path.clone(), old: c.old, new: c.new, class: "outside", turn_id: req.turn, tool_use_id: None, agent_id: None };
+        let mut row = ChangeRow {
+            path: c.path.clone(),
+            old: c.old,
+            new: c.new,
+            class: "outside",
+            turn_id: req.turn,
+            tool_use_id: None,
+            agent_id: None,
+        };
         if let Some(e) = named.get(c.path.as_str()) {
-            row.class = if e.agent.is_some() { "subagent" } else { "edit" };
+            row.class = if e.agent.is_some() {
+                "subagent"
+            } else {
+                "edit"
+            };
             row.turn_id = e.turn;
             row.tool_use_id = e.tuid.clone();
             row.agent_id = e.agent.clone();
@@ -760,11 +920,24 @@ fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, wm: i64, raw:
     }
     let mut note: Option<String> = None;
     let shared = overlap(db, req.session, baseline_at, now)?;
-    let transient_old = |r: &ChangeRow| r.old.as_ref().is_some_and(|o| o.kind == 'x' && TRANSIENT.contains(&o.id.as_str())) && r.new.as_ref().is_some_and(|n| n.kind != 'x');
+    let transient_old = |r: &ChangeRow| {
+        r.old
+            .as_ref()
+            .is_some_and(|o| o.kind == 'x' && TRANSIENT.contains(&o.id.as_str()))
+            && r.new.as_ref().is_some_and(|n| n.kind != 'x')
+    };
     // Gap-only judgments are made for all unexplained paths together.
     let mut gap_class: Option<&'static str> = None;
     if gap && !shared && bash_main.is_empty() && bash_sub.is_empty() {
-        let probe: Vec<RawChange> = unexplained.iter().filter(|&&i| !transient_old(&rows[i])).map(|&i| RawChange { path: rows[i].path.clone(), old: rows[i].old.clone(), new: rows[i].new.clone() }).collect();
+        let probe: Vec<RawChange> = unexplained
+            .iter()
+            .filter(|&&i| !transient_old(&rows[i]))
+            .map(|&i| RawChange {
+                path: rows[i].path.clone(),
+                old: rows[i].old.clone(),
+                new: rows[i].new.clone(),
+            })
+            .collect();
         let refs: Vec<&RawChange> = probe.iter().collect();
         if let Some(k) = detect_rewind(ws, db, &refs)? {
             gap_class = Some("rewind");
@@ -778,7 +951,11 @@ fn classify(ws: &Ws, db: &Connection, req: &Req, baseline_at: i64, wm: i64, raw:
         let mut s: Vec<&String> = v.iter().filter_map(|e| f(e)).collect();
         s.sort();
         s.dedup();
-        if s.len() == 1 { Some(s[0].clone()) } else { None }
+        if s.len() == 1 {
+            Some(s[0].clone())
+        } else {
+            None
+        }
     };
     for i in unexplained {
         let r = &mut rows[i];
@@ -835,9 +1012,20 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     let file_count = sc.file_count();
 
     // Key: loaded when a secret file exists; created at the first secret that must be stored.
-    let any_secret = sc.entries.iter().any(|e| e.secret && e.kind == EKind::File && e.reason.is_none());
-    let mut key: Option<Key> = if any_secret { Key::load().unwrap_or(None) } else { None };
-    let key_tag = |k: &Option<Key>| k.as_ref().map(|k| format!("s:{}", k.id)).unwrap_or_default();
+    let any_secret = sc
+        .entries
+        .iter()
+        .any(|e| e.secret && e.kind == EKind::File && e.reason.is_none());
+    let mut key: Option<Key> = if any_secret {
+        Key::load().unwrap_or(None)
+    } else {
+        None
+    };
+    let key_tag = |k: &Option<Key>| {
+        k.as_ref()
+            .map(|k| format!("s:{}", k.id))
+            .unwrap_or_default()
+    };
 
     enum Dec {
         Dir,
@@ -866,7 +1054,9 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                         ('f', "f")
                     };
                     match cache.get(&e.path) {
-                        Some(row) if !want.is_empty() && cache_trusted(row, e, want) => Dec::Cached(row.blob_id, c),
+                        Some(row) if !want.is_empty() && cache_trusted(row, e, want) => {
+                            Dec::Cached(row.blob_id, c)
+                        }
                         _ => {
                             if e.secret && e.kind == EKind::File {
                                 need_key = true;
@@ -890,9 +1080,20 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
         }
         tag = key_tag(&key);
     }
-    let jobs: Vec<&FEntry> = sc.entries.iter().zip(decs.iter()).filter(|(_, d)| matches!(d, Dec::Job)).map(|(e, _)| e).collect();
+    let jobs: Vec<&FEntry> = sc
+        .entries
+        .iter()
+        .zip(decs.iter())
+        .filter(|(_, d)| matches!(d, Dec::Job))
+        .map(|(e, _)| e)
+        .collect();
     let new_bytes = AtomicU64::new(0);
-    let hctx = HashCtx { root: &ws.root, key: key.as_ref(), deadline: req.budget.map(|b| Instant::now() + b), new_bytes: &new_bytes };
+    let hctx = HashCtx {
+        root: &ws.root,
+        key: key.as_ref(),
+        deadline: req.budget.map(|b| Instant::now() + b),
+        new_bytes: &new_bytes,
+    };
     let outs = hash_all(&hctx, &jobs);
     fault_point("capture");
     let mut outs = outs.into_iter();
@@ -905,11 +1106,26 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     for (e, d) in sc.entries.iter().zip(decs.iter()) {
         let name = e.name().to_string();
         match d {
-            Dec::Dir => leaves.push(Leaf { path: e.path.clone(), e: TreeEntry { name, kind: 'd', mode: 755, id: String::new(), size: 0 } }),
+            Dec::Dir => leaves.push(Leaf {
+                path: e.path.clone(),
+                e: TreeEntry {
+                    name,
+                    kind: 'd',
+                    mode: 755,
+                    id: String::new(),
+                    size: 0,
+                },
+            }),
             Dec::X(r) => leaves.push(x_leaf(&e.path, r, e.size, e.mode)),
             Dec::Cached(id, c) => leaves.push(Leaf {
                 path: e.path.clone(),
-                e: TreeEntry { name, kind: *c, mode: if *c == 'l' { 644 } else { exec_mode(e.mode) }, id: hex(id), size: e.size },
+                e: TreeEntry {
+                    name,
+                    kind: *c,
+                    mode: if *c == 'l' { 644 } else { exec_mode(e.mode) },
+                    id: hex(id),
+                    size: e.size,
+                },
             }),
             Dec::Job => match outs.next() {
                 Some(Out::Blob { prep, st, kind }) => {
@@ -920,11 +1136,26 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                     };
                     cache_rows.push((
                         e.path.clone(),
-                        CacheRow { size: st.size as i64, mtime_ns: st.mtime_ns, ctime_ns: st.ctime_ns, ino: st.ino as i64, mode: st.mode as i64, blob_id: prep.id, kind: row_kind, written_ns },
+                        CacheRow {
+                            size: st.size as i64,
+                            mtime_ns: st.mtime_ns,
+                            ctime_ns: st.ctime_ns,
+                            ino: st.ino as i64,
+                            mode: st.mode as i64,
+                            blob_id: prep.id,
+                            kind: row_kind,
+                            written_ns,
+                        },
                     ));
                     leaves.push(Leaf {
                         path: e.path.clone(),
-                        e: TreeEntry { name, kind, mode: if kind == 'l' { 644 } else { exec_mode(st.mode) }, id: hex(&prep.id), size: st.size },
+                        e: TreeEntry {
+                            name,
+                            kind,
+                            mode: if kind == 'l' { 644 } else { exec_mode(st.mode) },
+                            id: hex(&prep.id),
+                            size: st.size,
+                        },
                     });
                     prepared.push(prep);
                 }
@@ -932,7 +1163,11 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                     if r == "cap" {
                         capped = true;
                     }
-                    let r = if key_failed && e.secret && r == "unreadable" { "unreadable" } else { r };
+                    let r = if key_failed && e.secret && r == "unreadable" {
+                        "unreadable"
+                    } else {
+                        r
+                    };
                     leaves.push(x_leaf(&e.path, r, size, e.mode));
                 }
                 Some(Out::Gone) | None => {}
@@ -949,7 +1184,12 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                 if visited.contains(path.as_str()) {
                     continue;
                 }
-                let under = sc.unreadable.iter().any(|u| u.is_empty() || (path.len() > u.len() && path.starts_with(u.as_str()) && path.as_bytes()[u.len()] == b'/'));
+                let under = sc.unreadable.iter().any(|u| {
+                    u.is_empty()
+                        || (path.len() > u.len()
+                            && path.starts_with(u.as_str())
+                            && path.as_bytes()[u.len()] == b'/')
+                });
                 if sc.cap_hit || under {
                     leaves.push(Leaf { path, e });
                 }
@@ -957,20 +1197,45 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
         }
     }
     let partial = incomplete || capped;
-    let not_saved: Vec<(String, String, u64)> = leaves.iter().filter(|l| l.e.kind == 'x').map(|l| (l.path.clone(), l.e.id.clone(), l.e.size)).collect();
+    let not_saved: Vec<(String, String, u64)> = leaves
+        .iter()
+        .filter(|l| l.e.kind == 'x')
+        .map(|l| (l.path.clone(), l.e.id.clone(), l.e.size))
+        .collect();
 
     let trees = build_trees(leaves);
     let mut tc: TreeCache = HashMap::new();
-    let mut diff = DiffOut { changes: Vec::new(), dirty: Vec::new() };
-    diff_dir(ws, db, &mut tc, prev.as_ref().map(|p| p.tree_id), "", &trees, &mut diff)?;
+    let mut diff = DiffOut {
+        changes: Vec::new(),
+        dirty: Vec::new(),
+    };
+    diff_dir(
+        ws,
+        db,
+        &mut tc,
+        prev.as_ref().map(|p| p.tree_id),
+        "",
+        &trees,
+        &mut diff,
+    )?;
     let changed = prev.as_ref().is_none_or(|p| p.tree_id != trees.root);
 
     // Event consumption watermark moves at every full scan, even when no point is written.
     // The old value is what classification reads: it explains changes with the events since the last scan.
     let wm = meta_get_i64(db, "consumed_event_id").unwrap_or(0);
-    let max_ev: i64 = db.query_row("SELECT COALESCE(MAX(id),0) FROM tool_events", [], |r| r.get(0))?;
+    let max_ev: i64 = db.query_row("SELECT COALESCE(MAX(id),0) FROM tool_events", [], |r| {
+        r.get(0)
+    })?;
     let baseline_at = prev.as_ref().map_or(0, |p| p.created_at);
-    let mut out = Captured { tree_id: trees.root, changed, partial, not_saved: not_saved.len(), scan_ms: sc.elapsed_ms, file_count, ..Default::default() };
+    let mut out = Captured {
+        tree_id: trees.root,
+        changed,
+        partial,
+        not_saved: not_saved.len(),
+        scan_ms: sc.elapsed_ms,
+        file_count,
+        ..Default::default()
+    };
 
     let skip_point = req.only_if_changed && prev.is_some() && !changed;
     if !skip_point {
@@ -999,7 +1264,10 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     if !incomplete {
         // Forget cache rows of files that no longer exist.
         let present: HashSet<&str> = sc.entries.iter().map(|e| e.path.as_str()).collect();
-        let gone: Vec<&String> = cache.keys().filter(|k| !present.contains(k.as_str())).collect();
+        let gone: Vec<&String> = cache
+            .keys()
+            .filter(|k| !present.contains(k.as_str()))
+            .collect();
         if !gone.is_empty() {
             let mut del = db.prepare_cached("DELETE FROM stat_cache WHERE path=?1")?;
             for g in gone {
@@ -1020,11 +1288,22 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
     }
 
     let (mut rows, note) = match &prev {
-        Some(_) => classify(ws, db, req, baseline_at, wm, diff.changes.into_iter().collect())?,
+        Some(_) => classify(
+            ws,
+            db,
+            req,
+            baseline_at,
+            wm,
+            diff.changes.into_iter().collect(),
+        )?,
         None => (Vec::new(), None),
     };
     // What a restore changed is its own class: it is neither the AI's work nor the user's.
-    if req.points.first().is_some_and(|p| p.kind == PointKind::Restored) {
+    if req
+        .points
+        .first()
+        .is_some_and(|p| p.kind == PointKind::Restored)
+    {
         for r in &mut rows {
             r.class = "restore";
         }
@@ -1071,7 +1350,9 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
                 ])?;
             }
         }
-        let mut nc = db.prepare_cached("INSERT OR REPLACE INTO not_captured(point_id,path,reason,size) VALUES(?1,?2,?3,?4)")?;
+        let mut nc = db.prepare_cached(
+            "INSERT OR REPLACE INTO not_captured(point_id,path,reason,size) VALUES(?1,?2,?3,?4)",
+        )?;
         for (path, reason, size) in not_saved.iter().take(NOT_CAPTURED_ROWS_MAX) {
             nc.execute(params![pid, path, reason, *size as i64])?;
         }
@@ -1083,7 +1364,14 @@ pub fn capture(ws: &Ws, db: &Connection, req: &Req) -> Result<Captured> {
 fn prepare_plain_tree(raw: &[u8], id: [u8; 32]) -> Result<Prepared> {
     let stored = zstd::bulk::compress(raw, 3)?;
     let loose = stored.len() > INLINE_MAX;
-    Ok(Prepared { id, kind: "tree", size: raw.len() as u64, stored, key_id: None, loose })
+    Ok(Prepared {
+        id,
+        kind: "tree",
+        size: raw.len() as u64,
+        stored,
+        key_id: None,
+        loose,
+    })
 }
 
 // ---------------------------------------------------------------- named-path capture (PostToolUse edit family)
@@ -1109,7 +1397,11 @@ pub fn capture_named(ws: &Ws, db: &Connection, rels: &[String]) -> Result<usize>
         let name = name_of(rel);
         let e = FEntry {
             path: rel.clone(),
-            kind: if md.is_file() { EKind::File } else { EKind::Link },
+            kind: if md.is_file() {
+                EKind::File
+            } else {
+                EKind::Link
+            },
             size: st.size,
             mode: st.mode,
             mtime_ns: st.mtime_ns,
@@ -1125,18 +1417,35 @@ pub fn capture_named(ws: &Ws, db: &Connection, rels: &[String]) -> Result<usize>
         if e.secret && key.is_none() {
             key = Key::load_or_create().ok();
         }
-        let ctx = HashCtx { root: &ws.root, key: key.as_ref(), deadline: None, new_bytes: &new_bytes };
+        let ctx = HashCtx {
+            root: &ws.root,
+            key: key.as_ref(),
+            deadline: None,
+            new_bytes: &new_bytes,
+        };
         if let Out::Blob { prep, st, kind } = hash_one(&ctx, &e) {
             ws.insert_blob(db, &prep)?;
             let kind_tag = match kind {
                 'l' => "l".to_string(),
-                's' => key.as_ref().map(|k| format!("s:{}", k.id)).unwrap_or_default(),
+                's' => key
+                    .as_ref()
+                    .map(|k| format!("s:{}", k.id))
+                    .unwrap_or_default(),
                 _ => "f".to_string(),
             };
             upsert_cache(
                 db,
                 rel,
-                &CacheRow { size: st.size as i64, mtime_ns: st.mtime_ns, ctime_ns: st.ctime_ns, ino: st.ino as i64, mode: st.mode as i64, blob_id: prep.id, kind: kind_tag, written_ns: now_ns() },
+                &CacheRow {
+                    size: st.size as i64,
+                    mtime_ns: st.mtime_ns,
+                    ctime_ns: st.ctime_ns,
+                    ino: st.ino as i64,
+                    mode: st.mode as i64,
+                    blob_id: prep.id,
+                    kind: kind_tag,
+                    written_ns: now_ns(),
+                },
             )?;
             done += 1;
         }
@@ -1149,12 +1458,27 @@ mod tests {
     use super::*;
 
     fn leaf(path: &str, kind: char, id: &str) -> Leaf {
-        Leaf { path: path.into(), e: TreeEntry { name: name_of(path).into(), kind, mode: 644, id: id.into(), size: 1 } }
+        Leaf {
+            path: path.into(),
+            e: TreeEntry {
+                name: name_of(path).into(),
+                kind,
+                mode: 644,
+                id: id.into(),
+                size: 1,
+            },
+        }
     }
 
     #[test]
     fn trees_are_canonical_and_order_independent() {
-        let a = vec![leaf("a", 'd', ""), leaf("a/x", 'f', "11"), leaf("a-b", 'f', "22"), leaf("a/y/z", 'f', "33"), leaf("e", 'd', "")];
+        let a = vec![
+            leaf("a", 'd', ""),
+            leaf("a/x", 'f', "11"),
+            leaf("a-b", 'f', "22"),
+            leaf("a/y/z", 'f', "33"),
+            leaf("e", 'd', ""),
+        ];
         let mut b = a.clone();
         b.reverse();
         let (ta, tb) = (build_trees(a), build_trees(b));
@@ -1164,7 +1488,13 @@ mod tests {
         assert_eq!(names, ["a", "a-b", "e"]);
         assert!(ta.dirs.contains_key("a/y"));
         // changing one deep leaf changes the chain of ids up to the root only
-        let c = build_trees(vec![leaf("a", 'd', ""), leaf("a/x", 'f', "11"), leaf("a-b", 'f', "22"), leaf("a/y/z", 'f', "34"), leaf("e", 'd', "")]);
+        let c = build_trees(vec![
+            leaf("a", 'd', ""),
+            leaf("a/x", 'f', "11"),
+            leaf("a-b", 'f', "22"),
+            leaf("a/y/z", 'f', "34"),
+            leaf("e", 'd', ""),
+        ]);
         assert_ne!(ta.root, c.root);
         assert_eq!(ta.ids["e"], c.ids["e"]);
         assert_ne!(ta.ids["a/y"], c.ids["a/y"]);

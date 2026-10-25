@@ -21,8 +21,23 @@ pub fn record(ws: &Ws, spec: &Spec, tree: &[u8; 32]) -> Option<Vec<String>> {
     if cov_s.contains(['"', '\\']) || exit_s.contains(['"', '\\']) {
         return None;
     }
-    let env = vec![("NODE_V8_COVERAGE".to_string(), cov_s.to_string()), ("NODE_OPTIONS".to_string(), format!("--require \"{exit_s}\""))];
-    let r = scratch::run_once_with(ws, spec, tree, None, &Opts { env, ..Opts::default() });
+    let env = vec![
+        ("NODE_V8_COVERAGE".to_string(), cov_s.to_string()),
+        (
+            "NODE_OPTIONS".to_string(),
+            format!("--require \"{exit_s}\""),
+        ),
+    ];
+    let r = scratch::run_once_with(
+        ws,
+        spec,
+        tree,
+        None,
+        &Opts {
+            env,
+            ..Opts::default()
+        },
+    );
     if r.judged.verdict != Verdict::Pass {
         return None;
     }
@@ -37,14 +52,35 @@ fn from_coverage(cov: &Path, base: &Path) -> Option<Vec<String>> {
     for e in std::fs::read_dir(cov).ok()?.flatten() {
         let j: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
         for s in j.get("result")?.as_array()? {
-            let ran = s["functions"].as_array().is_some_and(|f| f.iter().any(|f| f["ranges"].as_array().is_some_and(|r| r.iter().any(|r| r["count"].as_i64().unwrap_or(0) > 0))));
-            if let Some(rel) = s["url"].as_str().and_then(|u| project_file(u, base)).filter(|_| ran) {
+            let ran = s["functions"].as_array().is_some_and(|f| {
+                f.iter().any(|f| {
+                    f["ranges"]
+                        .as_array()
+                        .is_some_and(|r| r.iter().any(|r| r["count"].as_i64().unwrap_or(0) > 0))
+                })
+            });
+            if let Some(rel) = s["url"]
+                .as_str()
+                .and_then(|u| project_file(u, base))
+                .filter(|_| ran)
+            {
                 found.insert(rel);
             }
         }
-        for (url, m) in j.get("source-map-cache").and_then(Value::as_object).into_iter().flatten() {
-            let Some(from) = project_file(url, base) else { continue };
-            let sources = m["data"]["sources"].as_array().into_iter().flatten().filter_map(Value::as_str);
+        for (url, m) in j
+            .get("source-map-cache")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let Some(from) = project_file(url, base) else {
+                continue;
+            };
+            let sources = m["data"]["sources"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
             found.extend(sources.filter_map(|src| beside(&from, src, base)));
         }
     }
@@ -128,10 +164,27 @@ mod tests {
         });
         std::fs::write(cov.join("coverage-1.json"), doc.to_string()).unwrap();
         let got = from_coverage(&cov, &base).unwrap();
-        assert_eq!(got, ["dist/util.ts", "lib/a b.js", "server.js", "src/app.ts", "src/z.ts"]);
+        assert_eq!(
+            got,
+            [
+                "dist/util.ts",
+                "lib/a b.js",
+                "server.js",
+                "src/app.ts",
+                "src/z.ts"
+            ]
+        );
         std::fs::write(cov.join("coverage-1.json"), "{\"result\": []}").unwrap();
-        assert_eq!(from_coverage(&cov, &base), None, "nothing seen is no record");
+        assert_eq!(
+            from_coverage(&cov, &base),
+            None,
+            "nothing seen is no record"
+        );
         std::fs::write(cov.join("coverage-1.json"), "not json").unwrap();
-        assert_eq!(from_coverage(&cov, &base), None, "a file that cannot be read is no record");
+        assert_eq!(
+            from_coverage(&cov, &base),
+            None,
+            "a file that cannot be read is no record"
+        );
     }
 }

@@ -34,14 +34,23 @@ fn exec(s: &Sim, rel: &str) -> bool {
 /// Twelve numbered lines with some of them replaced (1-based).
 fn lines_with(changes: &[(usize, &str)]) -> String {
     (1..=12)
-        .map(|i| changes.iter().find(|(n, _)| *n == i).map(|(_, t)| t.to_string()).unwrap_or(format!("l{i}")) + "\n")
+        .map(|i| {
+            changes
+                .iter()
+                .find(|(n, _)| *n == i)
+                .map(|(_, t)| t.to_string())
+                .unwrap_or(format!("l{i}"))
+                + "\n"
+        })
         .collect()
 }
 
 /// The save point named by "Done. To undo this: torpor back --id N".
 fn undo_id(o: &Out) -> String {
     let line = o.stdout.lines().last().unwrap_or("");
-    line.strip_prefix("Done. To undo this: torpor back --id ").unwrap_or_else(|| panic!("no undo hint in {:?}", o.stdout)).to_string()
+    line.strip_prefix("Done. To undo this: torpor back --id ")
+        .unwrap_or_else(|| panic!("no undo hint in {:?}", o.stdout))
+        .to_string()
 }
 
 fn start_point(s: &Sim, n: i64) -> i64 {
@@ -49,10 +58,23 @@ fn start_point(s: &Sim, n: i64) -> i64 {
 }
 
 /// A refused undo changes nothing: same folder, no new save point, no restore on record.
-fn assert_untouched(s: &Sim, before: &std::collections::BTreeMap<String, OEnt>, points: i64, restores: i64) {
+fn assert_untouched(
+    s: &Sim,
+    before: &std::collections::BTreeMap<String, OEnt>,
+    points: i64,
+    restores: i64,
+) {
     assert_eq!(&oracle(s.proj()), before, "a refused undo must not write");
-    assert_eq!(s.max_point(), points, "a refused undo must not leave a save point");
-    assert_eq!(s.q_i64("SELECT COUNT(*) FROM restores"), restores, "a refused undo must not leave a restore row");
+    assert_eq!(
+        s.max_point(),
+        points,
+        "a refused undo must not leave a save point"
+    );
+    assert_eq!(
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+        restores,
+        "a refused undo must not leave a restore row"
+    );
 }
 
 #[test]
@@ -72,15 +94,26 @@ fn clean_undo_takes_one_turn_out_and_undo_of_undo_comes_back() {
     let id = undo_id(&o);
     assert_eq!(
         o.stdout,
-        format!("Undoing turn 1 only. Later work stays.\n  a.txt: turn 1's changes removed\n  new.txt: removed (turn 1 created it)\nNo checks cover these files, so the result is untested.\nDone. To undo this: torpor back --id {id}\n")
+        format!(
+            "Undoing turn 1 only. Later work stays.\n  a.txt: turn 1's changes removed\n  new.txt: removed (turn 1 created it)\nNo checks cover these files, so the result is untested.\nDone. To undo this: torpor back --id {id}\n"
+        )
     );
     assert_eq!(read(&s, "a.txt"), "A1\n");
     assert_eq!(read(&s, "b.txt"), "B2\n", "turn 2 stays");
     assert!(absent(&s, "new.txt"));
     s.verify_last_point();
     let ch = s.changes_since(mark);
-    assert_eq!(ch.iter().map(|(p, c)| format!("{p}:{c}")).collect::<Vec<_>>(), ["a.txt:restore", "new.txt:restore"]);
-    assert_eq!(s.q_i64("SELECT COUNT(*) FROM turns"), 2, "an undo is not a turn");
+    assert_eq!(
+        ch.iter()
+            .map(|(p, c)| format!("{p}:{c}"))
+            .collect::<Vec<_>>(),
+        ["a.txt:restore", "new.txt:restore"]
+    );
+    assert_eq!(
+        s.q_i64("SELECT COUNT(*) FROM turns"),
+        2,
+        "an undo is not a turn"
+    );
     assert_store_sound(&s.env);
     // Undo of the undo.
     let b = s.cli(&["back", "--id", &id]);
@@ -96,11 +129,19 @@ fn undo_merges_changes_on_different_lines() {
         s.edit("f.txt", &lines_with(&[(2, "turn one two")]));
     });
     turn(&mut s, |s| {
-        s.edit("f.txt", &lines_with(&[(2, "turn one two"), (9, "turn two nine")]));
+        s.edit(
+            "f.txt",
+            &lines_with(&[(2, "turn one two"), (9, "turn two nine")]),
+        );
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("  f.txt: turn 1's changes removed, turn 2's kept\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("  f.txt: turn 1's changes removed, turn 2's kept\n"),
+        "{}",
+        o.stdout
+    );
     assert_eq!(read(&s, "f.txt"), lines_with(&[(9, "turn two nine")]));
     s.verify_last_point();
 }
@@ -112,13 +153,21 @@ fn undo_merge_with_an_outside_edit_on_other_lines() {
         s.edit("f.txt", &lines_with(&[(2, "turn one two")]));
     });
     // Someone else edits line 10 between the turns; the next start point records it as an outside change.
-    s.outside_edit("f.txt", &lines_with(&[(2, "turn one two"), (10, "typed by hand")]));
+    s.outside_edit(
+        "f.txt",
+        &lines_with(&[(2, "turn one two"), (10, "typed by hand")]),
+    );
     turn(&mut s, |s| {
         s.edit("g.txt", "g\n");
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("  f.txt: turn 1's changes removed, the later changes kept\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("  f.txt: turn 1's changes removed, the later changes kept\n"),
+        "{}",
+        o.stdout
+    );
     assert_eq!(read(&s, "f.txt"), lines_with(&[(10, "typed by hand")]));
 }
 
@@ -132,13 +181,19 @@ fn same_line_conflict_writes_nothing() {
     turn(&mut s, |s| {
         s.edit("f.txt", &lines_with(&[(3, "turn two three")]));
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
     let first = start_point(&s, 1);
     assert_eq!(
         o.stdout,
-        format!("Can't undo turn 1 cleanly, so nothing was changed.\n  f.txt: turn 2 changed the same lines\nInstead: torpor back --id {first} (also drops turn 2), or ask the AI to undo it by hand.\n")
+        format!(
+            "Can't undo turn 1 cleanly, so nothing was changed.\n  f.txt: turn 2 changed the same lines\nInstead: torpor back --id {first} (also drops turn 2), or ask the AI to undo it by hand.\n"
+        )
     );
     assert_untouched(&s, &before, points, restores);
     assert_eq!(read(&s, "g.txt"), "g2\n");
@@ -163,7 +218,11 @@ fn conflict_names_the_turns_and_suggests_going_back_to_the_turn_before() {
     turn(&mut s, |s| {
         s.edit("f.txt", &lines_with(&[(5, "turn four five")]));
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "2"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
     assert_eq!(
@@ -197,10 +256,19 @@ fn a_created_file_is_removed_only_when_nobody_changed_it_since() {
     turn(&mut s, |s| {
         s.edit("c2.txt", "two, edited\n");
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("\n  c2.txt: turn 1 created it, then it changed (turn 2)\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("\n  c2.txt: turn 1 created it, then it changed (turn 2)\n"),
+        "{}",
+        o.stdout
+    );
     assert!(!o.stdout.contains("c1.txt"), "{}", o.stdout);
     assert_untouched(&s, &before, points, restores);
     assert!(s.path("c1.txt").exists());
@@ -210,33 +278,56 @@ fn a_created_file_is_removed_only_when_nobody_changed_it_since() {
 fn folders_made_by_the_turn_go_when_they_end_up_empty() {
     let mut s = start(&[("x.txt", "x\n")]);
     turn(&mut s, |s| {
-        assert_eq!(s.bash("mkdir -p new/a/b && echo one > new/a/b/c.txt && echo two > new/f.txt"), 0);
+        assert_eq!(
+            s.bash("mkdir -p new/a/b && echo one > new/a/b/c.txt && echo two > new/f.txt"),
+            0
+        );
     });
     turn(&mut s, |s| {
         s.write_tool("new/keep.txt", "later\n");
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(absent(&s, "new/a") && absent(&s, "new/f.txt"), "{}", o.stdout);
-    assert_eq!(read(&s, "new/keep.txt"), "later\n", "a file from a later turn keeps its folder");
+    assert!(
+        absent(&s, "new/a") && absent(&s, "new/f.txt"),
+        "{}",
+        o.stdout
+    );
+    assert_eq!(
+        read(&s, "new/keep.txt"),
+        "later\n",
+        "a file from a later turn keeps its folder"
+    );
     s.verify_last_point();
 
     let mut s = start(&[("x.txt", "x\n")]);
     turn(&mut s, |s| {
-        assert_eq!(s.bash("mkdir -p new/a/b && echo one > new/a/b/c.txt && echo two > new/f.txt"), 0);
+        assert_eq!(
+            s.bash("mkdir -p new/a/b && echo one > new/a/b/c.txt && echo two > new/f.txt"),
+            0
+        );
     });
     turn(&mut s, |s| {
         s.edit("x.txt", "x2\n");
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(absent(&s, "new"), "the whole new folder is gone: {}", o.stdout);
+    assert!(
+        absent(&s, "new"),
+        "the whole new folder is gone: {}",
+        o.stdout
+    );
     s.verify_last_point();
 }
 
 #[test]
 fn a_deleted_file_or_tree_comes_back() {
-    let mut s = start(&[("old.txt", "old\n"), ("src/main.rs", "m\n"), ("src/deep/x.rs", "x\n"), ("src/deep/y.rs", "y\n")]);
+    let mut s = start(&[
+        ("old.txt", "old\n"),
+        ("src/main.rs", "m\n"),
+        ("src/deep/x.rs", "x\n"),
+        ("src/deep/y.rs", "y\n"),
+    ]);
     turn(&mut s, |s| {
         assert_eq!(s.bash("rm -f old.txt && rm -rf src/deep"), 0);
     });
@@ -245,10 +336,21 @@ fn a_deleted_file_or_tree_comes_back() {
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    for f in ["  old.txt: brought back (turn 1 deleted it)\n", "  src/deep/x.rs: brought back (turn 1 deleted it)\n", "  src/deep/y.rs: brought back (turn 1 deleted it)\n"] {
+    for f in [
+        "  old.txt: brought back (turn 1 deleted it)\n",
+        "  src/deep/x.rs: brought back (turn 1 deleted it)\n",
+        "  src/deep/y.rs: brought back (turn 1 deleted it)\n",
+    ] {
         assert!(o.stdout.contains(f), "{f:?} missing in {}", o.stdout);
     }
-    assert_eq!((read(&s, "old.txt"), read(&s, "src/deep/x.rs"), read(&s, "src/deep/y.rs")), ("old\n".into(), "x\n".into(), "y\n".into()));
+    assert_eq!(
+        (
+            read(&s, "old.txt"),
+            read(&s, "src/deep/x.rs"),
+            read(&s, "src/deep/y.rs")
+        ),
+        ("old\n".into(), "x\n".into(), "y\n".into())
+    );
     assert_eq!(read(&s, "src/main.rs"), "m2\n");
     s.verify_last_point();
 }
@@ -284,7 +386,11 @@ fn binary_files_are_whole_file_or_nothing() {
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert_eq!(fs::read(s.path("data.bin")).unwrap(), [0u8, 9, 9, 9], "the whole old file is back");
+    assert_eq!(
+        fs::read(s.path("data.bin")).unwrap(),
+        [0u8, 9, 9, 9],
+        "the whole old file is back"
+    );
     s.verify_last_point();
 
     // Changed again later: Torpor does not try to merge bytes.
@@ -296,10 +402,19 @@ fn binary_files_are_whole_file_or_nothing() {
     turn(&mut s, |s| {
         assert_eq!(s.bash(&put(2)), 0);
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("\n  data.bin: it is not plain text and it changed after turn 1 (turn 2)\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("\n  data.bin: it is not plain text and it changed after turn 1 (turn 2)\n"),
+        "{}",
+        o.stdout
+    );
     assert_untouched(&s, &before, points, restores);
 }
 
@@ -316,7 +431,12 @@ fn the_exec_bit_goes_back_unless_someone_changed_it_since() {
     assert!(exec(&s, "run.sh"));
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("  run.sh: turn 1's permission change removed\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("  run.sh: turn 1's permission change removed\n"),
+        "{}",
+        o.stdout
+    );
     assert!(!exec(&s, "run.sh"));
     s.verify_last_point();
 
@@ -342,7 +462,13 @@ fn the_exec_bit_goes_back_unless_someone_changed_it_since() {
         assert_eq!(s.bash("chmod -x run.sh"), 0);
     });
     let o = s.cli(&["undo", "1"]);
-    assert_eq!((o.code, o.stdout.contains("Nothing needed changing.")), (0, true), "{}{}", o.stdout, o.stderr);
+    assert_eq!(
+        (o.code, o.stdout.contains("Nothing needed changing.")),
+        (0, true),
+        "{}{}",
+        o.stdout,
+        o.stderr
+    );
 
     // Content and permission in the same turn, nothing after it: both come back.
     let mut s = start(&[("run.sh", "echo hi\n"), ("z.txt", "z\n")]);
@@ -364,17 +490,29 @@ fn links_and_kind_changes_come_back() {
     let mut s = start(&[("a.txt", "A\n"), ("b.txt", "B\n"), ("z.txt", "z\n")]);
     std::os::unix::fs::symlink("a.txt", s.path("link")).unwrap();
     turn(&mut s, |s| {
-        assert_eq!(s.bash("ln -sfn b.txt link && ln -s a.txt link2 && rm b.txt && ln -s a.txt b.txt"), 0);
+        assert_eq!(
+            s.bash("ln -sfn b.txt link && ln -s a.txt link2 && rm b.txt && ln -s a.txt b.txt"),
+            0
+        );
     });
     turn(&mut s, |s| {
         s.edit("z.txt", "z2\n");
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert_eq!(fs::read_link(s.path("link")).unwrap().to_str(), Some("a.txt"));
+    assert_eq!(
+        fs::read_link(s.path("link")).unwrap().to_str(),
+        Some("a.txt")
+    );
     assert!(absent(&s, "link2"));
     assert_eq!(read(&s, "b.txt"), "B\n");
-    assert!(fs::symlink_metadata(s.path("b.txt")).unwrap().file_type().is_file(), "b.txt is a plain file again");
+    assert!(
+        fs::symlink_metadata(s.path("b.txt"))
+            .unwrap()
+            .file_type()
+            .is_file(),
+        "b.txt is a plain file again"
+    );
     s.verify_last_point();
 }
 
@@ -390,7 +528,10 @@ fn secret_files_come_back_but_are_never_merged() {
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     assert_eq!(read(&s, ".env"), "TOKEN=one\n");
-    assert_eq!(fs::metadata(s.path(".env")).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        fs::metadata(s.path(".env")).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     assert!(!o.stdout.contains("TOKEN"), "{}", o.stdout);
     s.verify_last_point();
 
@@ -401,10 +542,19 @@ fn secret_files_come_back_but_are_never_merged() {
     turn(&mut s, |s| {
         s.edit(".env", "TOKEN=three\n");
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("\n  .env: it is not plain text and it changed after turn 1 (turn 2)\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("\n  .env: it is not plain text and it changed after turn 1 (turn 2)\n"),
+        "{}",
+        o.stdout
+    );
     assert!(!o.stdout.contains("TOKEN"), "{}", o.stdout);
     assert_untouched(&s, &before, points, restores);
 }
@@ -419,10 +569,20 @@ fn a_change_made_outside_the_chat_on_the_same_lines_is_a_conflict() {
     turn(&mut s, |s| {
         s.edit("g.txt", "g\n");
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("\n  f.txt: it was also changed outside the chat, on the same lines as turn 1\n"), "{}", o.stdout);
+    assert!(
+        o.stdout.contains(
+            "\n  f.txt: it was also changed outside the chat, on the same lines as turn 1\n"
+        ),
+        "{}",
+        o.stdout
+    );
     assert_untouched(&s, &before, points, restores);
 }
 
@@ -435,10 +595,19 @@ fn a_file_changed_and_then_deleted_is_a_conflict() {
     turn(&mut s, |s| {
         assert_eq!(s.bash("rm f.txt"), 0);
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("\n  f.txt: turn 1 changed it, then it was deleted (turn 2)\n"), "{}", o.stdout);
+    assert!(
+        o.stdout
+            .contains("\n  f.txt: turn 1 changed it, then it was deleted (turn 2)\n"),
+        "{}",
+        o.stdout
+    );
     assert_untouched(&s, &before, points, restores);
 }
 
@@ -459,7 +628,15 @@ fn many_conflicts_are_listed_ten_at_a_time() {
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 3, "{}{}", o.stdout, o.stderr);
-    assert_eq!(o.stdout.lines().filter(|l| l.contains("turn 2 changed the same lines")).count(), 10, "{}", o.stdout);
+    assert_eq!(
+        o.stdout
+            .lines()
+            .filter(|l| l.contains("turn 2 changed the same lines"))
+            .count(),
+        10,
+        "{}",
+        o.stdout
+    );
     assert!(o.stdout.contains("\n  and 3 more\n"), "{}", o.stdout);
 }
 
@@ -473,7 +650,11 @@ fn dry_run_reports_and_changes_nothing() {
     turn(&mut s, |s| {
         s.edit("b.txt", "B2\n");
     });
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "1", "--dry-run"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     assert_eq!(
@@ -486,7 +667,10 @@ fn dry_run_reports_and_changes_nothing() {
     assert_eq!(o.code, 0);
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert_eq!((read(&s, "a.txt"), absent(&s, "new.txt")), ("A1\n".to_string(), true));
+    assert_eq!(
+        (read(&s, "a.txt"), absent(&s, "new.txt")),
+        ("A1\n".to_string(), true)
+    );
 }
 
 #[test]
@@ -496,17 +680,37 @@ fn turns_that_cannot_be_undone_say_why() {
         s.edit("a.txt", "A2\n");
     });
     turn(&mut s, |_| {});
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "2"]);
-    assert_eq!((o.code, o.stdout.as_str()), (0, "Turn 2 changed no files, so there is nothing to undo.\n"));
+    assert_eq!(
+        (o.code, o.stdout.as_str()),
+        (0, "Turn 2 changed no files, so there is nothing to undo.\n")
+    );
     let o = s.cli(&["undo", "99"]);
-    assert_eq!((o.code, o.stdout.as_str(), o.stderr.as_str()), (5, "There is no turn 99.\n", ""));
+    assert_eq!(
+        (o.code, o.stdout.as_str(), o.stderr.as_str()),
+        (5, "There is no turn 99.\n", "")
+    );
     assert_untouched(&s, &before, points, restores);
     // A turn that is still running.
     s.prompt("not finished");
-    let (before, points, restores) = (oracle(s.proj()), s.max_point(), s.q_i64("SELECT COUNT(*) FROM restores"));
+    let (before, points, restores) = (
+        oracle(s.proj()),
+        s.max_point(),
+        s.q_i64("SELECT COUNT(*) FROM restores"),
+    );
     let o = s.cli(&["undo", "3"]);
-    assert_eq!((o.code, o.stdout.as_str()), (3, "Turn 3 is still running. Wait until it ends, then undo it.\n"));
+    assert_eq!(
+        (o.code, o.stdout.as_str()),
+        (
+            3,
+            "Turn 3 is still running. Wait until it ends, then undo it.\n"
+        )
+    );
     assert_untouched(&s, &before, points, restores);
     assert!(s.path("a.txt").exists());
 }
@@ -517,9 +721,20 @@ fn bad_arguments_are_a_usage_error() {
     turn(&mut s, |s| {
         s.edit("a.txt", "A2\n");
     });
-    for args in [&["undo"][..], &["undo", "0"], &["undo", "-1"], &["undo", "abc"], &["undo", "1", "2"], &["undo", "1", "--forced"]] {
+    for args in [
+        &["undo"][..],
+        &["undo", "0"],
+        &["undo", "-1"],
+        &["undo", "abc"],
+        &["undo", "1", "2"],
+        &["undo", "1", "--forced"],
+    ] {
         let o = s.cli(args);
-        assert_eq!((o.code, o.stdout.as_str(), o.stderr.as_str()), (2, "", "Usage: torpor undo K [--dry-run] [--force]\n"), "{args:?}");
+        assert_eq!(
+            (o.code, o.stdout.as_str(), o.stderr.as_str()),
+            (2, "", "Usage: torpor undo K [--dry-run] [--force]\n"),
+            "{args:?}"
+        );
     }
     assert_eq!(read(&s, "a.txt"), "A2\n");
 }
@@ -535,7 +750,14 @@ fn databases_are_not_rewound_by_undo() {
     });
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains(&format!("Not touched: app.db ({})", torpor::restore::DB_NOTE)), "{}", o.stdout);
+    assert!(
+        o.stdout.contains(&format!(
+            "Not touched: app.db ({})",
+            torpor::restore::DB_NOTE
+        )),
+        "{}",
+        o.stdout
+    );
     assert_eq!(read(&s, "app.db"), "version two\n");
 }
 
@@ -554,10 +776,20 @@ fn claude_code_settings_files_are_never_touched_by_undo_and_never_make_it_refuse
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     let note = "it is a Claude Code settings file, which Torpor never changes";
-    assert!(o.stdout.contains(&format!("Not touched: .claude/settings.json ({note}), .claude/settings.local.json ({note}).")), "{}", o.stdout);
+    assert!(
+        o.stdout.contains(&format!(
+            "Not touched: .claude/settings.json ({note}), .claude/settings.local.json ({note})."
+        )),
+        "{}",
+        o.stdout
+    );
     assert_eq!(read(&s, "a.txt"), "A1\n", "the other file was undone");
     assert_eq!(read(&s, ".claude/settings.json"), "{\"v\":3}\n");
-    assert_eq!(read(&s, ".claude/settings.local.json"), "{\"l\":1}\n", "turn 1 created it, and undo still leaves it");
+    assert_eq!(
+        read(&s, ".claude/settings.local.json"),
+        "{\"l\":1}\n",
+        "turn 1 created it, and undo still leaves it"
+    );
 }
 
 #[test]
@@ -572,10 +804,17 @@ fn undoing_an_older_turn_after_a_newer_undo_still_works() {
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
     let o = s.cli(&["undo", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert_eq!((read(&s, "a.txt"), read(&s, "b.txt"), read(&s, "c.txt")), ("A\n".into(), "B1\n".into(), "C\n".into()));
+    assert_eq!(
+        (read(&s, "a.txt"), read(&s, "b.txt"), read(&s, "c.txt")),
+        ("A\n".into(), "B1\n".into(), "C\n".into())
+    );
     // Undoing turn 3 again finds nothing left to take out.
     let o = s.cli(&["undo", "3"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
-    assert!(o.stdout.contains("Nothing needed changing."), "{}", o.stdout);
+    assert!(
+        o.stdout.contains("Nothing needed changing."),
+        "{}",
+        o.stdout
+    );
     assert_store_sound(&s.env);
 }

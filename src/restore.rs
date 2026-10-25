@@ -2,12 +2,12 @@
 //! A restore is a journaled plan. After any crash the folder is exactly as before or exactly as planned, never a mix:
 //! nothing outside the stage folder changes before the journal exists, and `recover` rolls the journal forward.
 //! `merge.rs` builds the plan of an undo; planning, staging, applying and finishing are shared.
-use crate::capture::{self, join, PointKind, PointSpec, Req};
+use crate::capture::{self, PointKind, PointSpec, Req, join};
 use crate::scan;
 use crate::store::*;
 use crate::util::*;
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
-use serde_json::{json, Value};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 const SPARE_BYTES: u64 = 256 << 20;
 const STALE_TMP_NS: i64 = 3600 * NS_PER_SEC;
 pub const LOCK_WAIT_MS: u64 = 5000;
-pub const DB_NOTE: &str = "database content is not rewound; if the schema changed, run your migrations";
+pub const DB_NOTE: &str =
+    "database content is not rewound; if the schema changed, run your migrations";
 pub const CLAUDE_NOTE: &str = "it is a Claude Code settings file, which Torpor never changes";
 
 /// The project's own Claude Code settings (spec 30: never write a Claude Code file). Case-insensitive like the `.git` check,
@@ -38,7 +39,10 @@ pub struct Outcome {
 
 impl Outcome {
     pub fn new(code: i32, text: impl Into<String>) -> Outcome {
-        Outcome { code, text: text.into() }
+        Outcome {
+            code,
+            text: text.into(),
+        }
     }
 }
 
@@ -84,7 +88,17 @@ impl Act {
         }
     }
     fn parse(s: &str) -> Option<Act> {
-        [Act::Create, Act::Overwrite, Act::Delete, Act::Mkdir, Act::RmdirIfEmpty, Act::Symlink, Act::Chmod].into_iter().find(|a| a.as_str() == s)
+        [
+            Act::Create,
+            Act::Overwrite,
+            Act::Delete,
+            Act::Mkdir,
+            Act::RmdirIfEmpty,
+            Act::Symlink,
+            Act::Chmod,
+        ]
+        .into_iter()
+        .find(|a| a.as_str() == s)
     }
     fn writes(self) -> bool {
         matches!(self, Act::Create | Act::Overwrite | Act::Symlink)
@@ -111,7 +125,17 @@ pub struct Entry {
 
 impl Entry {
     pub fn bare(path: String, act: Act, old: &str, new: &str) -> Entry {
-        Entry { n: 0, path, act, old: old.to_string(), new: new.to_string(), kind: 'd', perm: 0, blob: None, size: 0 }
+        Entry {
+            n: 0,
+            path,
+            act,
+            old: old.to_string(),
+            new: new.to_string(),
+            kind: 'd',
+            perm: 0,
+            blob: None,
+            size: 0,
+        }
     }
 }
 
@@ -133,7 +157,15 @@ pub struct Plan {
 
 impl Plan {
     /// Order the entries (deletes deepest first, folders to remove, folders to make shallowest first, writes, chmods) and number them.
-    pub fn finish(del: Vec<Entry>, rmd: Vec<Entry>, mkd: Vec<Entry>, cre: Vec<Entry>, chm: Vec<Entry>, skips: Vec<Skip>, refuse: Option<String>) -> Plan {
+    pub fn finish(
+        del: Vec<Entry>,
+        rmd: Vec<Entry>,
+        mkd: Vec<Entry>,
+        cre: Vec<Entry>,
+        chm: Vec<Entry>,
+        skips: Vec<Skip>,
+        refuse: Option<String>,
+    ) -> Plan {
         fn depth(e: &Entry) -> usize {
             e.path.matches('/').count()
         }
@@ -144,7 +176,11 @@ impl Plan {
         for l in [&mut del, &mut rmd, &mut mkd, &mut cre, &mut chm] {
             for e in l.extract_if(.., |e| is_claude_settings(&e.path)) {
                 if !skips.iter().any(|s| s.path == e.path) {
-                    skips.push(Skip { path: e.path, why: CLAUDE_NOTE.to_string(), bad: false });
+                    skips.push(Skip {
+                        path: e.path,
+                        why: CLAUDE_NOTE.to_string(),
+                        bad: false,
+                    });
                 }
             }
         }
@@ -154,11 +190,21 @@ impl Plan {
         mkd.sort_by(|a, b| depth(a).cmp(&depth(b)).then_with(|| a.path.cmp(&b.path)));
         cre.sort_by(|a, b| a.path.cmp(&b.path));
         chm.sort_by(|a, b| a.path.cmp(&b.path));
-        let mut entries: Vec<Entry> = del.into_iter().chain(rmd).chain(mkd).chain(cre).chain(chm).collect();
+        let mut entries: Vec<Entry> = del
+            .into_iter()
+            .chain(rmd)
+            .chain(mkd)
+            .chain(cre)
+            .chain(chm)
+            .collect();
         for (i, e) in entries.iter_mut().enumerate() {
             e.n = i + 1;
         }
-        Plan { entries, skips, refuse }
+        Plan {
+            entries,
+            skips,
+            refuse,
+        }
     }
 }
 
@@ -185,14 +231,19 @@ pub fn live_state(root: &Path, rel: &str, key: Option<&Key>) -> String {
     }
     if ft.is_symlink() {
         return match fs::read_link(&p) {
-            Ok(t) => format!("l644:{}", hex(blake3::hash(t.as_os_str().as_bytes()).as_bytes())),
+            Ok(t) => format!(
+                "l644:{}",
+                hex(blake3::hash(t.as_os_str().as_bytes()).as_bytes())
+            ),
             Err(_) => "?".into(),
         };
     }
     if !ft.is_file() || md.len() > capture::PRECIOUS_CAP {
         return "?".into();
     }
-    let Ok(bytes) = fs::read(&p) else { return "?".into() };
+    let Ok(bytes) = fs::read(&p) else {
+        return "?".into();
+    };
     let exec = if md.mode() & 0o111 != 0 { 755 } else { 644 };
     if scan::is_secret(rel) {
         match key {
@@ -216,13 +267,19 @@ pub fn perm_for(kind: char, exec: bool, live: Option<u32>) -> u32 {
             if exec { b | ((b & 0o444) >> 2) } else { b }
         }
         None => {
-            if exec { 0o755 } else { 0o644 }
+            if exec {
+                0o755
+            } else {
+                0o644
+            }
         }
     }
 }
 
 pub fn live_perm(root: &Path, rel: &str) -> Option<u32> {
-    fs::symlink_metadata(root.join(rel)).ok().map(|m| m.mode() & 0o7777)
+    fs::symlink_metadata(root.join(rel))
+        .ok()
+        .map(|m| m.mode() & 0o7777)
 }
 
 pub(crate) fn not_saved_why(reason: &str) -> &'static str {
@@ -240,7 +297,11 @@ pub(crate) fn not_saved_why(reason: &str) -> &'static str {
 
 pub(crate) fn not_saved_text(reason: &str, live_side: bool) -> String {
     let why = not_saved_why(reason);
-    if live_side { format!("left alone, {why}") } else { format!("nothing to bring back, {why}") }
+    if live_side {
+        format!("left alone, {why}")
+    } else {
+        format!("nothing to bring back, {why}")
+    }
 }
 
 struct Planner<'a> {
@@ -259,13 +320,21 @@ struct Planner<'a> {
 
 impl Planner<'_> {
     fn skip(&mut self, path: &str, why: &str, bad: bool) {
-        self.skips.push(Skip { path: path.to_string(), why: why.to_string(), bad });
+        self.skips.push(Skip {
+            path: path.to_string(),
+            why: why.to_string(),
+            bad,
+        });
     }
 
     /// Secret files need the key (to read the saved copy, or to tell what is on disk now).
     fn key_ok(&mut self, kinds: &[char], path: &str) -> bool {
         if self.key.is_none() && kinds.contains(&'s') {
-            self.skip(path, "it is a secret file and the Torpor key is missing", true);
+            self.skip(
+                path,
+                "it is a secret file and the Torpor key is missing",
+                true,
+            );
             return false;
         }
         true
@@ -281,7 +350,9 @@ impl Planner<'_> {
             self.skip(path, DB_NOTE, false);
             return false;
         }
-        let busy = fs::metadata(self.ws.root.join(format!("{path}-wal"))).is_ok_and(|m| m.len() > 0) || self.ws.root.join(format!("{path}-journal")).exists();
+        let busy = fs::metadata(self.ws.root.join(format!("{path}-wal")))
+            .is_ok_and(|m| m.len() > 0)
+            || self.ws.root.join(format!("{path}-journal")).exists();
         if busy {
             self.refuse.get_or_insert_with(|| format!("Stop your app first: {path} is open (it has a write-ahead log or a journal next to it). Nothing was changed."));
             return false;
@@ -349,7 +420,11 @@ impl Planner<'_> {
             'x' => self.skip(&path, &not_saved_text(&x.id, true), false),
             k => {
                 if self.key_ok(&[k], &path) && self.db_ok(&path, true) {
-                    self.del.push(Entry { kind: k, old: entry_state(x), ..Entry::bare(path, Act::Delete, "", "") });
+                    self.del.push(Entry {
+                        kind: k,
+                        old: entry_state(x),
+                        ..Entry::bare(path, Act::Delete, "", "")
+                    });
                 }
             }
         }
@@ -361,7 +436,8 @@ impl Planner<'_> {
         let path = join(dir, &y.name);
         match y.kind {
             'd' => {
-                self.mkd.push(Entry::bare(path.clone(), Act::Mkdir, "", "d"));
+                self.mkd
+                    .push(Entry::bare(path.clone(), Act::Mkdir, "", "d"));
                 if let Some(id) = unhex32(&y.id) {
                     for c in self.ws.load_tree(self.db, &id)? {
                         self.appear(&c, &path)?;
@@ -372,7 +448,14 @@ impl Planner<'_> {
             k => {
                 if self.key_ok(&[k], &path) && self.db_ok(&path, false) {
                     let act = if k == 'l' { Act::Symlink } else { Act::Create };
-                    self.cre.push(Entry { kind: k, perm: perm_for(k, y.mode == 755, None), blob: unhex32(&y.id), size: y.size, new: entry_state(y), ..Entry::bare(path, act, "", "") });
+                    self.cre.push(Entry {
+                        kind: k,
+                        perm: perm_for(k, y.mode == 755, None),
+                        blob: unhex32(&y.id),
+                        size: y.size,
+                        new: entry_state(y),
+                        ..Entry::bare(path, act, "", "")
+                    });
                 }
             }
         }
@@ -400,13 +483,37 @@ impl Planner<'_> {
                 return Ok(());
             }
             let perm = perm_for(y.kind, y.mode == 755, live_perm(&self.ws.root, &path));
-            let (act, blob, size) = if x.id != y.id { (Act::Overwrite, unhex32(&y.id), y.size) } else { (Act::Chmod, None, 0) };
-            let e = Entry { kind: y.kind, perm, blob, size, old: entry_state(x), new: entry_state(y), ..Entry::bare(path, act, "", "") };
-            if act == Act::Chmod { self.chm.push(e) } else { self.cre.push(e) }
+            let (act, blob, size) = if x.id != y.id {
+                (Act::Overwrite, unhex32(&y.id), y.size)
+            } else {
+                (Act::Chmod, None, 0)
+            };
+            let e = Entry {
+                kind: y.kind,
+                perm,
+                blob,
+                size,
+                old: entry_state(x),
+                new: entry_state(y),
+                ..Entry::bare(path, act, "", "")
+            };
+            if act == Act::Chmod {
+                self.chm.push(e)
+            } else {
+                self.cre.push(e)
+            }
             return Ok(());
         }
         if x.kind == 'l' && y.kind == 'l' {
-            self.cre.push(Entry { kind: 'l', perm: perm_for('l', false, None), blob: unhex32(&y.id), size: y.size, old: entry_state(x), new: entry_state(y), ..Entry::bare(path, Act::Symlink, "", "") });
+            self.cre.push(Entry {
+                kind: 'l',
+                perm: perm_for('l', false, None),
+                blob: unhex32(&y.id),
+                size: y.size,
+                old: entry_state(x),
+                new: entry_state(y),
+                ..Entry::bare(path, Act::Symlink, "", "")
+            });
             return Ok(());
         }
         // A different kind of thing: take the old one away, then bring the new one.
@@ -416,10 +523,31 @@ impl Planner<'_> {
 }
 
 /// The plan that turns the folder with tree `live` into the one with tree `want`.
-pub fn plan_trees(ws: &Ws, db: &Connection, live: &[u8; 32], want: &[u8; 32], key: Option<&Key>, with_data: bool) -> Result<Plan> {
-    let mut p = Planner { ws, db, key, with_data, del: vec![], rmd: vec![], mkd: vec![], cre: vec![], chm: vec![], skips: vec![], refuse: None };
+pub fn plan_trees(
+    ws: &Ws,
+    db: &Connection,
+    live: &[u8; 32],
+    want: &[u8; 32],
+    key: Option<&Key>,
+    with_data: bool,
+) -> Result<Plan> {
+    let mut p = Planner {
+        ws,
+        db,
+        key,
+        with_data,
+        del: vec![],
+        rmd: vec![],
+        mkd: vec![],
+        cre: vec![],
+        chm: vec![],
+        skips: vec![],
+        refuse: None,
+    };
     p.walk(Some(*live), Some(*want), "")?;
-    Ok(Plan::finish(p.del, p.rmd, p.mkd, p.cre, p.chm, p.skips, p.refuse))
+    Ok(Plan::finish(
+        p.del, p.rmd, p.mkd, p.cre, p.chm, p.skips, p.refuse,
+    ))
 }
 
 // ---------------------------------------------------------------- points and targets
@@ -435,7 +563,8 @@ fn tree_of(v: Vec<u8>) -> [u8; 32] {
 
 /// Visible, not thinned points newest first; a run of equal trees counts once (its newest point stands for it).
 fn states(db: &Connection) -> Result<Vec<State>> {
-    let mut st = db.prepare("SELECT id,tree_id FROM points WHERE visible=1 AND dropped=0 ORDER BY id DESC")?;
+    let mut st =
+        db.prepare("SELECT id,tree_id FROM points WHERE visible=1 AND dropped=0 ORDER BY id DESC")?;
     let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
     let mut out: Vec<State> = Vec::new();
     for r in rows {
@@ -456,12 +585,16 @@ pub fn describe(db: &Connection, id: i64, now: i64) -> String {
         .optional()
         .ok()
         .flatten();
-    let Some((kind, at, note, n)) = row else { return "an earlier state".to_string() };
+    let Some((kind, at, note, n)) = row else {
+        return "an earlier state".to_string();
+    };
     let what = match (kind.as_str(), n) {
         ("end", Some(n)) => format!("end of turn {n}"),
         ("start", Some(n)) => format!("start of turn {n}"),
         ("pre_bash", _) => match note.as_deref() {
-            Some(c) if !c.trim().is_empty() => format!("before {}", c.split(" (").next().unwrap_or(c)),
+            Some(c) if !c.trim().is_empty() => {
+                format!("before {}", c.split(" (").next().unwrap_or(c))
+            }
             _ => "before a shell command".to_string(),
         },
         ("pre_restore", _) => "before a restore".to_string(),
@@ -476,9 +609,20 @@ pub fn describe(db: &Connection, id: i64, now: i64) -> String {
 }
 
 /// Where `back` goes: (point id, its tree), or the outcome that explains why not.
-fn resolve(db: &Connection, target: Target, live: &[u8; 32]) -> Result<std::result::Result<(i64, [u8; 32]), Outcome>> {
+fn resolve(
+    db: &Connection,
+    target: Target,
+    live: &[u8; 32],
+) -> Result<std::result::Result<(i64, [u8; 32]), Outcome>> {
     let by_point = |id: i64| -> Result<Option<(bool, [u8; 32])>> {
-        Ok(db.query_row("SELECT dropped,tree_id FROM points WHERE id=?1", [id], |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, Vec<u8>>(1)?))).optional()?.map(|(d, t)| (d, tree_of(t))))
+        Ok(db
+            .query_row(
+                "SELECT dropped,tree_id FROM points WHERE id=?1",
+                [id],
+                |r| Ok((r.get::<_, i64>(0)? != 0, r.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+            .map(|(d, t)| (d, tree_of(t))))
     };
     match target {
         Target::Back(n) => {
@@ -487,25 +631,59 @@ fn resolve(db: &Connection, target: Target, live: &[u8; 32]) -> Result<std::resu
                 list.remove(0);
             }
             if n == 0 || n > list.len() {
-                let msg = if list.is_empty() { "There is no earlier state to go back to yet.".to_string() } else { format!("There are only {} earlier states. Try: torpor back {}", list.len(), list.len()) };
+                let msg = if list.is_empty() {
+                    "There is no earlier state to go back to yet.".to_string()
+                } else {
+                    format!(
+                        "There are only {} earlier states. Try: torpor back {}",
+                        list.len(),
+                        list.len()
+                    )
+                };
                 return Ok(Err(Outcome::new(5, format!("{msg}\n"))));
             }
             let s = &list[n - 1];
             Ok(Ok((s.id, s.tree)))
         }
         Target::Turn(k) => {
-            let row: Option<(String, Option<i64>)> = db.query_row("SELECT end_kind,end_point FROM turns WHERE n=?1", [k], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
-            let Some((_, end)) = row else { return Ok(Err(Outcome::new(5, format!("There is no turn {k}.\n")))) };
-            let Some(end) = end else { return Ok(Err(Outcome::new(3, format!("Turn {k} is still running. Wait until it ends, or use: torpor back --id <save point>\n")))) };
+            let row: Option<(String, Option<i64>)> = db
+                .query_row(
+                    "SELECT end_kind,end_point FROM turns WHERE n=?1",
+                    [k],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((_, end)) = row else {
+                return Ok(Err(Outcome::new(5, format!("There is no turn {k}.\n"))));
+            };
+            let Some(end) = end else {
+                return Ok(Err(Outcome::new(
+                    3,
+                    format!(
+                        "Turn {k} is still running. Wait until it ends, or use: torpor back --id <save point>\n"
+                    ),
+                )));
+            };
             match by_point(end)? {
                 Some((false, t)) => Ok(Ok((end, t))),
-                _ => Ok(Err(Outcome::new(5, format!("The save point at the end of turn {k} was cleaned up to save space.\n")))),
+                _ => Ok(Err(Outcome::new(
+                    5,
+                    format!(
+                        "The save point at the end of turn {k} was cleaned up to save space.\n"
+                    ),
+                ))),
             }
         }
         Target::Id(p) => match by_point(p)? {
             Some((false, t)) => Ok(Ok((p, t))),
-            Some((true, _)) => Ok(Err(Outcome::new(5, format!("Save point {p} was cleaned up to save space.\n")))),
-            None => Ok(Err(Outcome::new(5, format!("There is no save point {p}.\n")))),
+            Some((true, _)) => Ok(Err(Outcome::new(
+                5,
+                format!("Save point {p} was cleaned up to save space.\n"),
+            ))),
+            None => Ok(Err(Outcome::new(
+                5,
+                format!("There is no save point {p}.\n"),
+            ))),
         },
     }
 }
@@ -521,7 +699,11 @@ fn names(v: &[String]) -> String {
 }
 
 fn files_word(n: usize) -> String {
-    if n == 1 { "1 file".to_string() } else { format!("{n} files") }
+    if n == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{n} files")
+    }
 }
 
 #[derive(Default, Clone, Debug)]
@@ -540,7 +722,12 @@ impl Counts {
         self.not_touched.iter().any(|s| s.bad)
     }
     pub fn files(&self) -> Vec<String> {
-        self.restored.iter().chain(&self.removed).chain(&self.brought).cloned().collect()
+        self.restored
+            .iter()
+            .chain(&self.removed)
+            .chain(&self.brought)
+            .cloned()
+            .collect()
     }
     /// "Changes 4 files: 2 restored, 1 removed (new.txt), 1 brought back (src/c.ts)."
     pub fn changes_line(&self, would: bool) -> String {
@@ -549,19 +736,50 @@ impl Counts {
             parts.push(format!("{} restored", self.restored.len()));
         }
         if !self.removed.is_empty() {
-            parts.push(format!("{} removed ({})", self.removed.len(), names(&self.removed)));
+            parts.push(format!(
+                "{} removed ({})",
+                self.removed.len(),
+                names(&self.removed)
+            ));
         }
         if !self.brought.is_empty() {
-            parts.push(format!("{} brought back ({})", self.brought.len(), names(&self.brought)));
+            parts.push(format!(
+                "{} brought back ({})",
+                self.brought.len(),
+                names(&self.brought)
+            ));
         }
-        format!("{} {}: {}.", if would { "Would change" } else { "Changes" }, files_word(self.total()), parts.join(", "))
+        format!(
+            "{} {}: {}.",
+            if would { "Would change" } else { "Changes" },
+            files_word(self.total()),
+            parts.join(", ")
+        )
     }
     pub fn not_touched_line(&self) -> Option<String> {
         if self.not_touched.is_empty() {
             return None;
         }
-        let items: Vec<String> = self.not_touched.iter().map(|s| format!("{} ({})", s.path, s.why)).collect();
-        Some(format!("Not touched: {}.", if items.len() > 4 { format!("{}, {}, {}, {} and {} more", items[0], items[1], items[2], items[3], items.len() - 4) } else { items.join(", ") }))
+        let items: Vec<String> = self
+            .not_touched
+            .iter()
+            .map(|s| format!("{} ({})", s.path, s.why))
+            .collect();
+        Some(format!(
+            "Not touched: {}.",
+            if items.len() > 4 {
+                format!(
+                    "{}, {}, {}, {} and {} more",
+                    items[0],
+                    items[1],
+                    items[2],
+                    items[3],
+                    items.len() - 4
+                )
+            } else {
+                items.join(", ")
+            }
+        ))
     }
     fn to_json(&self) -> Value {
         json!({
@@ -583,19 +801,32 @@ fn skip_text(code: &str) -> (String, bool) {
         "stage" => ("the saved copy is missing".to_string(), true),
         "unsafe" => ("unsafe path".to_string(), true),
         "claude" => (CLAUDE_NOTE.to_string(), false),
-        c => (format!("could not write it ({})", c.strip_prefix("io:").unwrap_or(c)), true),
+        c => (
+            format!(
+                "could not write it ({})",
+                c.strip_prefix("io:").unwrap_or(c)
+            ),
+            true,
+        ),
     }
 }
 
 /// Sort the entries into what the report counts. A directory entry counts as nothing.
 fn count(entries: &[Entry], done: &HashMap<usize, Option<String>>, plan_skips: &[Skip]) -> Counts {
-    let mut c = Counts { not_touched: plan_skips.to_vec(), ..Default::default() };
+    let mut c = Counts {
+        not_touched: plan_skips.to_vec(),
+        ..Default::default()
+    };
     for e in entries {
         match done.get(&e.n) {
             Some(Some(code)) => {
                 let (why, bad) = skip_text(code);
                 if code != "notempty" || !e.path.is_empty() {
-                    c.not_touched.push(Skip { path: e.path.clone(), why, bad });
+                    c.not_touched.push(Skip {
+                        path: e.path.clone(),
+                        why,
+                        bad,
+                    });
                 }
             }
             _ => match e.act {
@@ -678,30 +909,78 @@ fn read_journal(path: &Path) -> Option<Journal> {
     let skips = h
         .get("skips")
         .and_then(|s| s.as_array())
-        .map(|a| a.iter().filter_map(|x| Some(Skip { path: x.get(0)?.as_str()?.to_string(), why: x.get(1)?.as_str()?.to_string(), bad: x.get(2)?.as_bool()? })).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    Some(Skip {
+                        path: x.get(0)?.as_str()?.to_string(),
+                        why: x.get(1)?.as_str()?.to_string(),
+                        bad: x.get(2)?.as_bool()?,
+                    })
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let hdr = Header {
         id: h.get("id")?.as_i64()?,
         target: h.get("target")?.as_i64()?,
         pre: h.get("pre")?.as_i64()?,
         started: h.get("started")?.as_i64()?,
-        kind: h.get("kind").and_then(|k| k.as_str()).unwrap_or("back").to_string(),
+        kind: h
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("back")
+            .to_string(),
         entries: h.get("entries")?.as_u64()? as usize,
         skips,
     };
     let (mut entries, mut done, mut complete) = (Vec::new(), HashMap::new(), false);
     for l in lines {
-        let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(l) else {
+            continue;
+        };
         if v.get("complete").and_then(|c| c.as_bool()) == Some(true) {
             complete = true;
         } else if let Some(n) = v.get("done").and_then(|n| n.as_u64()) {
-            done.insert(n as usize, v.get("skip").and_then(|s| s.as_str()).map(|s| s.to_string()));
-        } else if let (Some(n), Some(p), Some(a), Some(o), Some(nw)) = (v.get("n").and_then(|x| x.as_u64()), v.get("path").and_then(|x| x.as_str()), v.get("action").and_then(|x| x.as_str()).and_then(Act::parse), v.get("old").and_then(|x| x.as_str()), v.get("new").and_then(|x| x.as_str())) {
-            let kind = v.get("kind").and_then(|k| k.as_str()).and_then(|k| k.chars().next()).unwrap_or('f');
-            entries.push(Entry { n: n as usize, path: p.to_string(), act: a, old: o.to_string(), new: nw.to_string(), kind, perm: v.get("perm").and_then(|x| x.as_u64()).unwrap_or(0o644) as u32, blob: None, size: 0 });
+            done.insert(
+                n as usize,
+                v.get("skip")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+            );
+        } else if let (Some(n), Some(p), Some(a), Some(o), Some(nw)) = (
+            v.get("n").and_then(|x| x.as_u64()),
+            v.get("path").and_then(|x| x.as_str()),
+            v.get("action")
+                .and_then(|x| x.as_str())
+                .and_then(Act::parse),
+            v.get("old").and_then(|x| x.as_str()),
+            v.get("new").and_then(|x| x.as_str()),
+        ) {
+            let kind = v
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .and_then(|k| k.chars().next())
+                .unwrap_or('f');
+            entries.push(Entry {
+                n: n as usize,
+                path: p.to_string(),
+                act: a,
+                old: o.to_string(),
+                new: nw.to_string(),
+                kind,
+                perm: v.get("perm").and_then(|x| x.as_u64()).unwrap_or(0o644) as u32,
+                blob: None,
+                size: 0,
+            });
         }
     }
-    Some(Journal { hdr, entries, done, complete })
+    Some(Journal {
+        hdr,
+        entries,
+        done,
+        complete,
+    })
 }
 
 // ---------------------------------------------------------------- applying
@@ -720,7 +999,12 @@ enum Res {
 
 /// Spec 6.2: relative, no `..`, no NUL, no `.git` part.
 fn safe_rel(rel: &str) -> bool {
-    !rel.is_empty() && !rel.contains('\0') && !rel.starts_with('/') && rel.split('/').all(|c| !c.is_empty() && c != "." && c != ".." && !c.eq_ignore_ascii_case(".git"))
+    !rel.is_empty()
+        && !rel.contains('\0')
+        && !rel.starts_with('/')
+        && rel
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != ".." && !c.eq_ignore_ascii_case(".git"))
 }
 
 /// A symlinked or missing parent folder: skip and report.
@@ -772,7 +1056,10 @@ fn do_entry(cx: &Cx, e: &Entry, dst: &Path) -> std::result::Result<(), String> {
             let src = cx.stage.join(e.n.to_string());
             let target = fs::read(&src).map_err(|_| "stage".to_string())?;
             let tmp = rand_tmp(dst.parent().unwrap_or(cx.root));
-            io(std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(&target), &tmp))?;
+            io(std::os::unix::fs::symlink(
+                std::ffi::OsStr::from_bytes(&target),
+                &tmp,
+            ))?;
             let r = fs::rename(&tmp, dst);
             if r.is_err() {
                 let _ = fs::remove_file(&tmp);
@@ -792,7 +1079,9 @@ fn do_entry(cx: &Cx, e: &Entry, dst: &Path) -> std::result::Result<(), String> {
         Act::Mkdir => io(fs::DirBuilder::new().mode(0o755).create(dst)),
         Act::RmdirIfEmpty => match fs::remove_dir(dst) {
             Ok(()) => Ok(()),
-            Err(x) if matches!(x.raw_os_error(), Some(libc::ENOTEMPTY) | Some(libc::EEXIST)) => Err("notempty".into()),
+            Err(x) if matches!(x.raw_os_error(), Some(libc::ENOTEMPTY) | Some(libc::EEXIST)) => {
+                Err("notempty".into())
+            }
             Err(x) => Err(format!("io:{x}")),
         },
         Act::Chmod => io(fs::set_permissions(dst, fs::Permissions::from_mode(e.perm))),
@@ -828,7 +1117,12 @@ fn sync_dir(d: &Path) {
 
 /// Apply every entry that is not finished yet; one `done` line per entry. `redo_changed`: entries the journal already
 /// lists as done keep that status even when the file has been changed since (a recover long after the crash).
-fn apply_all(cx: &Cx, entries: &[Entry], done: &mut HashMap<usize, Option<String>>, journal: &mut File) -> Result<()> {
+fn apply_all(
+    cx: &Cx,
+    entries: &[Entry],
+    done: &mut HashMap<usize, Option<String>>,
+    journal: &mut File,
+) -> Result<()> {
     let mut touched: HashSet<PathBuf> = HashSet::new();
     for e in entries {
         if matches!(done.get(&e.n), Some(Some(_))) {
@@ -839,7 +1133,13 @@ fn apply_all(cx: &Cx, entries: &[Entry], done: &mut HashMap<usize, Option<String
         fault_point("restore");
         let skip = match res {
             Res::Applied => {
-                touched.insert(cx.root.join(&e.path).parent().unwrap_or(cx.root).to_path_buf());
+                touched.insert(
+                    cx.root
+                        .join(&e.path)
+                        .parent()
+                        .unwrap_or(cx.root)
+                        .to_path_buf(),
+                );
                 None
             }
             Res::Already => None,
@@ -864,12 +1164,21 @@ fn apply_all(cx: &Cx, entries: &[Entry], done: &mut HashMap<usize, Option<String
 /// Spec 6.2 step 5: leftover temp files of an earlier crash, older than an hour, in the folders a plan touches.
 fn sweep_tmp(root: &Path, entries: &[Entry]) {
     let now = now_ns();
-    let dirs: HashSet<PathBuf> = entries.iter().filter(|e| safe_rel(&e.path)).map(|e| root.join(&e.path).parent().unwrap_or(root).to_path_buf()).collect();
+    let dirs: HashSet<PathBuf> = entries
+        .iter()
+        .filter(|e| safe_rel(&e.path))
+        .map(|e| root.join(&e.path).parent().unwrap_or(root).to_path_buf())
+        .collect();
     for d in dirs {
         let Ok(rd) = fs::read_dir(&d) else { continue };
         for f in rd.flatten() {
             let name = f.file_name().to_string_lossy().to_string();
-            let old = f.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).is_some_and(|t| (t.as_nanos() as i64) < now - STALE_TMP_NS);
+            let old = f
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .is_some_and(|t| (t.as_nanos() as i64) < now - STALE_TMP_NS);
             if name.starts_with(".torpor-") && name.ends_with(".tmp") && old {
                 let _ = fs::remove_file(f.path());
             }
@@ -879,7 +1188,12 @@ fn sweep_tmp(root: &Path, entries: &[Entry]) {
 
 /// Spec 6.3 step 3: every new blob under `<root>/.torpor-stage/<id>/<n>`, re-hashed on the way (the readers check the hash).
 /// Returns the entries that could not be staged.
-fn stage_all(ws: &Ws, stage: &Path, entries: &[Entry], key: Option<&Key>) -> Result<Vec<(usize, String)>> {
+fn stage_all(
+    ws: &Ws,
+    stage: &Path,
+    entries: &[Entry],
+    key: Option<&Key>,
+) -> Result<Vec<(usize, String)>> {
     let mut bad = Vec::new();
     fs::create_dir_all(stage)?;
     for d in [stage_root(ws), stage.to_path_buf()] {
@@ -900,7 +1214,11 @@ fn stage_all(ws: &Ws, stage: &Path, entries: &[Entry], key: Option<&Key>) -> Res
         };
         let path = stage.join(e.n.to_string());
         // Created with the final bits so a kill never leaves a readable copy of a secret; plain new files follow the umask like any new file.
-        let mut f = OpenOptions::new().write(true).create_new(true).mode(e.perm).open(&path)?;
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(e.perm)
+            .open(&path)?;
         f.write_all(&bytes)?;
         if e.kind == 's' || e.act != Act::Create {
             f.set_permissions(fs::Permissions::from_mode(e.perm))?;
@@ -914,13 +1232,23 @@ fn stage_all(ws: &Ws, stage: &Path, entries: &[Entry], key: Option<&Key>) -> Res
 // ---------------------------------------------------------------- finishing
 
 /// Close a restore whose entries are all applied: complete marker, stage removed, the `restored` point, the row, the journal.
-fn finish(ws: &Ws, hdr: &Header, entries: &[Entry], done: &HashMap<usize, Option<String>>, complete_written: bool, journal_file: Option<&mut File>) -> Result<Counts> {
+fn finish(
+    ws: &Ws,
+    hdr: &Header,
+    entries: &[Entry],
+    done: &HashMap<usize, Option<String>>,
+    complete_written: bool,
+    journal_file: Option<&mut File>,
+) -> Result<Counts> {
     let jpath = journal_path(ws, hdr.id);
     if !complete_written {
         let line = "{\"complete\":true}\n";
         match journal_file {
             Some(f) => f.write_all(line.as_bytes())?,
-            None => OpenOptions::new().append(true).open(&jpath)?.write_all(line.as_bytes())?,
+            None => OpenOptions::new()
+                .append(true)
+                .open(&jpath)?
+                .write_all(line.as_bytes())?,
         }
     }
     fault_point("restore");
@@ -928,8 +1256,17 @@ fn finish(ws: &Ws, hdr: &Header, entries: &[Entry], done: &HashMap<usize, Option
     let _ = fs::remove_dir(stage_root(ws));
     fault_point("restore");
     let counts = count(entries, done, &hdr.skips);
-    let final_row = ws.conn.query_row("SELECT status FROM restores WHERE id=?1", [hdr.id], |r| r.get::<_, Option<String>>(0)).optional()?.flatten();
-    if !matches!(final_row.as_deref(), Some("done") | Some("partial") | Some("cancelled")) {
+    let final_row = ws
+        .conn
+        .query_row("SELECT status FROM restores WHERE id=?1", [hdr.id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .flatten();
+    if !matches!(
+        final_row.as_deref(),
+        Some("done") | Some("partial") | Some("cancelled")
+    ) {
         record_restored(ws, hdr, &counts)?;
     }
     fault_point("restore");
@@ -946,9 +1283,27 @@ fn record_restored(ws: &Ws, hdr: &Header, counts: &Counts) -> Result<()> {
     report["kind"] = json!(hdr.kind);
     report["target"] = json!(hdr.target);
     report["pre"] = json!(hdr.pre);
-    let note = if hdr.kind == "undo" { "undid a turn".to_string() } else { format!("went back to save point {}", hdr.target) };
+    let note = if hdr.kind == "undo" {
+        "undid a turn".to_string()
+    } else {
+        format!("went back to save point {}", hdr.target)
+    };
     let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
-    let cap = capture::capture(ws, &tx, &Req { session: "", points: vec![PointSpec { kind: PointKind::Restored, turn_id: None, note: Some(note) }], turn: None, only_if_changed: false, budget: None });
+    let cap = capture::capture(
+        ws,
+        &tx,
+        &Req {
+            session: "",
+            points: vec![PointSpec {
+                kind: PointKind::Restored,
+                turn_id: None,
+                note: Some(note),
+            }],
+            turn: None,
+            only_if_changed: false,
+            budget: None,
+        },
+    );
     match cap {
         Ok(c) => {
             tx.execute("UPDATE restores SET result_point=?2,finished_at=?3,status=?4,report_json=?5 WHERE id=?1", params![hdr.id, c.point_ids[0], now_ns(), status, report.to_string()])?;
@@ -957,7 +1312,10 @@ fn record_restored(ws: &Ws, hdr: &Header, counts: &Counts) -> Result<()> {
         Err(e) => {
             drop(tx);
             report["note"] = json!(format!("no save point was recorded after the restore: {e}"));
-            ws.conn.execute("UPDATE restores SET finished_at=?2,status=?3,report_json=?4 WHERE id=?1", params![hdr.id, now_ns(), status, report.to_string()])?;
+            ws.conn.execute(
+                "UPDATE restores SET finished_at=?2,status=?3,report_json=?4 WHERE id=?1",
+                params![hdr.id, now_ns(), status, report.to_string()],
+            )?;
         }
     }
     Ok(())
@@ -986,20 +1344,48 @@ pub struct Prep<'a> {
 
 pub fn prepare<'a>(ws: &'a Ws, note: &str) -> Result<Prep<'a>> {
     let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
-    let c = capture::capture(ws, &tx, &Req { session: "", points: vec![PointSpec { kind: PointKind::PreRestore, turn_id: None, note: Some(note.to_string()) }], turn: None, only_if_changed: false, budget: None })?;
+    let c = capture::capture(
+        ws,
+        &tx,
+        &Req {
+            session: "",
+            points: vec![PointSpec {
+                kind: PointKind::PreRestore,
+                turn_id: None,
+                note: Some(note.to_string()),
+            }],
+            turn: None,
+            only_if_changed: false,
+            budget: None,
+        },
+    )?;
     let key = Key::load()?;
-    Ok(Prep { tx, pre_id: c.point_ids[0], live: c.tree_id, key })
+    Ok(Prep {
+        tx,
+        pre_id: c.point_ids[0],
+        live: c.tree_id,
+        key,
+    })
 }
 
 /// Read back every saved copy the plan is about to replace or remove (the pre-restore point is "hash-verified", spec 6.3 step 1).
 fn verify_old(ws: &Ws, db: &Connection, entries: &[Entry], key: Option<&Key>) -> Result<()> {
-    for e in entries.iter().filter(|e| matches!(e.act, Act::Overwrite | Act::Delete | Act::Symlink) && !e.old.is_empty()) {
+    for e in entries.iter().filter(|e| {
+        matches!(e.act, Act::Overwrite | Act::Delete | Act::Symlink) && !e.old.is_empty()
+    }) {
         let id = e.old.split_once(':').and_then(|(_, h)| unhex32(h));
         let Some(id) = id else { continue };
         let kind = e.old.chars().next().unwrap_or('f');
-        let r = if kind == 's' { ws.read_secret(db, &id, key).map(|_| ()) } else { ws.read_blob(db, &id).map(|_| ()) };
+        let r = if kind == 's' {
+            ws.read_secret(db, &id, key).map(|_| ())
+        } else {
+            ws.read_blob(db, &id).map(|_| ())
+        };
         if r.is_err() {
-            return Err(Error::msg(format!("the save point of {} is damaged, so it cannot be safely replaced. Nothing was changed", e.path)));
+            return Err(Error::msg(format!(
+                "the save point of {} is damaged, so it cannot be safely replaced. Nothing was changed",
+                e.path
+            )));
         }
     }
     Ok(())
@@ -1027,7 +1413,9 @@ fn render(job: &Job, counts: &Counts, would: bool, pre_id: i64) -> String {
 
 /// Run a plan whose pre-restore point is still uncommitted in `prep`. Returns the report.
 pub fn go(ws: &Ws, prep: Prep, job: Job, opts: &Opts) -> Result<Outcome> {
-    let Prep { tx, pre_id, key, .. } = prep;
+    let Prep {
+        tx, pre_id, key, ..
+    } = prep;
     if let Some(why) = &job.plan.refuse {
         return Ok(Outcome::new(3, format!("{why}\n")));
     }
@@ -1047,7 +1435,15 @@ pub fn go(ws: &Ws, prep: Prep, job: Job, opts: &Opts) -> Result<Outcome> {
     let (free, _) = free_space(&ws.root);
     if free < bytes + SPARE_BYTES {
         drop(tx);
-        return Ok(Outcome::new(3, format!("Not enough free space on this disk to go back safely: it needs {} for the files plus {} spare, and {} is free. Nothing was changed.\n", human_bytes(bytes), human_bytes(SPARE_BYTES), human_bytes(free))));
+        return Ok(Outcome::new(
+            3,
+            format!(
+                "Not enough free space on this disk to go back safely: it needs {} for the files plus {} spare, and {} is free. Nothing was changed.\n",
+                human_bytes(bytes),
+                human_bytes(SPARE_BYTES),
+                human_bytes(free)
+            ),
+        ));
     }
     verify_old(ws, &tx, entries, key.as_ref())?;
     if opts.dry_run {
@@ -1060,7 +1456,15 @@ pub fn go(ws: &Ws, prep: Prep, job: Job, opts: &Opts) -> Result<Outcome> {
     tx.commit()?;
     fault_point("restore");
 
-    let hdr = Header { id: rid, target: job.target_point, pre: pre_id, started, kind: job.kind.to_string(), entries: 0, skips: job.plan.skips.clone() };
+    let hdr = Header {
+        id: rid,
+        target: job.target_point,
+        pre: pre_id,
+        started,
+        kind: job.kind.to_string(),
+        entries: 0,
+        skips: job.plan.skips.clone(),
+    };
     let stage = stage_path(ws, rid);
     sweep_tmp(&ws.root, entries);
     let failed = stage_all(ws, &stage, entries, key.as_ref())?;
@@ -1069,23 +1473,42 @@ pub fn go(ws: &Ws, prep: Prep, job: Job, opts: &Opts) -> Result<Outcome> {
     let mut live_entries: Vec<Entry> = Vec::new();
     for e in entries {
         match failed.iter().find(|(n, _)| *n == e.n) {
-            Some((_, why)) => hdr.skips.push(Skip { path: e.path.clone(), why: why.clone(), bad: true }),
+            Some((_, why)) => hdr.skips.push(Skip {
+                path: e.path.clone(),
+                why: why.clone(),
+                bad: true,
+            }),
             None => live_entries.push(e.clone()),
         }
     }
     if live_entries.is_empty() {
         let _ = fs::remove_dir_all(&stage);
         let _ = fs::remove_dir(stage_root(ws));
-        ws.conn.execute("UPDATE restores SET status='cancelled',finished_at=?2 WHERE id=?1", params![rid, now_ns()])?;
+        ws.conn.execute(
+            "UPDATE restores SET status='cancelled',finished_at=?2 WHERE id=?1",
+            params![rid, now_ns()],
+        )?;
         let c = count(&[], &HashMap::new(), &hdr.skips);
-        return Ok(Outcome::new(4, format!("{}\nNothing could be restored.\n{}\n", job.head, c.not_touched_line().unwrap_or_default())));
+        return Ok(Outcome::new(
+            4,
+            format!(
+                "{}\nNothing could be restored.\n{}\n",
+                job.head,
+                c.not_touched_line().unwrap_or_default()
+            ),
+        ));
     }
     hdr.entries = live_entries.len();
     let mut jf = write_journal(ws, &hdr, &live_entries)?;
-    ws.conn.execute("UPDATE restores SET status='applying' WHERE id=?1", [rid])?;
+    ws.conn
+        .execute("UPDATE restores SET status='applying' WHERE id=?1", [rid])?;
     fault_point("restore");
 
-    let cx = Cx { root: &ws.root, stage: &stage, key: key.as_ref() };
+    let cx = Cx {
+        root: &ws.root,
+        stage: &stage,
+        key: key.as_ref(),
+    };
     let mut done = HashMap::new();
     apply_all(&cx, &live_entries, &mut done, &mut jf)?;
     let counts = finish(ws, &hdr, &live_entries, &done, false, Some(&mut jf))?;
@@ -1126,18 +1549,49 @@ fn back_inner(ws: &Ws, target: Target, opts: Opts) -> Result<Outcome> {
     };
     let label = format!("save point {point} ({})", describe(&prep.tx, point, now));
     if tree == prep.live {
-        return Ok(Outcome::new(0, format!("Your files already match {label}. Nothing to do.\n")));
+        return Ok(Outcome::new(
+            0,
+            format!("Your files already match {label}. Nothing to do.\n"),
+        ));
     }
-    let plan = plan_trees(ws, &prep.tx, &prep.live, &tree, prep.key.as_ref(), opts.with_data)?;
-    let head = format!("{} {label}.", if opts.dry_run { "Would go back to" } else { "Going back to" });
-    go(ws, prep, Job { kind: "back", target_point: point, head, detail: vec![], plan }, &opts)
+    let plan = plan_trees(
+        ws,
+        &prep.tx,
+        &prep.live,
+        &tree,
+        prep.key.as_ref(),
+        opts.with_data,
+    )?;
+    let head = format!(
+        "{} {label}.",
+        if opts.dry_run {
+            "Would go back to"
+        } else {
+            "Going back to"
+        }
+    );
+    go(
+        ws,
+        prep,
+        Job {
+            kind: "back",
+            target_point: point,
+            head,
+            detail: vec![],
+            plan,
+        },
+        &opts,
+    )
 }
 
 // ---------------------------------------------------------------- recover
 
 /// True when a crashed restore left a journal or a stage folder behind.
 pub fn has_pending(ws: &Ws) -> bool {
-    let journals = fs::read_dir(journal_dir(ws)).is_ok_and(|rd| rd.flatten().any(|f| f.file_name().to_string_lossy().ends_with(".journal")));
+    let journals = fs::read_dir(journal_dir(ws)).is_ok_and(|rd| {
+        rd.flatten()
+            .any(|f| f.file_name().to_string_lossy().ends_with(".journal"))
+    });
     journals || fs::read_dir(stage_root(ws)).is_ok_and(|mut rd| rd.next().is_some())
 }
 
@@ -1146,12 +1600,30 @@ pub fn recover_locked(ws: &Ws) -> Result<Vec<String>> {
     let mut lines = Vec::new();
     // A journal write that was killed half way leaves only its temp file; the plan was never started.
     if let Ok(rd) = fs::read_dir(journal_dir(ws)) {
-        for f in rd.flatten().filter(|f| f.file_name().to_str().is_some_and(|n| n.starts_with(".torpor-") && n.ends_with(".tmp"))) {
+        for f in rd.flatten().filter(|f| {
+            f.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(".torpor-") && n.ends_with(".tmp"))
+        }) {
             let _ = fs::remove_file(f.path());
         }
     }
     let mut journals: Vec<(i64, PathBuf)> = fs::read_dir(journal_dir(ws))
-        .map(|rd| rd.flatten().filter_map(|f| f.file_name().to_str().and_then(|n| n.strip_prefix("restore-")?.strip_suffix(".journal")?.parse::<i64>().ok()).map(|id| (id, f.path()))).collect())
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|f| {
+                    f.file_name()
+                        .to_str()
+                        .and_then(|n| {
+                            n.strip_prefix("restore-")?
+                                .strip_suffix(".journal")?
+                                .parse::<i64>()
+                                .ok()
+                        })
+                        .map(|id| (id, f.path()))
+                })
+                .collect()
+        })
         .unwrap_or_default();
     journals.sort();
     let key = Key::load()?;
@@ -1169,21 +1641,44 @@ pub fn recover_locked(ws: &Ws) -> Result<Vec<String>> {
             let _ = fs::remove_file(path);
             let _ = fs::remove_dir_all(&stage);
             ws.conn.execute("UPDATE restores SET status='cancelled',finished_at=?2 WHERE id=?1 AND status IN ('staging','applying')", params![j.hdr.id, now_ns()])?;
-            lines.push("A restore was interrupted before it changed anything. Nothing to finish.".to_string());
+            lines.push(
+                "A restore was interrupted before it changed anything. Nothing to finish."
+                    .to_string(),
+            );
             continue;
         }
-        let was_final = ws.conn.query_row("SELECT status FROM restores WHERE id=?1", [j.hdr.id], |r| r.get::<_, Option<String>>(0)).optional()?.flatten().is_some_and(|s| s == "done" || s == "partial" || s == "cancelled");
+        let was_final = ws
+            .conn
+            .query_row("SELECT status FROM restores WHERE id=?1", [j.hdr.id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten()
+            .is_some_and(|s| s == "done" || s == "partial" || s == "cancelled");
         let mut done = j.done.clone();
         if !j.complete {
             sweep_tmp(&ws.root, &j.entries);
             let mut jf = OpenOptions::new().append(true).open(path)?;
-            let cx = Cx { root: &ws.root, stage: &stage, key: key.as_ref() };
+            let cx = Cx {
+                root: &ws.root,
+                stage: &stage,
+                key: key.as_ref(),
+            };
             apply_all(&cx, &j.entries, &mut done, &mut jf)?;
         }
         let counts = finish(ws, &j.hdr, &j.entries, &done, j.complete, None)?;
         if !was_final {
-            let applied = j.entries.iter().filter(|e| matches!(done.get(&e.n), Some(None))).count();
-            lines.push(format!("A restore was interrupted at {}. Finishing it now. Done: {} of {} files.", local_hhmm(j.hdr.started), applied, j.entries.len()));
+            let applied = j
+                .entries
+                .iter()
+                .filter(|e| matches!(done.get(&e.n), Some(None)))
+                .count();
+            lines.push(format!(
+                "A restore was interrupted at {}. Finishing it now. Done: {} of {} files.",
+                local_hhmm(j.hdr.started),
+                applied,
+                j.entries.len()
+            ));
             if let Some(l) = counts.not_touched_line() {
                 lines.push(l);
             }
@@ -1191,20 +1686,27 @@ pub fn recover_locked(ws: &Ws) -> Result<Vec<String>> {
     }
     // Rows that never got a journal, and stage folders without one.
     let open: Vec<i64> = {
-        let mut st = ws.conn.prepare("SELECT id FROM restores WHERE status IN ('staging','applying')")?;
+        let mut st = ws
+            .conn
+            .prepare("SELECT id FROM restores WHERE status IN ('staging','applying')")?;
         let rows = st.query_map([], |r| r.get::<_, i64>(0))?;
         rows.collect::<std::result::Result<_, _>>()?
     };
     for id in open {
         if !journal_path(ws, id).exists() {
-            ws.conn.execute("UPDATE restores SET status='cancelled',finished_at=?2 WHERE id=?1", params![id, now_ns()])?;
+            ws.conn.execute(
+                "UPDATE restores SET status='cancelled',finished_at=?2 WHERE id=?1",
+                params![id, now_ns()],
+            )?;
             let _ = fs::remove_dir_all(stage_path(ws, id));
         }
     }
     if let Ok(rd) = fs::read_dir(stage_root(ws)) {
         for f in rd.flatten() {
             // Only folders with a restore id for a name are Torpor's; anything else in there is not touched.
-            let Some(id) = f.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else { continue };
+            let Some(id) = f.file_name().to_str().and_then(|n| n.parse::<i64>().ok()) else {
+                continue;
+            };
             if !journal_path(ws, id).exists() {
                 let _ = fs::remove_dir_all(f.path());
             }
@@ -1236,19 +1738,44 @@ mod tests {
 
     #[test]
     fn claude_settings_files_leave_every_plan_and_are_said_first() {
-        let said = |p: &str| Skip { path: p.to_string(), why: "x".into(), bad: false };
+        let said = |p: &str| Skip {
+            path: p.to_string(),
+            why: "x".into(),
+            bad: false,
+        };
         let plan = Plan::finish(
-            vec![entry(".claude/settings.json", Act::Delete), entry("a.txt", Act::Delete)],
+            vec![
+                entry(".claude/settings.json", Act::Delete),
+                entry("a.txt", Act::Delete),
+            ],
             vec![entry(".claude/settings.local.json", Act::RmdirIfEmpty)],
             vec![],
-            vec![entry(".Claude/Settings.JSON", Act::Create), entry("b.txt", Act::Create)],
+            vec![
+                entry(".Claude/Settings.JSON", Act::Create),
+                entry("b.txt", Act::Create),
+            ],
             vec![entry(".claude/settings.local.json", Act::Chmod)],
             vec![said("dev.db"), said(".claude/settings.local.json")],
             None,
         );
-        assert_eq!(plan.entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), ["a.txt", "b.txt"]);
-        let skips: Vec<(&str, &str)> = plan.skips.iter().map(|s| (s.path.as_str(), s.why.as_str())).collect();
-        let want = [(".claude/settings.local.json", "x"), (".claude/settings.json", CLAUDE_NOTE), (".Claude/Settings.JSON", CLAUDE_NOTE), ("dev.db", "x")];
+        assert_eq!(
+            plan.entries
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            ["a.txt", "b.txt"]
+        );
+        let skips: Vec<(&str, &str)> = plan
+            .skips
+            .iter()
+            .map(|s| (s.path.as_str(), s.why.as_str()))
+            .collect();
+        let want = [
+            (".claude/settings.local.json", "x"),
+            (".claude/settings.json", CLAUDE_NOTE),
+            (".Claude/Settings.JSON", CLAUDE_NOTE),
+            ("dev.db", "x"),
+        ];
         assert_eq!(skips, want, "each once, first, an earlier reason kept");
         assert!(plan.skips.iter().all(|s| !s.bad));
     }
@@ -1261,7 +1788,11 @@ mod tests {
         fs::write(&file, "keep").unwrap();
         let mut del = entry(".claude/settings.json", Act::Delete);
         del.old = live_state(tmp.path(), ".claude/settings.json", None); // exactly what makes a delete go through
-        let cx = Cx { root: tmp.path(), stage: tmp.path(), key: None };
+        let cx = Cx {
+            root: tmp.path(),
+            stage: tmp.path(),
+            key: None,
+        };
         assert!(matches!(apply_entry(&cx, &del), Res::Skipped(c) if c == "claude"));
         assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
         assert_eq!(skip_text("claude"), (CLAUDE_NOTE.to_string(), false));

@@ -18,9 +18,16 @@ pub fn key(cmd: &str, exit: i64, output: &str, root: &str, home: &str) -> String
     while !output.is_char_boundary(start) {
         start += 1;
     }
-    let text = strip_ansi(&output[start..]).replace("\r\n", "\n").replace('\r', "\n").replace('\\', "/");
+    let text = strip_ansi(&output[start..])
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\\', "/");
     let (root, home) = (root.replace('\\', "/"), home.replace('\\', "/"));
-    let lines: Vec<String> = text.lines().map(|l| norm_line(l, &root, &home)).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| norm_line(l, &root, &home))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
     let tail = lines[lines.len().saturating_sub(LINES)..].join("\n");
     let h = hex(blake3::hash(tail.as_bytes()).as_bytes());
     format!("ek1:{}:exit{}:{}", argv0(cmd), exit, &h[..8])
@@ -30,20 +37,33 @@ pub fn key(cmd: &str, exit: i64, output: &str, root: &str, home: &str) -> String
 pub fn argv0(cmd: &str) -> String {
     const WRAP: [&str; 6] = ["sudo", "env", "time", "nohup", "exec", "command"];
     for w in cmd.split_whitespace() {
-        let assign = w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        let assign = w.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
         let base = w.rsplit('/').next().unwrap_or(w);
         if assign || w.starts_with('-') || WRAP.contains(&base) {
             continue;
         }
-        let clean: String = base.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')).take(20).collect();
-        return if clean.is_empty() { "cmd".into() } else { clean };
+        let clean: String = base
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            .take(20)
+            .collect();
+        return if clean.is_empty() {
+            "cmd".into()
+        } else {
+            clean
+        };
     }
     "cmd".into()
 }
 
 /// The program name inside a stored key, for a line that may not show the command.
 pub fn argv0_of_key(key: &str) -> Option<&str> {
-    key.strip_prefix("ek1:")?.split(':').next().filter(|s| !s.is_empty())
+    key.strip_prefix("ek1:")?
+        .split(':')
+        .next()
+        .filter(|s| !s.is_empty())
 }
 
 fn strip_ansi(s: &str) -> String {
@@ -91,7 +111,8 @@ fn is_word(c: char) -> bool {
 }
 
 fn run(c: &[char], i: usize, f: impl Fn(char) -> bool) -> usize {
-    c.get(i..).map_or(0, |s| s.iter().take_while(|x| f(**x)).count())
+    c.get(i..)
+        .map_or(0, |s| s.iter().take_while(|x| f(**x)).count())
 }
 
 fn digits(c: &[char], i: usize) -> usize {
@@ -122,7 +143,12 @@ fn clock_end(c: &[char], j: usize, need_sec: bool) -> Option<usize> {
 
 /// 2026-10-22, optionally followed by T or a space and a time, and Z or an offset.
 fn iso_end(c: &[char], i: usize) -> Option<usize> {
-    if !(digits(c, i) == 4 && c.get(i + 4) == Some(&'-') && digits(c, i + 5) == 2 && c.get(i + 7) == Some(&'-') && digits(c, i + 8) == 2) {
+    if !(digits(c, i) == 4
+        && c.get(i + 4) == Some(&'-')
+        && digits(c, i + 5) == 2
+        && c.get(i + 7) == Some(&'-')
+        && digits(c, i + 8) == 2)
+    {
         return None;
     }
     let mut j = i + 10;
@@ -147,13 +173,36 @@ fn iso_end(c: &[char], i: usize) -> Option<usize> {
 }
 
 fn is_uuid(c: &[char], i: usize) -> bool {
-    let hexs = |from: usize, n: usize| c.get(from..from + n).is_some_and(|s| s.iter().all(|x| x.is_ascii_hexdigit()));
-    hexs(i, 8) && c.get(i + 8) == Some(&'-') && hexs(i + 9, 4) && c.get(i + 13) == Some(&'-') && hexs(i + 14, 4) && c.get(i + 18) == Some(&'-') && hexs(i + 19, 4) && c.get(i + 23) == Some(&'-') && hexs(i + 24, 12) && boundary(c, i + 36)
+    let hexs = |from: usize, n: usize| {
+        c.get(from..from + n)
+            .is_some_and(|s| s.iter().all(|x| x.is_ascii_hexdigit()))
+    };
+    hexs(i, 8)
+        && c.get(i + 8) == Some(&'-')
+        && hexs(i + 9, 4)
+        && c.get(i + 13) == Some(&'-')
+        && hexs(i + 14, 4)
+        && c.get(i + 18) == Some(&'-')
+        && hexs(i + 19, 4)
+        && c.get(i + 23) == Some(&'-')
+        && hexs(i + 24, 12)
+        && boundary(c, i + 36)
 }
 
 /// Length of a duration unit at `i` (longest first); `spaced`: after a space only the written-out units count.
 fn unit_len(c: &[char], i: usize, spaced: bool) -> Option<usize> {
-    const WORDS: [&str; 10] = ["milliseconds", "millisecond", "seconds", "second", "minutes", "minute", "secs", "sec", "mins", "min"];
+    const WORDS: [&str; 10] = [
+        "milliseconds",
+        "millisecond",
+        "seconds",
+        "second",
+        "minutes",
+        "minute",
+        "secs",
+        "sec",
+        "mins",
+        "min",
+    ];
     const SHORT: [&str; 7] = ["ms", "us", "µs", "ns", "s", "m", "h"];
     let mut cands: Vec<&str> = WORDS.to_vec();
     cands.push("ms");
@@ -163,7 +212,9 @@ fn unit_len(c: &[char], i: usize, spaced: bool) -> Option<usize> {
     cands.sort_by_key(|u| std::cmp::Reverse(u.chars().count()));
     cands.into_iter().find_map(|u| {
         let n = u.chars().count();
-        let same = c.get(i..i + n).is_some_and(|s| s.iter().copied().eq(u.chars()));
+        let same = c
+            .get(i..i + n)
+            .is_some_and(|s| s.iter().copied().eq(u.chars()));
         (same && boundary(c, i + n)).then_some(n)
     })
 }
@@ -183,7 +234,12 @@ fn norm_line(line: &str, root: &str, home: &str) -> String {
     while i < c.len() {
         let ch = c[i];
         let word_start = i == 0 || !is_word(c[i - 1]);
-        if ch == ':' && i > 0 && matches!(c[i - 1], ']' | ':') && (2..=5).contains(&digits(&c, i + 1)) && boundary(&c, i + 1 + digits(&c, i + 1)) {
+        if ch == ':'
+            && i > 0
+            && matches!(c[i - 1], ']' | ':')
+            && (2..=5).contains(&digits(&c, i + 1))
+            && boundary(&c, i + 1 + digits(&c, i + 1))
+        {
             // ":::8080" and "[::]:8080"
             out.push_str(":<port>");
             i += 1 + digits(&c, i + 1);
@@ -211,12 +267,16 @@ fn norm_line(line: &str, root: &str, home: &str) -> String {
                 k += 1 + digits(&c, k + 1);
             }
             let dotted = c[i..k].iter().filter(|x| **x == '.').count();
-            let port = c.get(k) == Some(&':') && (2..=5).contains(&digits(&c, k + 1)) && boundary(&c, k + 1 + digits(&c, k + 1));
+            let port = c.get(k) == Some(&':')
+                && (2..=5).contains(&digits(&c, k + 1))
+                && boundary(&c, k + 1 + digits(&c, k + 1));
             if dotted == 3 && port {
                 // an address with its port
                 out.push_str("<n>:<port>");
                 i = k + 1 + digits(&c, k + 1);
-            } else if let Some(u) = unit_len(&c, k, false).filter(|_| is_word(*c.get(k).unwrap_or(&' '))) {
+            } else if let Some(u) =
+                unit_len(&c, k, false).filter(|_| is_word(*c.get(k).unwrap_or(&' ')))
+            {
                 out.push_str("<dur>");
                 i = k + u;
             } else if c.get(k) == Some(&' ') && unit_len(&c, k + 1, true).is_some() {
@@ -235,7 +295,11 @@ fn norm_line(line: &str, root: &str, home: &str) -> String {
             let word: String = c[i..i + alnum].iter().collect();
             let mut k = i + alnum;
             let low = word.to_ascii_lowercase();
-            if low == "localhost" && c.get(k) == Some(&':') && (2..=5).contains(&digits(&c, k + 1)) && boundary(&c, k + 1 + digits(&c, k + 1)) {
+            if low == "localhost"
+                && c.get(k) == Some(&':')
+                && (2..=5).contains(&digits(&c, k + 1))
+                && boundary(&c, k + 1 + digits(&c, k + 1))
+            {
                 out.push_str(&word);
                 out.push_str(":<port>");
                 i = k + 1 + digits(&c, k + 1);
@@ -280,16 +344,37 @@ mod tests {
         assert_eq!(n("2026-10-22T14:03:11.123Z started"), "<ts> started");
         assert_eq!(n("at 2026-10-22 14:03+02:00 ok"), "at <ts> ok");
         assert_eq!(n("12:30:45 tick"), "<ts> tick");
-        assert_eq!(n("src/a.ts:12:30 error TS2304: cannot find"), "src/a.ts:<n>:<n> error TS2304: cannot find");
-        assert_eq!(n("id 3f2b9c1d-7a4e-4c1b-9d2e-0123456789ab done"), "id <hex> done");
+        assert_eq!(
+            n("src/a.ts:12:30 error TS2304: cannot find"),
+            "src/a.ts:<n>:<n> error TS2304: cannot find"
+        );
+        assert_eq!(
+            n("id 3f2b9c1d-7a4e-4c1b-9d2e-0123456789ab done"),
+            "id <hex> done"
+        );
         assert_eq!(n("commit 0123456789abcdef0123 stuck"), "commit <hex> stuck");
         assert_eq!(n("a1b2c3 is short"), "a1b2c3 is short");
-        assert_eq!(n("took 230ms, then 1.5s and 12 seconds"), "took <dur>, then <dur> and <dur>");
-        assert_eq!(n("listening on localhost:3000 and 127.0.0.1:8080"), "listening on localhost:<port> and <n>:<port>");
-        assert_eq!(n("[::]:5173 and :::4000 and port 8080 and PORT=9000"), "[::]:<port> and :::<port> and port <port> and PORT=<port>");
-        assert_eq!(n("3 failed, 12 passed, 0.5 coverage"), "<n> failed, <n> passed, <n> coverage");
+        assert_eq!(
+            n("took 230ms, then 1.5s and 12 seconds"),
+            "took <dur>, then <dur> and <dur>"
+        );
+        assert_eq!(
+            n("listening on localhost:3000 and 127.0.0.1:8080"),
+            "listening on localhost:<port> and <n>:<port>"
+        );
+        assert_eq!(
+            n("[::]:5173 and :::4000 and port 8080 and PORT=9000"),
+            "[::]:<port> and :::<port> and port <port> and PORT=<port>"
+        );
+        assert_eq!(
+            n("3 failed, 12 passed, 0.5 coverage"),
+            "<n> failed, <n> passed, <n> coverage"
+        );
         assert_eq!(n("2x speed, 0x1f, TS2304"), "2x speed, 0x1f, TS2304");
-        assert_eq!(n("/work/proj/src/a.ts and /srv/h/.cache/x"), "src/a.ts and <home>/.cache/x");
+        assert_eq!(
+            n("/work/proj/src/a.ts and /srv/h/.cache/x"),
+            "src/a.ts and <home>/.cache/x"
+        );
         assert_eq!(n("in /work/proj now"), "in . now");
     }
 
@@ -300,16 +385,31 @@ mod tests {
         let c = "FAIL src/login.test.ts (4.2 s)\n  expected 201 but got 404 and more\n  at /work/proj/src/login.ts:41:9\nTests: 1 failed, 3 passed, 4 total\nTime: 5.1 s\n";
         assert_eq!(k(a), k(b), "{} vs {}", k(a), k(b));
         assert_ne!(k(a), k(c));
-        assert!(k(a).starts_with("ek1:npm:exit1:") && k(a).len() == "ek1:npm:exit1:".len() + 8, "{}", k(a));
+        assert!(
+            k(a).starts_with("ek1:npm:exit1:") && k(a).len() == "ek1:npm:exit1:".len() + 8,
+            "{}",
+            k(a)
+        );
         // Only the last 20 lines count, blank ones not at all.
-        let long = |first: &str| format!("{first}\n\n{}\n", (0..25).map(|i| format!("line {}", ["a", "b", "c"][i % 3])).collect::<Vec<_>>().join("\n"));
+        let long = |first: &str| {
+            format!(
+                "{first}\n\n{}\n",
+                (0..25)
+                    .map(|i| format!("line {}", ["a", "b", "c"][i % 3]))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
         assert_eq!(k(&long("early noise one")), k(&long("early noise two")));
     }
 
     #[test]
     fn the_exit_code_comes_from_the_caller_and_the_program_from_the_command() {
         let wrapped = "npm ERR! command failed\nnpm ERR! exited with code 99\n";
-        assert_eq!(key("npm test", 2, wrapped, ROOT, HOME).split(':').nth(2), Some("exit2"));
+        assert_eq!(
+            key("npm test", 2, wrapped, ROOT, HOME).split(':').nth(2),
+            Some("exit2")
+        );
         assert_eq!(argv0("FOO=1 sudo -E /usr/bin/node build.js"), "node");
         assert_eq!(argv0("  "), "cmd");
         assert_eq!(argv0("./run it"), "run");

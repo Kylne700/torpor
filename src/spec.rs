@@ -75,7 +75,17 @@ pub enum Act {
 
 impl Act {
     pub fn is_assertion(&self) -> bool {
-        !matches!(self, Act::Goto(_) | Act::Click(_) | Act::Fill(..) | Act::Press(..) | Act::Select(..) | Act::Check(_) | Act::Uncheck(_) | Act::WaitHttp(_))
+        !matches!(
+            self,
+            Act::Goto(_)
+                | Act::Click(_)
+                | Act::Fill(..)
+                | Act::Press(..)
+                | Act::Select(..)
+                | Act::Check(_)
+                | Act::Uncheck(_)
+                | Act::WaitHttp(_)
+        )
     }
     /// The plain-words name of the step kind (for failure texts).
     pub fn verb(&self) -> &'static str {
@@ -125,7 +135,9 @@ pub struct Spec {
 impl Spec {
     /// True when every step runs in Rust (no browser needed).
     pub fn http_only(&self) -> bool {
-        self.steps.iter().all(|s| matches!(s.act, Act::Http(_) | Act::WaitHttp(_)))
+        self.steps
+            .iter()
+            .all(|s| matches!(s.act, Act::Http(_) | Act::WaitHttp(_)))
     }
     pub fn assertions(&self) -> usize {
         self.steps.iter().filter(|s| s.act.is_assertion()).count()
@@ -156,14 +168,19 @@ pub struct Linted {
 
 /// {rand} and {port} in a string.
 pub fn subst(s: &str, rand: &str, port: u16) -> String {
-    s.replace("{rand}", rand).replace("{port}", &port.to_string())
+    s.replace("{rand}", rand)
+        .replace("{port}", &port.to_string())
 }
 
 pub fn subst_value(v: &Value, rand: &str, port: u16) -> Value {
     match v {
         Value::String(s) => Value::String(subst(s, rand, port)),
         Value::Array(a) => Value::Array(a.iter().map(|x| subst_value(x, rand, port)).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, x)| (k.clone(), subst_value(x, rand, port))).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, x)| (k.clone(), subst_value(x, rand, port)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -178,9 +195,14 @@ pub fn load(canon: &[u8]) -> Result<Linted, Vec<String>> {
 
 pub fn lint(raw: &str) -> Result<Linted, Vec<String>> {
     if raw.len() > SPEC_BYTES_MAX {
-        return Err(vec![format!("Rejected: the check is {} KB; the limit is {} KB.", raw.len() / 1024, SPEC_BYTES_MAX / 1024)]);
+        return Err(vec![format!(
+            "Rejected: the check is {} KB; the limit is {} KB.",
+            raw.len() / 1024,
+            SPEC_BYTES_MAX / 1024
+        )]);
     }
-    let v: Value = serde_json::from_str(raw).map_err(|e| vec![format!("Rejected: this is not JSON ({e}).")])?;
+    let v: Value = serde_json::from_str(raw)
+        .map_err(|e| vec![format!("Rejected: this is not JSON ({e}).")])?;
     let Some(obj) = v.as_object() else {
         return Err(vec!["Rejected: a check is one JSON object.".into()]);
     };
@@ -220,7 +242,10 @@ pub fn lint(raw: &str) -> Result<Linted, Vec<String>> {
             }
         }
         Some(Value::Array(a)) if a.is_empty() => p.push("Rejected: steps is empty.".into()),
-        Some(Value::Array(a)) => p.push(format!("Rejected: {} steps; the limit is {STEPS_MAX}.", a.len())),
+        Some(Value::Array(a)) => p.push(format!(
+            "Rejected: {} steps; the limit is {STEPS_MAX}.",
+            a.len()
+        )),
         _ => p.push("Rejected: steps must be a list of 1 to 40 steps.".into()),
     }
     let given_unv = match obj.get("unverifiable") {
@@ -231,7 +256,14 @@ pub fn lint(raw: &str) -> Result<Linted, Vec<String>> {
             false
         }
     };
-    if steps.len() == obj.get("steps").and_then(Value::as_array).map_or(0, Vec::len) && !steps.is_empty() && !steps.iter().any(|s| s.act.is_assertion()) {
+    if steps.len()
+        == obj
+            .get("steps")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+        && !steps.is_empty()
+        && !steps.iter().any(|s| s.act.is_assertion())
+    {
         p.push("Rejected: the check has no assertion (an expect_* step, or http with expect). A check that cannot fail proves nothing.".into());
     }
     if !p.is_empty() {
@@ -242,8 +274,19 @@ pub fn lint(raw: &str) -> Result<Linted, Vec<String>> {
         }
         return Err(p);
     }
-    let (name, why, start) = (name.unwrap_or_default(), why.unwrap_or_default(), start.expect("checked"));
-    let mut spec = Spec { name, why, start, env, steps, unverifiable: given_unv };
+    let (name, why, start) = (
+        name.unwrap_or_default(),
+        why.unwrap_or_default(),
+        start.expect("checked"),
+    );
+    let mut spec = Spec {
+        name,
+        why,
+        start,
+        env,
+        steps,
+        unverifiable: given_unv,
+    };
     spec.unverifiable = given_unv || touches_unverifiable(&spec);
     // Canonical bytes: the validated input with the two defaults written in. serde_json's Map is a BTreeMap, so keys come out sorted.
     let mut canon_obj = obj.clone();
@@ -275,26 +318,41 @@ fn touches_unverifiable(s: &Spec) -> bool {
 fn unknown_keys(o: &Map<String, Value>, allowed: &[&str], what: &str, p: &mut Vec<String>) {
     for k in o.keys() {
         if !allowed.contains(&k.as_str()) {
-            p.push(format!("Rejected: {what} has an unknown key '{k}'. Allowed: {}.", allowed.join(", ")));
+            p.push(format!(
+                "Rejected: {what} has an unknown key '{k}'. Allowed: {}.",
+                allowed.join(", ")
+            ));
         }
     }
 }
 
 /// A text field of `o`: present, a string, 1..=max chars. Problems go to `p`.
-fn text_field(o: &Map<String, Value>, k: &str, what: &str, max: usize, required: bool, p: &mut Vec<String>) -> Option<String> {
+fn text_field(
+    o: &Map<String, Value>,
+    k: &str,
+    what: &str,
+    max: usize,
+    required: bool,
+    p: &mut Vec<String>,
+) -> Option<String> {
     match o.get(k) {
         None if required => {
             p.push(format!("Rejected: {what} is missing '{k}'."));
             None
         }
         None => None,
-        Some(Value::String(s)) if !s.trim().is_empty() && s.chars().count() <= max => Some(s.clone()),
+        Some(Value::String(s)) if !s.trim().is_empty() && s.chars().count() <= max => {
+            Some(s.clone())
+        }
         Some(Value::String(s)) if s.trim().is_empty() => {
             p.push(format!("Rejected: '{k}' of {what} is empty."));
             None
         }
         Some(Value::String(s)) => {
-            p.push(format!("Rejected: '{k}' of {what} is {} characters; the limit is {max}.", s.chars().count()));
+            p.push(format!(
+                "Rejected: '{k}' of {what} is {} characters; the limit is {max}.",
+                s.chars().count()
+            ));
             None
         }
         Some(_) => {
@@ -329,16 +387,26 @@ fn parse_start(v: Option<&Value>, p: &mut Vec<String>) -> Option<Start> {
     if p.len() > n0 {
         return None;
     }
-    Some(Start { cmd: cmd?, ready: ready?, timeout_s })
+    Some(Start {
+        cmd: cmd?,
+        ready: ready?,
+        timeout_s,
+    })
 }
 
 /// Paths start with one `/`; anything with a scheme or host is an absolute URL.
 fn path_ok(s: &str, ctx: &str, p: &mut Vec<String>) -> bool {
     if s.contains("://") || s.starts_with("//") {
-        p.push(format!("Rejected: {ctx} uses an absolute URL ({}). Paths must start with /.", crate::util::trunc_chars(s, 60)));
+        p.push(format!(
+            "Rejected: {ctx} uses an absolute URL ({}). Paths must start with /.",
+            crate::util::trunc_chars(s, 60)
+        ));
         false
     } else if !s.starts_with('/') {
-        p.push(format!("Rejected: {ctx} has the path '{}'. Paths must start with /.", crate::util::trunc_chars(s, 60)));
+        p.push(format!(
+            "Rejected: {ctx} has the path '{}'. Paths must start with /.",
+            crate::util::trunc_chars(s, 60)
+        ));
         false
     } else if s.chars().count() > 300 {
         p.push(format!("Rejected: {ctx} has a path over 300 characters."));
@@ -348,14 +416,19 @@ fn path_ok(s: &str, ctx: &str, p: &mut Vec<String>) -> bool {
     }
 }
 
-const SELECTORS: [&str; 9] = ["css", "selector", "class", "id", "tag", "locator", "xpath", "nth", "first"];
+const SELECTORS: [&str; 9] = [
+    "css", "selector", "class", "id", "tag", "locator", "xpath", "nth", "first",
+];
 
 /// One locator object: exactly one of role (+name), label, text, text_re, testid.
 fn parse_loc(v: &Value, ctx: &str, p: &mut Vec<String>) -> Option<Loc> {
     let o = match v {
         Value::Object(o) => o,
         Value::String(s) => {
-            p.push(format!("Rejected: {ctx} uses a CSS selector ({}). {LOC_HINT}", crate::util::trunc_chars(s, 40)));
+            p.push(format!(
+                "Rejected: {ctx} uses a CSS selector ({}). {LOC_HINT}",
+                crate::util::trunc_chars(s, 40)
+            ));
             return None;
         }
         _ => {
@@ -365,7 +438,10 @@ fn parse_loc(v: &Value, ctx: &str, p: &mut Vec<String>) -> Option<Loc> {
     };
     for k in SELECTORS.iter().chain(["last"].iter()) {
         if let Some(val) = o.get(*k) {
-            let shown = val.as_str().map(|s| crate::util::trunc_chars(s, 40)).unwrap_or_else(|| val.to_string());
+            let shown = val
+                .as_str()
+                .map(|s| crate::util::trunc_chars(s, 40))
+                .unwrap_or_else(|| val.to_string());
             let what = match *k {
                 "xpath" => "an XPath",
                 "nth" | "first" | "last" => "a position (nth/first/last)",
@@ -375,11 +451,26 @@ fn parse_loc(v: &Value, ctx: &str, p: &mut Vec<String>) -> Option<Loc> {
             return None;
         }
     }
-    let kinds: Vec<&str> = ["role", "label", "text", "text_re", "testid"].into_iter().filter(|k| o.contains_key(*k)).collect();
+    let kinds: Vec<&str> = ["role", "label", "text", "text_re", "testid"]
+        .into_iter()
+        .filter(|k| o.contains_key(*k))
+        .collect();
     let n0 = p.len();
-    unknown_keys(o, &["role", "name", "label", "text", "text_re", "testid"], ctx, p);
+    unknown_keys(
+        o,
+        &["role", "name", "label", "text", "text_re", "testid"],
+        ctx,
+        p,
+    );
     if kinds.len() != 1 {
-        let msg = if kinds.is_empty() { format!("Rejected: {ctx} has no locator. {LOC_HINT}") } else { format!("Rejected: {ctx} has two locators ({}). Use one.", kinds.join(", ")) };
+        let msg = if kinds.is_empty() {
+            format!("Rejected: {ctx} has no locator. {LOC_HINT}")
+        } else {
+            format!(
+                "Rejected: {ctx} has two locators ({}). Use one.",
+                kinds.join(", ")
+            )
+        };
         p.push(msg);
         return None;
     }
@@ -417,16 +508,36 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
         return None;
     };
     const VERBS: [&str; 15] = [
-        "goto", "click", "fill", "press", "select", "check", "uncheck", "wait_http", "expect_visible", "expect_hidden", "expect_text", "expect_url", "expect_count",
-        "expect_console_clean", "http",
+        "goto",
+        "click",
+        "fill",
+        "press",
+        "select",
+        "check",
+        "uncheck",
+        "wait_http",
+        "expect_visible",
+        "expect_hidden",
+        "expect_text",
+        "expect_url",
+        "expect_count",
+        "expect_console_clean",
+        "http",
     ];
     let verbs: Vec<&str> = VERBS.into_iter().filter(|k| o.contains_key(*k)).collect();
     if verbs.len() != 1 {
         let keys: Vec<&str> = o.keys().map(String::as_str).collect();
         p.push(if verbs.is_empty() {
-            format!("Rejected: {ctx} has no known step ({}). Steps: {}.", keys.join(", "), VERBS.join(", "))
+            format!(
+                "Rejected: {ctx} has no known step ({}). Steps: {}.",
+                keys.join(", "),
+                VERBS.join(", ")
+            )
         } else {
-            format!("Rejected: {ctx} has two steps ({}). One per step.", verbs.join(", "))
+            format!(
+                "Rejected: {ctx} has two steps ({}). One per step.",
+                verbs.join(", ")
+            )
         });
         return None;
     }
@@ -445,17 +556,27 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
     unknown_keys(o, &allowed, &ctx, p);
     let arg = &o[verb];
     let assertion = verb.starts_with("expect_") || verb == "http";
-    let why = if assertion { text_field(o, "why", &ctx, WHY_MAX, true, p) } else { text_field(o, "why", &ctx, WHY_MAX, false, p) };
+    let why = if assertion {
+        text_field(o, "why", &ctx, WHY_MAX, true, p)
+    } else {
+        text_field(o, "why", &ctx, WHY_MAX, false, p)
+    };
     let mut lits: Vec<String> = Vec::new(); // assertion literals the id heuristics look at
     let value = |k: &str, p: &mut Vec<String>| text_field(o, k, &ctx, 500, true, p);
     let act = match verb {
         "goto" | "wait_http" => {
             let s = arg.as_str().map(str::to_string);
             match s {
-                Some(s) if path_ok(&s, &ctx, p) => Some(if verb == "goto" { Act::Goto(s) } else { Act::WaitHttp(s) }),
+                Some(s) if path_ok(&s, &ctx, p) => Some(if verb == "goto" {
+                    Act::Goto(s)
+                } else {
+                    Act::WaitHttp(s)
+                }),
                 Some(_) => None,
                 None => {
-                    p.push(format!("Rejected: {ctx}: {verb} takes a path like \"/login\"."));
+                    p.push(format!(
+                        "Rejected: {ctx}: {verb} takes a path like \"/login\"."
+                    ));
                     None
                 }
             }
@@ -468,7 +589,13 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
         "fill" | "select" => {
             let l = parse_loc(arg, &ctx, p);
             let val = value("value", p);
-            l.zip(val).map(|(l, val)| if verb == "fill" { Act::Fill(l, val) } else { Act::Select(l, val) })
+            l.zip(val).map(|(l, val)| {
+                if verb == "fill" {
+                    Act::Fill(l, val)
+                } else {
+                    Act::Select(l, val)
+                }
+            })
         }
         "press" => {
             let l = parse_loc(arg, &ctx, p);
@@ -477,7 +604,11 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
         }
         "expect_visible" | "expect_hidden" => parse_loc(arg, &ctx, p).map(|l| {
             lits.extend(loc_strings(&l).into_iter().map(str::to_string));
-            if verb == "expect_visible" { Act::Visible(l) } else { Act::Hidden(l) }
+            if verb == "expect_visible" {
+                Act::Visible(l)
+            } else {
+                Act::Hidden(l)
+            }
         }),
         "expect_text" => {
             let l = parse_loc(arg, &ctx, p);
@@ -492,16 +623,20 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
             Some(u) => {
                 unknown_keys(u, &["path", "path_re"], &ctx, p);
                 match (u.get("path").is_some(), u.get("path_re").is_some()) {
-                    (true, false) => text_field(u, "path", &ctx, 300, true, p).filter(|s| path_ok(s, &ctx, p)).map(|s| {
-                        lits.push(s.clone());
-                        Act::Url(UrlWant::Path(s))
-                    }),
+                    (true, false) => text_field(u, "path", &ctx, 300, true, p)
+                        .filter(|s| path_ok(s, &ctx, p))
+                        .map(|s| {
+                            lits.push(s.clone());
+                            Act::Url(UrlWant::Path(s))
+                        }),
                     (false, true) => text_field(u, "path_re", &ctx, 300, true, p).map(|s| {
                         lits.push(s.clone());
                         Act::Url(UrlWant::PathRe(s))
                     }),
                     _ => {
-                        p.push(format!("Rejected: {ctx}: expect_url takes path or path_re (one)."));
+                        p.push(format!(
+                            "Rejected: {ctx}: expect_url takes path or path_re (one)."
+                        ));
                         None
                     }
                 }
@@ -514,13 +649,19 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
         "expect_count" => {
             let l = parse_loc(arg, &ctx, p);
             let num = |k: &str| o.get(k).and_then(Value::as_u64);
-            let c = match (o.contains_key("n"), o.contains_key("min") || o.contains_key("max")) {
+            let c = match (
+                o.contains_key("n"),
+                o.contains_key("min") || o.contains_key("max"),
+            ) {
                 (true, false) => num("n").map(Count::N),
-                (false, true) => Some(Count::Range(num("min"), num("max"))).filter(|c| matches!(c, Count::Range(a, b) if a.is_some() || b.is_some())),
+                (false, true) => Some(Count::Range(num("min"), num("max")))
+                    .filter(|c| matches!(c, Count::Range(a, b) if a.is_some() || b.is_some())),
                 _ => None,
             };
             if c.is_none() {
-                p.push(format!("Rejected: {ctx}: expect_count takes n, or min and/or max (whole numbers)."));
+                p.push(format!(
+                    "Rejected: {ctx}: expect_count takes n, or min and/or max (whole numbers)."
+                ));
             }
             l.zip(c).map(|(l, c)| {
                 lits.extend(loc_strings(&l).into_iter().map(str::to_string));
@@ -531,7 +672,9 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
             if arg == &Value::Bool(true) {
                 Some(Act::ConsoleClean)
             } else {
-                p.push(format!("Rejected: {ctx}: expect_console_clean is written as true."));
+                p.push(format!(
+                    "Rejected: {ctx}: expect_console_clean is written as true."
+                ));
                 None
             }
         }
@@ -551,9 +694,17 @@ fn parse_step(i: usize, v: &Value, p: &mut Vec<String>) -> Option<Step> {
 const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 const JSON_TYPES: [&str; 6] = ["string", "number", "boolean", "array", "object", "null"];
 
-fn parse_http(arg: &Value, expect: Option<&Value>, ctx: &str, lits: &mut Vec<String>, p: &mut Vec<String>) -> Option<Act> {
+fn parse_http(
+    arg: &Value,
+    expect: Option<&Value>,
+    ctx: &str,
+    lits: &mut Vec<String>,
+    p: &mut Vec<String>,
+) -> Option<Act> {
     let Some(h) = arg.as_object() else {
-        p.push(format!("Rejected: {ctx}: http takes {{\"method\": \"GET\", \"path\": \"/api/me\"}}."));
+        p.push(format!(
+            "Rejected: {ctx}: http takes {{\"method\": \"GET\", \"path\": \"/api/me\"}}."
+        ));
         return None;
     };
     unknown_keys(h, &["method", "path", "json"], &format!("{ctx} http"), p);
@@ -563,18 +714,24 @@ fn parse_http(arg: &Value, expect: Option<&Value>, ctx: &str, lits: &mut Vec<Str
         Some(m) => match m.as_str().map(str::to_ascii_uppercase) {
             Some(m) if METHODS.contains(&m.as_str()) => m,
             _ => {
-                p.push(format!("Rejected: {ctx}: method must be one of {}.", METHODS.join(", ")));
+                p.push(format!(
+                    "Rejected: {ctx}: method must be one of {}.",
+                    METHODS.join(", ")
+                ));
                 "GET".into()
             }
         },
     };
-    let path = text_field(h, "path", &format!("{ctx} http"), 300, true, p).filter(|s| path_ok(s, ctx, p));
+    let path =
+        text_field(h, "path", &format!("{ctx} http"), 300, true, p).filter(|s| path_ok(s, ctx, p));
     if let Some(s) = &path {
         lits.push(s.clone());
     }
     let json = h.get("json").cloned();
     if json.is_some() && (method == "GET" || method == "HEAD") {
-        p.push(format!("Rejected: {ctx}: a {method} request carries no json body."));
+        p.push(format!(
+            "Rejected: {ctx}: a {method} request carries no json body."
+        ));
     }
     let mut e = HttpExpect::default();
     match expect {
@@ -632,7 +789,12 @@ fn parse_http(arg: &Value, expect: Option<&Value>, ctx: &str, lits: &mut Vec<Str
     if p.len() > n0 {
         return None;
     }
-    Some(Act::Http(HttpStep { method, path: path?, json, expect: e }))
+    Some(Act::Http(HttpStep {
+        method,
+        path: path?,
+        json,
+        expect: e,
+    }))
 }
 
 // ---------------------------------------------------------------- literals that look like test data
@@ -644,7 +806,18 @@ pub fn id_like(s: &str) -> Option<&'static str> {
     if (0..b.len().saturating_sub(35)).any(|i| uuid_at(&b[i..i + 36])) {
         return Some("a uuid");
     }
-    const DATES: [&str; 10] = ["dddd-dd-dd", "dddd/dd/dd", "dd/dd/dddd", "dd.dd.dddd", "dd-dd-dddd", "d/d/dddd", "dd/d/dddd", "d/dd/dddd", "dd:dd:dd", "dddd.dd.dd"];
+    const DATES: [&str; 10] = [
+        "dddd-dd-dd",
+        "dddd/dd/dd",
+        "dd/dd/dddd",
+        "dd.dd.dddd",
+        "dd-dd-dddd",
+        "d/d/dddd",
+        "dd/d/dddd",
+        "d/dd/dddd",
+        "dd:dd:dd",
+        "dddd.dd.dd",
+    ];
     if DATES.iter().any(|pat| has_pattern(b, pat.as_bytes())) {
         return Some("a date or time");
     }
@@ -669,23 +842,44 @@ pub fn id_like(s: &str) -> Option<&'static str> {
 }
 
 fn uuid_at(w: &[u8]) -> bool {
-    w.iter().enumerate().all(|(i, &c)| if matches!(i, 8 | 13 | 18 | 23) { c == b'-' } else { c.is_ascii_hexdigit() })
+    w.iter().enumerate().all(|(i, &c)| {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            c == b'-'
+        } else {
+            c.is_ascii_hexdigit()
+        }
+    })
 }
 
 /// `d` matches one digit, every other byte itself.
 fn has_pattern(b: &[u8], pat: &[u8]) -> bool {
-    b.len() >= pat.len() && (0..=b.len() - pat.len()).any(|i| pat.iter().enumerate().all(|(j, &p)| if p == b'd' { b[i + j].is_ascii_digit() } else { b[i + j] == p }))
+    b.len() >= pat.len()
+        && (0..=b.len() - pat.len()).any(|i| {
+            pat.iter().enumerate().all(|(j, &p)| {
+                if p == b'd' {
+                    b[i + j].is_ascii_digit()
+                } else {
+                    b[i + j] == p
+                }
+            })
+        })
 }
 
 // ---------------------------------------------------------------- env
 
 fn loopback_host(h: &str) -> bool {
-    let h = h.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
+    let h = h
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
     if h == "localhost" || h == "::1" || h == "{host}" {
         return true;
     }
     let parts: Vec<&str> = h.split('.').collect();
-    parts.len() == 4 && parts[0] == "127" && parts.iter().all(|x| !x.is_empty() && x.len() <= 3 && x.bytes().all(|c| c.is_ascii_digit()))
+    parts.len() == 4
+        && parts[0] == "127"
+        && parts
+            .iter()
+            .all(|x| !x.is_empty() && x.len() <= 3 && x.bytes().all(|c| c.is_ascii_digit()))
 }
 
 /// host out of `userinfo@host:port`, with `[v6]` brackets kept for the loopback test.
@@ -703,12 +897,20 @@ fn host_of(authority: &str) -> &str {
 /// Why an env entry is refused, or None. Also used at run time (a changed vault file is caught there too).
 /// shortcut: a bare hostname in a value that is not named *_HOST/*_ADDR/... and has no scheme or port is not caught; upgrade with a DNS-free host list if it matters.
 pub fn env_problem(name: &str, value: &str) -> Option<String> {
-    let valid = !name.is_empty() && name.len() <= 64 && !name.as_bytes()[0].is_ascii_digit() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && !name.as_bytes()[0].is_ascii_digit()
+        && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
     if !valid {
-        return Some(format!("env name '{}' is not a plain name (letters, digits, _).", crate::util::trunc_chars(name, 30)));
+        return Some(format!(
+            "env name '{}' is not a plain name (letters, digits, _).",
+            crate::util::trunc_chars(name, 30)
+        ));
     }
     if RESERVED_ENV.contains(&name.to_ascii_uppercase().as_str()) {
-        return Some(format!("env {name} is set by Torpor (use {{port}} in the start command for the port)."));
+        return Some(format!(
+            "env {name} is set by Torpor (use {{port}} in the start command for the port)."
+        ));
     }
     if value.chars().count() > 500 || value.contains('\0') || value.contains('\n') {
         return Some(format!("env {name} is not a short single-line value."));
@@ -716,27 +918,51 @@ pub fn env_problem(name: &str, value: &str) -> Option<String> {
     let mut rest = value;
     while let Some(i) = rest.find("://") {
         let after = &rest[i + 3..];
-        let end = after.find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace()).unwrap_or(after.len());
+        let end = after
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(after.len());
         let host = host_of(&after[..end]);
         if !loopback_host(host) {
-            return Some(format!("env {name} points at {host}, which is not on this computer. Torpor only talks to 127.0.0.1."));
+            return Some(format!(
+                "env {name} points at {host}, which is not on this computer. Torpor only talks to 127.0.0.1."
+            ));
         }
         rest = &after[end..];
     }
-    for tok in value.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '=' | '"' | '\'')) {
+    for tok in value.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '=' | '"' | '\''))
+    {
         if let Some((h, port)) = tok.rsplit_once(':') {
-            let host_like = !h.is_empty() && h.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'));
-            if host_like && port.len() >= 2 && port.bytes().all(|c| c.is_ascii_digit()) && !loopback_host(h) && !tok.contains("://") {
-                return Some(format!("env {name} points at {h}, which is not on this computer. Torpor only talks to 127.0.0.1."));
+            let host_like = !h.is_empty()
+                && h.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-'));
+            if host_like
+                && port.len() >= 2
+                && port.bytes().all(|c| c.is_ascii_digit())
+                && !loopback_host(h)
+                && !tok.contains("://")
+            {
+                return Some(format!(
+                    "env {name} points at {h}, which is not on this computer. Torpor only talks to 127.0.0.1."
+                ));
             }
         }
     }
     let up = name.to_ascii_uppercase();
-    if ["HOST", "HOSTNAME", "ADDR", "ADDRESS", "SERVER", "ENDPOINT"].iter().any(|s| up.ends_with(s)) && !value.is_empty() && !loopback_host(host_of(value)) && !value.contains("://") {
-        return Some(format!("env {name} names {value}, which is not on this computer. Torpor only talks to 127.0.0.1."));
+    if ["HOST", "HOSTNAME", "ADDR", "ADDRESS", "SERVER", "ENDPOINT"]
+        .iter()
+        .any(|s| up.ends_with(s))
+        && !value.is_empty()
+        && !loopback_host(host_of(value))
+        && !value.contains("://")
+    {
+        return Some(format!(
+            "env {name} names {value}, which is not on this computer. Torpor only talks to 127.0.0.1."
+        ));
     }
     if crate::texts::redact(&format!("{name}={value}")).1 > 0 {
-        return Some(format!("env {name} holds something that looks like a secret. Checks must not carry secrets."));
+        return Some(format!(
+            "env {name} holds something that looks like a secret. Checks must not carry secrets."
+        ));
     }
     None
 }
@@ -768,7 +994,12 @@ mod tests {
         }
     }
     fn step(s: Value) -> String {
-        with(|v| v["steps"] = Value::Array(vec![s, serde_json::json!({"expect_visible":{"text":"Hi"},"why":"w"})]))
+        with(|v| {
+            v["steps"] = Value::Array(vec![
+                s,
+                serde_json::json!({"expect_visible":{"text":"Hi"},"why":"w"}),
+            ])
+        })
     }
 
     #[test]
@@ -798,55 +1029,142 @@ mod tests {
         assert!(rej(&with(|v| v["name"] = "n".repeat(61).into())).contains("limit is 60"));
         assert!(rej(&with(|v| v["why"] = "w".repeat(201).into())).contains("limit is 200"));
         assert!(rej(&with(|v| v["steps"] = serde_json::json!([]))).contains("steps is empty"));
-        assert!(rej(&with(|v| v["steps"] = Value::Array((0..41).map(|_| serde_json::json!({"goto":"/"})).collect()))).contains("limit is 40"));
-        assert!(rej(&with(|v| v["start"]["cmd"] = "x".repeat(301).into())).contains("limit is 300"));
+        assert!(
+            rej(&with(|v| v["steps"] = Value::Array(
+                (0..41).map(|_| serde_json::json!({"goto":"/"})).collect()
+            )))
+            .contains("limit is 40")
+        );
+        assert!(
+            rej(&with(|v| v["start"]["cmd"] = "x".repeat(301).into())).contains("limit is 300")
+        );
         assert!(rej(&with(|v| v["start"]["timeout_s"] = 91.into())).contains("timeout_s"));
-        assert!(rej(&with(|v| v.as_object_mut().unwrap().remove("start").map(|_| ()).unwrap())).contains("start is missing"));
+        assert!(
+            rej(&with(|v| v
+                .as_object_mut()
+                .unwrap()
+                .remove("start")
+                .map(|_| ())
+                .unwrap()))
+            .contains("start is missing")
+        );
         assert!(rej(&with(|v| v["start"]["extra"] = 1.into())).contains("unknown key 'extra'"));
         // steps
         assert!(rej(&step(serde_json::json!({"sleep": 5}))).contains("no known step"));
-        assert!(rej(&step(serde_json::json!({"goto":"/a","click":{"text":"x"}}))).contains("two steps"));
-        assert!(rej(&step(serde_json::json!({"goto":"/a","speed":1}))).contains("unknown key 'speed'"));
+        assert!(
+            rej(&step(serde_json::json!({"goto":"/a","click":{"text":"x"}}))).contains("two steps")
+        );
+        assert!(
+            rej(&step(serde_json::json!({"goto":"/a","speed":1}))).contains("unknown key 'speed'")
+        );
         // locators
-        assert!(rej(&step(serde_json::json!({"click":".btn"}))).contains("uses a CSS selector (.btn). Use role, label, text or testid."));
+        assert!(
+            rej(&step(serde_json::json!({"click":".btn"})))
+                .contains("uses a CSS selector (.btn). Use role, label, text or testid.")
+        );
         assert!(rej(&step(serde_json::json!({"click":{"css":"#go"}}))).contains("a CSS selector"));
         assert!(rej(&step(serde_json::json!({"click":{"xpath":"//a"}}))).contains("an XPath"));
-        assert!(rej(&step(serde_json::json!({"click":{"text":"Go","nth":2}}))).contains("a position"));
-        assert!(rej(&step(serde_json::json!({"click":{"text":"Go","label":"Go"}}))).contains("two locators"));
+        assert!(
+            rej(&step(serde_json::json!({"click":{"text":"Go","nth":2}}))).contains("a position")
+        );
+        assert!(
+            rej(&step(
+                serde_json::json!({"click":{"text":"Go","label":"Go"}})
+            ))
+            .contains("two locators")
+        );
         assert!(rej(&step(serde_json::json!({"click":{}}))).contains("no locator"));
-        assert!(rej(&step(serde_json::json!({"click":{"text":"Go","name":"x"}}))).contains("name goes with role"));
+        assert!(
+            rej(&step(serde_json::json!({"click":{"text":"Go","name":"x"}})))
+                .contains("name goes with role")
+        );
         // absolute URLs and bad paths
-        assert!(rej(&step(serde_json::json!({"goto":"https://example.com/a"}))).contains("absolute URL"));
+        assert!(
+            rej(&step(serde_json::json!({"goto":"https://example.com/a"})))
+                .contains("absolute URL")
+        );
         assert!(rej(&step(serde_json::json!({"goto":"//evil.test/a"}))).contains("absolute URL"));
         assert!(rej(&step(serde_json::json!({"goto":"login"}))).contains("must start with /"));
         assert!(rej(&step(serde_json::json!({"http":{"path":"http://127.0.0.1/x"},"expect":{"status":200},"why":"w"}))).contains("absolute URL"));
-        assert!(rej(&with(|v| v["start"]["ready"] = "http://localhost:3000/".into())).contains("absolute URL"));
+        assert!(
+            rej(&with(
+                |v| v["start"]["ready"] = "http://localhost:3000/".into()
+            ))
+            .contains("absolute URL")
+        );
         // assertions need a why, and at least one must exist
-        assert!(rej(&step(serde_json::json!({"expect_visible":{"text":"Hi"}}))).contains("missing 'why'"));
-        assert!(rej(&with(|v| v["steps"] = serde_json::json!([{"goto":"/"}]))).contains("no assertion"));
-        assert!(rej(&step(serde_json::json!({"expect_url":{"path":"/a","path_re":"x"},"why":"w"}))).contains("path or path_re"));
-        assert!(rej(&step(serde_json::json!({"expect_count":{"text":"x"},"n":1,"min":1,"why":"w"}))).contains("expect_count takes"));
-        assert!(rej(&step(serde_json::json!({"expect_console_clean":false,"why":"w"}))).contains("written as true"));
+        assert!(
+            rej(&step(serde_json::json!({"expect_visible":{"text":"Hi"}})))
+                .contains("missing 'why'")
+        );
+        assert!(
+            rej(&with(|v| v["steps"] = serde_json::json!([{"goto":"/"}]))).contains("no assertion")
+        );
+        assert!(
+            rej(&step(
+                serde_json::json!({"expect_url":{"path":"/a","path_re":"x"},"why":"w"})
+            ))
+            .contains("path or path_re")
+        );
+        assert!(
+            rej(&step(
+                serde_json::json!({"expect_count":{"text":"x"},"n":1,"min":1,"why":"w"})
+            ))
+            .contains("expect_count takes")
+        );
+        assert!(
+            rej(&step(
+                serde_json::json!({"expect_console_clean":false,"why":"w"})
+            ))
+            .contains("written as true")
+        );
         // http
-        assert!(rej(&step(serde_json::json!({"http":{"path":"/a"},"why":"w"}))).contains("needs an expect"));
+        assert!(
+            rej(&step(serde_json::json!({"http":{"path":"/a"},"why":"w"})))
+                .contains("needs an expect")
+        );
         assert!(rej(&step(serde_json::json!({"http":{"path":"/a","method":"TRACE"},"expect":{"status":200},"why":"w"}))).contains("method must be"));
         assert!(rej(&step(serde_json::json!({"http":{"path":"/a","json":{}},"expect":{"status":200},"why":"w"}))).contains("no json body"));
         assert!(rej(&step(serde_json::json!({"http":{"path":"/a"},"expect":{"status":200,"color":1},"why":"w"}))).contains("unknown key 'color'"));
         assert!(rej(&step(serde_json::json!({"http":{"path":"/a"},"expect":{"json_type":{"a":"text"}},"why":"w"}))).contains("json_type"));
-        assert!(rej(&step(serde_json::json!({"http":{"path":"/a"},"expect":{"length_range":[5,1]},"why":"w"}))).contains("length_range"));
+        assert!(
+            rej(&step(
+                serde_json::json!({"http":{"path":"/a"},"expect":{"length_range":[5,1]},"why":"w"})
+            ))
+            .contains("length_range")
+        );
     }
 
     #[test]
     fn literals_that_look_like_test_data_are_rejected() {
-        for bad in ["order 12345 shipped", "id 3f2a9c1e-77b4-4d1a-9c55-0a1b2c3d4e5f", "since 2024-05-17", "on 17/05/2024", "at 12:30:15", "tok 0123456789abcdef", "ref a1b2c3d4e5f6", "abcdef0123456789"] {
-            let msg = rej(&step(serde_json::json!({"expect_text":{"label":"Greeting"},"contains":bad,"why":"w"})));
+        for bad in [
+            "order 12345 shipped",
+            "id 3f2a9c1e-77b4-4d1a-9c55-0a1b2c3d4e5f",
+            "since 2024-05-17",
+            "on 17/05/2024",
+            "at 12:30:15",
+            "tok 0123456789abcdef",
+            "ref a1b2c3d4e5f6",
+            "abcdef0123456789",
+        ] {
+            let msg = rej(&step(
+                serde_json::json!({"expect_text":{"label":"Greeting"},"contains":bad,"why":"w"}),
+            ));
             assert!(msg.contains("looks like"), "{bad}: {msg}");
         }
         // The same words are fine in an action (not an assertion) and as placeholders.
-        lint(&step(serde_json::json!({"fill":{"label":"Phone"},"value":"0501234567"}))).unwrap();
+        lint(&step(
+            serde_json::json!({"fill":{"label":"Phone"},"value":"0501234567"}),
+        ))
+        .unwrap();
         lint(&step(serde_json::json!({"expect_text":{"label":"Greeting"},"contains":"Hello u{rand} on port {port}","why":"w"}))).unwrap();
         lint(&step(serde_json::json!({"expect_text":{"label":"Total"},"contains":"$1,299 in 2024","why":"w"}))).unwrap();
-        assert!(rej(&step(serde_json::json!({"expect_visible":{"testid":"user-9f8e7d6c5b4a"},"why":"w"}))).contains("looks like"));
+        assert!(
+            rej(&step(
+                serde_json::json!({"expect_visible":{"testid":"user-9f8e7d6c5b4a"},"why":"w"})
+            ))
+            .contains("looks like")
+        );
         assert!(rej(&step(serde_json::json!({"http":{"path":"/api/items/123456"},"expect":{"status":200},"why":"w"}))).contains("long number"));
         assert!(rej(&step(serde_json::json!({"http":{"path":"/a"},"expect":{"body_contains":"1700000000"},"why":"w"}))).contains("long number"));
     }
@@ -868,8 +1186,20 @@ mod tests {
             let msg = rej(&with(|d| d["env"] = serde_json::json!({ k: v })));
             assert!(msg.contains(k), "{k}: {msg}");
         }
-        assert!(env_problem("API", "https://api.example.com/v1").unwrap().contains("not on this computer"));
-        for (k, v) in [("API", "http://127.0.0.1:{port}/x"), ("API", "http://localhost:3000"), ("API", "http://[::1]:80/"), ("DB", "file:./dev.db"), ("DB_HOST", "localhost"), ("MODE", "test"), ("DB", "postgres://u:p@127.0.0.1:5432/db")] {
+        assert!(
+            env_problem("API", "https://api.example.com/v1")
+                .unwrap()
+                .contains("not on this computer")
+        );
+        for (k, v) in [
+            ("API", "http://127.0.0.1:{port}/x"),
+            ("API", "http://localhost:3000"),
+            ("API", "http://[::1]:80/"),
+            ("DB", "file:./dev.db"),
+            ("DB_HOST", "localhost"),
+            ("MODE", "test"),
+            ("DB", "postgres://u:p@127.0.0.1:5432/db"),
+        ] {
             assert_eq!(env_problem(k, v), None, "{k}={v}");
         }
         // Non-loopback in a chain of URLs: the second one counts too.
@@ -880,11 +1210,26 @@ mod tests {
     fn paths_with_oauth_and_friends_force_unverifiable() {
         let l = lint(&step(serde_json::json!({"goto":"/auth/Callback?x=1"}))).unwrap();
         assert!(l.spec.unverifiable);
-        assert!(String::from_utf8(l.canon).unwrap().contains("\"unverifiable\":true"));
+        assert!(
+            String::from_utf8(l.canon)
+                .unwrap()
+                .contains("\"unverifiable\":true")
+        );
         for w in ["/oauth/start", "/captcha", "/checkout", "/payment/x"] {
-            assert!(lint(&step(serde_json::json!({"goto": w}))).unwrap().spec.unverifiable, "{w}");
+            assert!(
+                lint(&step(serde_json::json!({"goto": w})))
+                    .unwrap()
+                    .spec
+                    .unverifiable,
+                "{w}"
+            );
         }
-        assert!(!lint(&step(serde_json::json!({"goto":"/cart"}))).unwrap().spec.unverifiable);
+        assert!(
+            !lint(&step(serde_json::json!({"goto":"/cart"})))
+                .unwrap()
+                .spec
+                .unverifiable
+        );
     }
 
     #[test]
@@ -900,7 +1245,10 @@ mod tests {
         assert_eq!(subst("u{rand}-{port}", "abc", 8080), "uabc-8080");
         if let Act::Http(h) = &l.spec.steps[1].act {
             assert_eq!(h.method, "POST");
-            assert_eq!(subst_value(h.json.as_ref().unwrap(), "zz", 1)["email"], "uzz@example.test");
+            assert_eq!(
+                subst_value(h.json.as_ref().unwrap(), "zz", 1)["email"],
+                "uzz@example.test"
+            );
         } else {
             panic!("http step");
         }

@@ -8,7 +8,9 @@ fn is_run(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'=' | b'-')
 }
 fn has_word(name: &[u8]) -> bool {
-    [&b"key"[..], b"token", b"secret", b"pass", b"pwd", b"auth"].iter().any(|w| name.windows(w.len()).any(|x| x.eq_ignore_ascii_case(w)))
+    [&b"key"[..], b"token", b"secret", b"pass", b"pwd", b"auth"]
+        .iter()
+        .any(|w| name.windows(w.len()).any(|x| x.eq_ignore_ascii_case(w)))
 }
 
 /// End of the value after `KEY=` that starts at `at`: a quoted string, else everything up to white space. None when empty.
@@ -65,7 +67,10 @@ pub fn mask_runs(s: &str) -> String {
             i += 1;
         }
         let t = &b[st..i];
-        if t.len() >= 16 && t.iter().any(u8::is_ascii_alphabetic) && t.iter().any(u8::is_ascii_digit) {
+        if t.len() >= 16
+            && t.iter().any(u8::is_ascii_alphabetic)
+            && t.iter().any(u8::is_ascii_digit)
+        {
             out.push_str(&s[from..st]);
             out.push_str("[hidden]");
             from = i;
@@ -118,11 +123,23 @@ mod tests {
     use super::*;
     #[test]
     fn hides_long_mixed_runs_and_key_values() {
-        assert_eq!(mask("curl -H x tc_0123456789abcdef0123456789abcdef"), "curl -H x [hidden]");
-        assert_eq!(mask("export API_TOKEN=hello world"), "export API_TOKEN=[hidden] world");
+        assert_eq!(
+            mask("curl -H x tc_0123456789abcdef0123456789abcdef"),
+            "curl -H x [hidden]"
+        );
+        assert_eq!(
+            mask("export API_TOKEN=hello world"),
+            "export API_TOKEN=[hidden] world"
+        );
         assert_eq!(mask("PASSWORD=\"a b c\" ls"), "PASSWORD=[hidden] ls");
-        assert_eq!(mask("abcdefghijklmnopqrstuvwxyz"), "abcdefghijklmnopqrstuvwxyz");
-        assert_eq!(mask("make the login button blue"), "make the login button blue");
+        assert_eq!(
+            mask("abcdefghijklmnopqrstuvwxyz"),
+            "abcdefghijklmnopqrstuvwxyz"
+        );
+        assert_eq!(
+            mask("make the login button blue"),
+            "make the login button blue"
+        );
     }
     /// The scanners must do what the regexes they replaced did (the regex crate stays as a dev-dependency for this). Only difference: case folding is ASCII-only (the regex also folded the Kelvin sign and the long s).
     #[test]
@@ -134,13 +151,52 @@ mod tests {
             let a = kv.replace_all(s, |c: &Captures| format!("{}=[hidden]", &c[1]));
             run.replace_all(&a, |c: &Captures| {
                 let t = &c[0];
-                if t.bytes().any(|b| b.is_ascii_alphabetic()) && t.bytes().any(|b| b.is_ascii_digit()) { "[hidden]".to_string() } else { t.to_string() }
+                if t.bytes().any(|b| b.is_ascii_alphabetic())
+                    && t.bytes().any(|b| b.is_ascii_digit())
+                {
+                    "[hidden]".to_string()
+                } else {
+                    t.to_string()
+                }
             })
             .into_owned()
         };
         let atoms = [
-            "key", "KEY", "Token", "secret", "SeCrEt", "pass", "pwd", "auth", "=", "=", "\"", "'", " ", " ", "\t", "\n", "a", "B", "7", "0", "_", "-", ".", "+", "\u{e9}", "\u{a0}", "\u{2003}", "x",
-            "abcdefgh12345678", "ABCDEFGHIJKLMNOP", "1234567890123456", "[", "]", "/", "$",
+            "key",
+            "KEY",
+            "Token",
+            "secret",
+            "SeCrEt",
+            "pass",
+            "pwd",
+            "auth",
+            "=",
+            "=",
+            "\"",
+            "'",
+            " ",
+            " ",
+            "\t",
+            "\n",
+            "a",
+            "B",
+            "7",
+            "0",
+            "_",
+            "-",
+            ".",
+            "+",
+            "\u{e9}",
+            "\u{a0}",
+            "\u{2003}",
+            "x",
+            "abcdefgh12345678",
+            "ABCDEFGHIJKLMNOP",
+            "1234567890123456",
+            "[",
+            "]",
+            "/",
+            "$",
         ];
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = || {
@@ -151,7 +207,9 @@ mod tests {
         };
         for _ in 0..40_000 {
             let n = 1 + (next() % 14) as usize;
-            let s: String = (0..n).map(|_| atoms[(next() % atoms.len() as u64) as usize]).collect();
+            let s: String = (0..n)
+                .map(|_| atoms[(next() % atoms.len() as u64) as usize])
+                .collect();
             assert_eq!(mask(&s), reference(&s), "input {s:?}");
         }
     }

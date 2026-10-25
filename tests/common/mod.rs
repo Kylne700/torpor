@@ -5,7 +5,7 @@
 
 pub mod app;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -34,19 +34,35 @@ static NEXT_WINDOW: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 
 impl Env {
     pub fn new() -> Env {
-        let tmp = tempfile::Builder::new().prefix("torpor-sim").tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("torpor-sim")
+            .tempdir()
+            .unwrap();
         Env::in_dir(tmp)
     }
 
     pub fn in_dir(tmp: tempfile::TempDir) -> Env {
         let base = std::fs::canonicalize(tmp.path()).unwrap();
-        let (proj, home, thome) = (base.join("proj"), base.join("home"), base.join("torpor-home"));
+        let (proj, home, thome) = (
+            base.join("proj"),
+            base.join("home"),
+            base.join("torpor-home"),
+        );
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         let key = home.join(".config").join("torpor").join("key");
         // 220 windows of 100 ports below the range the system hands out itself; the pid keeps two test runs at once from sharing the first ones.
-        let w = (NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * 37 + std::process::id()) % 220;
-        Env { _tmp: tmp, proj, home, thome, key, ports: format!("{}-{}", 10_000 + w * 100, 10_100 + w * 100) }
+        let w = (NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * 37
+            + std::process::id())
+            % 220;
+        Env {
+            _tmp: tmp,
+            proj,
+            home,
+            thome,
+            key,
+            ports: format!("{}-{}", 10_000 + w * 100, 10_100 + w * 100),
+        }
     }
 }
 
@@ -59,11 +75,17 @@ pub struct Out {
 
 impl Out {
     pub fn json(&self) -> Option<Value> {
-        if self.stdout.trim().is_empty() { None } else { serde_json::from_str(self.stdout.trim()).ok() }
+        if self.stdout.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str(self.stdout.trim()).ok()
+        }
     }
     /// systemMessage, or additionalContext, or the deny reason: the one sentence the hook said.
     pub fn text(&self) -> String {
-        let Some(v) = self.json() else { return String::new() };
+        let Some(v) = self.json() else {
+            return String::new();
+        };
         v.get("systemMessage")
             .or_else(|| v.pointer("/hookSpecificOutput/additionalContext"))
             .or_else(|| v.pointer("/hookSpecificOutput/permissionDecisionReason"))
@@ -95,7 +117,10 @@ pub fn cmd_with(program: &Path, env: &Env) -> Command {
         .env("CLAUDE_PROJECT_DIR", &env.proj)
         .env("HOME", &env.home)
         .env("XDG_CONFIG_HOME", env.home.join(".config"))
-        .env("CLAUDE_CODE_MANAGED_SETTINGS_PATH", env.home.join("managed"))
+        .env(
+            "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+            env.home.join("managed"),
+        )
         .env("TORPOR_TEST_NO_GC", "1")
         .env("TORPOR_TEST_PORTS", &env.ports)
         .current_dir(&env.proj);
@@ -103,7 +128,9 @@ pub fn cmd_with(program: &Path, env: &Env) -> Command {
 }
 
 pub fn run_cmd(mut c: Command, stdin: &[u8]) -> Out {
-    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let t0 = Instant::now();
     let mut child = c.spawn().unwrap();
     if let Some(mut si) = child.stdin.take() {
@@ -147,7 +174,10 @@ fn has_forbidden(v: &Value, event: &str, top: bool) -> Option<String> {
 fn assert_torpor_lines(event: &str, what: &str, s: &str) {
     assert!(s.chars().count() < 10_000, "{event}: {what} too long");
     for l in s.lines() {
-        assert!(l.starts_with("Torpor"), "{event}: {what} line does not start with Torpor: {l}");
+        assert!(
+            l.starts_with("Torpor"),
+            "{event}: {what} line does not start with Torpor: {l}"
+        );
     }
     assert!(!s.is_empty(), "{event}: empty {what}");
 }
@@ -157,14 +187,29 @@ fn assert_torpor_lines(event: &str, what: &str, s: &str) {
 /// Allowed: Stop `systemMessage` (lines) or the block `decision`+`reason`; UserPromptSubmit and SessionStart
 /// `additionalContext` (and a `systemMessage` for the user); PostToolUse `additionalContext`; PreToolUse deny or ask.
 pub fn check_contract(event: &str, o: &Out) {
-    assert_eq!(o.code, 0, "{event}: exit code {} (stderr: {})", o.code, o.stderr);
-    assert!(o.stderr.is_empty(), "{event}: wrote to stderr: {}", o.stderr);
+    assert_eq!(
+        o.code, 0,
+        "{event}: exit code {} (stderr: {})",
+        o.code, o.stderr
+    );
+    assert!(
+        o.stderr.is_empty(),
+        "{event}: wrote to stderr: {}",
+        o.stderr
+    );
     if o.stdout.is_empty() {
         return;
     }
-    assert!(o.stdout.ends_with('\n') && o.stdout.matches('\n').count() == 1, "{event}: stdout is not one line: {:?}", o.stdout);
-    let v: Value = serde_json::from_str(o.stdout.trim_end()).unwrap_or_else(|e| panic!("{event}: stdout is not JSON ({e}): {:?}", o.stdout));
-    let obj = v.as_object().unwrap_or_else(|| panic!("{event}: stdout is not an object"));
+    assert!(
+        o.stdout.ends_with('\n') && o.stdout.matches('\n').count() == 1,
+        "{event}: stdout is not one line: {:?}",
+        o.stdout
+    );
+    let v: Value = serde_json::from_str(o.stdout.trim_end())
+        .unwrap_or_else(|e| panic!("{event}: stdout is not JSON ({e}): {:?}", o.stdout));
+    let obj = v
+        .as_object()
+        .unwrap_or_else(|| panic!("{event}: stdout is not an object"));
     if let Some(f) = has_forbidden(&v, event, true) {
         panic!("{event}: forbidden output ({f}): {}", o.stdout);
     }
@@ -176,7 +221,11 @@ pub fn check_contract(event: &str, o: &Out) {
         _ => &[],
     };
     for k in &keys {
-        assert!(allowed.contains(k), "{event}: key {k} is not allowed in {}", o.stdout);
+        assert!(
+            allowed.contains(k),
+            "{event}: key {k} is not allowed in {}",
+            o.stdout
+        );
     }
     if let Some(s) = obj.get("systemMessage") {
         let s = s.as_str().expect("systemMessage is a string");
@@ -184,34 +233,85 @@ pub fn check_contract(event: &str, o: &Out) {
         if event == "Stop" {
             let first = s.lines().next().unwrap_or("");
             // The save-point line keeps the spec's 160; a promise note carries a reason of its own (a few hundred characters at most).
-            let note = ["Torpor: promise #", "Torpor: new promise #", "Torpor: the AI disputes promise #"].iter().any(|p| first.starts_with(p));
+            let note = [
+                "Torpor: promise #",
+                "Torpor: new promise #",
+                "Torpor: the AI disputes promise #",
+            ]
+            .iter()
+            .any(|p| first.starts_with(p));
             let max = if note { 700 } else { 160 };
-            assert!(first.chars().count() <= max, "Stop line over {max} characters: {first}");
+            assert!(
+                first.chars().count() <= max,
+                "Stop line over {max} characters: {first}"
+            );
         }
     }
     // A block comes with its reason and nothing else; a reason never comes alone.
-    assert_eq!(keys.contains("decision"), keys.contains("reason"), "{event}: decision and reason go together: {}", o.stdout);
+    assert_eq!(
+        keys.contains("decision"),
+        keys.contains("reason"),
+        "{event}: decision and reason go together: {}",
+        o.stdout
+    );
     if let Some(r) = obj.get("reason") {
         let r = r.as_str().expect("reason is a string");
         assert_torpor_lines(event, "reason", r);
-        assert!(r.split_whitespace().count() <= 100 && r.lines().count() == 1, "{event}: a block reason is one line of at most 100 words: {r}");
-        assert!(!keys.contains("systemMessage"), "{event}: a block carries only its reason: {}", o.stdout);
+        assert!(
+            r.split_whitespace().count() <= 100 && r.lines().count() == 1,
+            "{event}: a block reason is one line of at most 100 words: {r}"
+        );
+        assert!(
+            !keys.contains("systemMessage"),
+            "{event}: a block carries only its reason: {}",
+            o.stdout
+        );
     }
     if let Some(h) = obj.get("hookSpecificOutput") {
         let h = h.as_object().expect("hookSpecificOutput is an object");
-        assert_eq!(h.get("hookEventName").and_then(|x| x.as_str()), Some(event), "{event}: nested hookEventName");
-        let ok: &[&str] = if event == "PreToolUse" { &["hookEventName", "permissionDecision", "permissionDecisionReason"] } else { &["hookEventName", "additionalContext"] };
+        assert_eq!(
+            h.get("hookEventName").and_then(|x| x.as_str()),
+            Some(event),
+            "{event}: nested hookEventName"
+        );
+        let ok: &[&str] = if event == "PreToolUse" {
+            &[
+                "hookEventName",
+                "permissionDecision",
+                "permissionDecisionReason",
+            ]
+        } else {
+            &["hookEventName", "additionalContext"]
+        };
         for k in h.keys() {
-            assert!(ok.contains(&k.as_str()), "{event}: nested key {k} is not allowed");
+            assert!(
+                ok.contains(&k.as_str()),
+                "{event}: nested key {k} is not allowed"
+            );
         }
         if event == "PreToolUse" {
             let d = h.get("permissionDecision").and_then(|x| x.as_str());
-            assert!(matches!(d, Some("deny") | Some("ask")), "PreToolUse may only deny or ask, never allow: {d:?}");
-            let r = h.get("permissionDecisionReason").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("PreToolUse: no reason in {}", o.stdout));
-            assert!(r.chars().count() < 10_000 && r.starts_with("Torpor"), "PreToolUse: bad reason {r}");
+            assert!(
+                matches!(d, Some("deny") | Some("ask")),
+                "PreToolUse may only deny or ask, never allow: {d:?}"
+            );
+            let r = h
+                .get("permissionDecisionReason")
+                .and_then(|x| x.as_str())
+                .unwrap_or_else(|| panic!("PreToolUse: no reason in {}", o.stdout));
+            assert!(
+                r.chars().count() < 10_000 && r.starts_with("Torpor"),
+                "PreToolUse: bad reason {r}"
+            );
         } else {
-            let c = h.get("additionalContext").and_then(|x| x.as_str()).unwrap_or_else(|| panic!("{event}: no additionalContext in {}", o.stdout));
-            assert!(c.chars().count() < 10_000 && c.starts_with("Torpor"), "{event}: bad additionalContext {c}");
+            let c = h
+                .get("additionalContext")
+                .and_then(|x| x.as_str())
+                .unwrap_or_else(|| panic!("{event}: no additionalContext in {}", o.stdout));
+            assert!(
+                c.chars().count() < 10_000 && c.starts_with("Torpor"),
+                "{event}: bad additionalContext {c}"
+            );
         }
     }
 }
@@ -228,8 +328,27 @@ pub struct OEnt {
 }
 
 const EXCL: &[&str] = &[
-    "node_modules", ".next", ".nuxt", ".svelte-kit", ".output", ".vercel", ".turbo", ".parcel-cache", ".cache", "dist", "build", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle",
-    "coverage", ".terraform", "Pods", "DerivedData", ".dart_tool", ".torpor-stage",
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".output",
+    ".vercel",
+    ".turbo",
+    ".parcel-cache",
+    ".cache",
+    "dist",
+    "build",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".gradle",
+    "coverage",
+    ".terraform",
+    "Pods",
+    "DerivedData",
+    ".dart_tool",
+    ".torpor-stage",
 ];
 
 fn excluded(dir: &Path, name: &str, is_dir: bool) -> bool {
@@ -241,13 +360,19 @@ fn excluded(dir: &Path, name: &str, is_dir: bool) -> bool {
             || (name == "target" && dir.join("Cargo.toml").exists())
             || ((name == "venv" || name == ".venv") && dir.join(name).join("pyvenv.cfg").exists());
     }
-    (name.starts_with(".torpor-") && name.ends_with(".tmp")) || name.ends_with("-wal") || name.ends_with("-shm") || name.ends_with("-journal")
+    (name.starts_with(".torpor-") && name.ends_with(".tmp"))
+        || name.ends_with("-wal")
+        || name.ends_with("-shm")
+        || name.ends_with("-journal")
 }
 
 /// What the project folder holds right now, with the same hard excludes as Torpor (no ignore files in test projects).
 pub fn oracle(root: &Path) -> BTreeMap<String, OEnt> {
     fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, OEnt>) {
-        let mut items: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap()).collect();
+        let mut items: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .collect();
         items.sort_by_key(|e| e.file_name());
         for e in items {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -255,17 +380,44 @@ pub fn oracle(root: &Path) -> BTreeMap<String, OEnt> {
             if excluded(dir, &name, md.is_dir()) {
                 continue;
             }
-            let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             let exec = md.permissions().mode() & 0o111 != 0;
             if md.is_dir() {
-                out.insert(path.clone(), OEnt { kind: 'd', exec: true, hash: String::new() });
+                out.insert(
+                    path.clone(),
+                    OEnt {
+                        kind: 'd',
+                        exec: true,
+                        hash: String::new(),
+                    },
+                );
                 walk(&e.path(), &path, out);
             } else if md.file_type().is_symlink() {
                 let t = std::fs::read_link(e.path()).unwrap();
                 use std::os::unix::ffi::OsStrExt;
-                out.insert(path, OEnt { kind: 'l', exec: false, hash: blake3::hash(t.as_os_str().as_bytes()).to_hex().to_string() });
+                out.insert(
+                    path,
+                    OEnt {
+                        kind: 'l',
+                        exec: false,
+                        hash: blake3::hash(t.as_os_str().as_bytes()).to_hex().to_string(),
+                    },
+                );
             } else if md.is_file() {
-                out.insert(path, OEnt { kind: 'f', exec, hash: blake3::hash(&std::fs::read(e.path()).unwrap()).to_hex().to_string() });
+                out.insert(
+                    path,
+                    OEnt {
+                        kind: 'f',
+                        exec,
+                        hash: blake3::hash(&std::fs::read(e.path()).unwrap())
+                            .to_hex()
+                            .to_string(),
+                    },
+                );
             }
         }
     }
@@ -298,7 +450,11 @@ pub fn restore_snapshot(root: &Path, s: &Snap) {
         let abs = root.join(p);
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(&abs, bytes).unwrap();
-        std::fs::set_permissions(&abs, std::fs::Permissions::from_mode(if *exec { 0o755 } else { 0o644 })).unwrap();
+        std::fs::set_permissions(
+            &abs,
+            std::fs::Permissions::from_mode(if *exec { 0o755 } else { 0o644 }),
+        )
+        .unwrap();
     }
 }
 
@@ -333,7 +489,21 @@ impl Sim {
     pub fn with_env(env: Arc<Env>, n: u32) -> Sim {
         let sid = format!("sess-{n:04}-0000-4000-8000-00000000000{n}");
         let transcript = env.home.join(format!("transcript-{n}.jsonl"));
-        Sim { env, sid, transcript, extra_env: Vec::new(), permission_mode: "default".into(), program: None, timings: Vec::new(), tape: Vec::new(), prompt_n: 0, tool_n: 0, pid: String::new(), n, observer: Default::default() }
+        Sim {
+            env,
+            sid,
+            transcript,
+            extra_env: Vec::new(),
+            permission_mode: "default".into(),
+            program: None,
+            timings: Vec::new(),
+            tape: Vec::new(),
+            prompt_n: 0,
+            tool_n: 0,
+            pid: String::new(),
+            n,
+            observer: Default::default(),
+        }
     }
 
     /// A second Claude Code session in the same project and store.
@@ -463,7 +633,11 @@ impl Sim {
     pub fn prompt_with(&mut self, text: &str, origin: &str, source: &str) -> Out {
         self.next_pid();
         let line = json!({"type": "user", "uuid": format!("u-{}-{}", self.n, self.prompt_n), "promptId": self.pid, "turnOrigin": origin, "promptSource": source, "isSidechain": false});
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.transcript)
+            .unwrap();
         writeln!(f, "{line}").unwrap();
         self.hook("UserPromptSubmit", json!({"prompt": text}))
     }
@@ -480,9 +654,22 @@ impl Sim {
         }
     }
 
-    fn tool_event(&mut self, event: &str, tool: &str, input: &Value, id: &str, agent: Option<&str>, more: Value) -> Out {
+    fn tool_event(
+        &mut self,
+        event: &str,
+        tool: &str,
+        input: &Value,
+        id: &str,
+        agent: Option<&str>,
+        more: Value,
+    ) -> Out {
         let mut e = json!({"tool_name": tool, "tool_input": input, "tool_use_id": id});
-        for (k, v) in Self::agent_fields(agent).as_object().unwrap().iter().chain(more.as_object().unwrap().iter()) {
+        for (k, v) in Self::agent_fields(agent)
+            .as_object()
+            .unwrap()
+            .iter()
+            .chain(more.as_object().unwrap().iter())
+        {
             e[k] = v.clone();
         }
         let o = self.hook(event, e);
@@ -503,7 +690,14 @@ impl Sim {
         }
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(&abs, content).unwrap();
-        self.tool_event("PostToolUse", tool, &input, &id, agent, json!({"tool_response": {"filePath": abs, "success": true}}))
+        self.tool_event(
+            "PostToolUse",
+            tool,
+            &input,
+            &id,
+            agent,
+            json!({"tool_response": {"filePath": abs, "success": true}}),
+        )
     }
 
     pub fn edit(&mut self, rel: &str, content: &str) -> Out {
@@ -516,7 +710,14 @@ impl Sim {
         std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
         std::fs::write(&abs, content).unwrap();
         let id = self.tool_id();
-        self.tool_event("PostToolUse", "Write", &json!({"file_path": abs}), &id, None, json!({"tool_response": {"filePath": abs, "success": true}}))
+        self.tool_event(
+            "PostToolUse",
+            "Write",
+            &json!({"file_path": abs}),
+            &id,
+            None,
+            json!({"tool_response": {"filePath": abs, "success": true}}),
+        )
     }
 
     pub fn write_tool(&mut self, rel: &str, content: &str) -> Out {
@@ -535,15 +736,39 @@ impl Sim {
         if pre.json().is_some() {
             return -1;
         }
-        let o = Command::new("sh").arg("-c").arg(cmd).current_dir(&self.env.proj).stdin(Stdio::null()).output().unwrap();
+        let o = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(&self.env.proj)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
         let code = o.status.code().unwrap_or(-1);
         if code == 0 {
             let resp = json!({"stdout": String::from_utf8_lossy(&o.stdout), "stderr": "", "interrupted": false, "isImage": false, "noOutputExpected": false});
-            self.tool_event("PostToolUse", "Bash", &input, &id, agent, json!({"tool_response": resp}));
+            self.tool_event(
+                "PostToolUse",
+                "Bash",
+                &input,
+                &id,
+                agent,
+                json!({"tool_response": resp}),
+            );
         } else {
             // Claude Code's own text: the exit code on the first line, then what the command printed.
-            let shown = format!("{}{}", String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&o.stdout));
-            self.tool_event("PostToolUseFailure", "Bash", &input, &id, agent, json!({"error": format!("Exit code {code}\n{shown}"), "is_interrupt": false}));
+            let shown = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stderr),
+                String::from_utf8_lossy(&o.stdout)
+            );
+            self.tool_event(
+                "PostToolUseFailure",
+                "Bash",
+                &input,
+                &id,
+                agent,
+                json!({"error": format!("Exit code {code}\n{shown}"), "is_interrupt": false}),
+            );
         }
         code
     }
@@ -555,7 +780,14 @@ impl Sim {
     /// Only the PreToolUse of a Bash call: what Torpor answers before the command would run. Nothing is run.
     pub fn pre_bash(&mut self, cmd: &str) -> Out {
         let id = self.tool_id();
-        self.tool_event("PreToolUse", "Bash", &json!({"command": cmd}), &id, None, json!({}))
+        self.tool_event(
+            "PreToolUse",
+            "Bash",
+            &json!({"command": cmd}),
+            &id,
+            None,
+            json!({}),
+        )
     }
 
     pub fn subagent_bash(&mut self, agent: &str, cmd: &str) -> i32 {
@@ -587,7 +819,10 @@ impl Sim {
     }
 
     pub fn stop(&mut self) -> Out {
-        self.hook("Stop", json!({"stop_hook_active": false, "last_assistant_message": "done"}))
+        self.hook(
+            "Stop",
+            json!({"stop_hook_active": false, "last_assistant_message": "done"}),
+        )
     }
 
     pub fn stop_with_background(&mut self, tasks: Value) -> Out {
@@ -602,7 +837,11 @@ impl Sim {
 
     /// One line in the fake transcript.
     pub fn transcript_line(&self, line: &Value) {
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.transcript).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.transcript)
+            .unwrap();
         writeln!(f, "{line}").unwrap();
     }
 
@@ -631,7 +870,11 @@ impl Sim {
 
     /// The additionalContext of an answer, if it has one.
     pub fn context_of(o: &Out) -> Option<String> {
-        o.json()?.get("hookSpecificOutput")?.get("additionalContext")?.as_str().map(str::to_string)
+        o.json()?
+            .get("hookSpecificOutput")?
+            .get("additionalContext")?
+            .as_str()
+            .map(str::to_string)
     }
 
     // ---- the store, read from outside
@@ -644,22 +887,35 @@ impl Sim {
             .map(|e| e.path())
             .filter(|p| p.join("torpor.db").exists())
             .collect();
-        assert_eq!(found.len(), 1, "expected one workspace in the store, found {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "expected one workspace in the store, found {found:?}"
+        );
         found.pop().unwrap()
     }
 
     pub fn conn(&self) -> rusqlite::Connection {
-        let c = rusqlite::Connection::open_with_flags(self.ws_dir().join("torpor.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let c = rusqlite::Connection::open_with_flags(
+            self.ws_dir().join("torpor.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
         c.busy_timeout(Duration::from_secs(5)).unwrap();
         c
     }
 
     pub fn q_i64(&self, sql: &str) -> i64 {
-        self.conn().query_row(sql, [], |r| r.get::<_, Option<i64>>(0)).unwrap().unwrap_or(0)
+        self.conn()
+            .query_row(sql, [], |r| r.get::<_, Option<i64>>(0))
+            .unwrap()
+            .unwrap_or(0)
     }
 
     pub fn q_str(&self, sql: &str) -> Option<String> {
-        self.conn().query_row(sql, [], |r| r.get::<_, Option<String>>(0)).unwrap_or(None)
+        self.conn()
+            .query_row(sql, [], |r| r.get::<_, Option<String>>(0))
+            .unwrap_or(None)
     }
 
     pub fn max_point(&self) -> i64 {
@@ -673,11 +929,21 @@ impl Sim {
     /// (path, class) of every change recorded after point `mark`. Panics when a path shows up twice.
     pub fn changes_since(&self, mark: i64) -> BTreeMap<String, String> {
         let c = self.conn();
-        let mut st = c.prepare("SELECT path,class FROM changes WHERE point_id>?1 ORDER BY point_id").unwrap();
+        let mut st = c
+            .prepare("SELECT path,class FROM changes WHERE point_id>?1 ORDER BY point_id")
+            .unwrap();
         let mut out = BTreeMap::new();
-        for r in st.query_map([mark], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap() {
+        for r in st
+            .query_map([mark], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+        {
             let (p, cl) = r.unwrap();
-            assert!(out.insert(p.clone(), cl).is_none(), "path {p} changed twice since point {mark}");
+            assert!(
+                out.insert(p.clone(), cl).is_none(),
+                "path {p} changed twice since point {mark}"
+            );
         }
         out
     }
@@ -686,7 +952,10 @@ impl Sim {
     pub fn faults(&self) -> Vec<String> {
         let mut v = Vec::new();
         if self.env.thome.join("faults.log").exists() {
-            for l in std::fs::read_to_string(self.env.thome.join("faults.log")).unwrap().lines() {
+            for l in std::fs::read_to_string(self.env.thome.join("faults.log"))
+                .unwrap()
+                .lines()
+            {
                 v.push(l.to_string());
             }
         }
@@ -698,7 +967,12 @@ impl Sim {
     pub fn verify_point(&self, point_id: i64) {
         use torpor::store::{Key, Ws};
         let ws = Ws::open_in(&self.env.thome, &self.env.proj, false).unwrap();
-        let tree: Vec<u8> = ws.conn.query_row("SELECT tree_id FROM points WHERE id=?1", [point_id], |r| r.get(0)).unwrap();
+        let tree: Vec<u8> = ws
+            .conn
+            .query_row("SELECT tree_id FROM points WHERE id=?1", [point_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
         let tree: [u8; 32] = tree.try_into().unwrap();
         let flat = torpor::capture::flatten_tree(&ws, &ws.conn, &tree).unwrap();
         let disk = oracle(&self.env.proj);
@@ -730,12 +1004,17 @@ impl Sim {
                         continue;
                     }
                     if e.kind != 'l' && (e.mode == 755) != o.exec {
-                        bad.push(format!("{path}: exec bit differs (saved {}, disk {})", e.mode, o.exec));
+                        bad.push(format!(
+                            "{path}: exec bit differs (saved {}, disk {})",
+                            e.mode, o.exec
+                        ));
                     }
                     let want = std::fs::read(self.env.proj.join(path)).ok();
                     let want = if e.kind == 'l' {
                         use std::os::unix::ffi::OsStrExt;
-                        std::fs::read_link(self.env.proj.join(path)).ok().map(|t| t.as_os_str().as_bytes().to_vec())
+                        std::fs::read_link(self.env.proj.join(path))
+                            .ok()
+                            .map(|t| t.as_os_str().as_bytes().to_vec())
                     } else {
                         want
                     };
@@ -745,10 +1024,16 @@ impl Sim {
                         _ => None,
                     };
                     if want != got {
-                        bad.push(format!("{path}: saved bytes differ from the file (kind {})", e.kind));
+                        bad.push(format!(
+                            "{path}: saved bytes differ from the file (kind {})",
+                            e.kind
+                        ));
                     }
                     if e.kind == 'f' && e.id != o.hash {
-                        bad.push(format!("{path}: saved id {} but BLAKE3 of the file is {}", e.id, o.hash));
+                        bad.push(format!(
+                            "{path}: saved id {} but BLAKE3 of the file is {}",
+                            e.id, o.hash
+                        ));
                     }
                 }
                 other => bad.push(format!("{path}: not saved ({other}:{})", e.id)),
@@ -759,7 +1044,11 @@ impl Sim {
                 bad.push(format!("on disk but not saved: {p}"));
             }
         }
-        assert!(bad.is_empty(), "point {point_id} does not match the project:\n  {}", bad.join("\n  "));
+        assert!(
+            bad.is_empty(),
+            "point {point_id} does not match the project:\n  {}",
+            bad.join("\n  ")
+        );
     }
 
     pub fn verify_last_point(&self) {
@@ -800,7 +1089,11 @@ pub fn make_plugin_root(dir: &Path, with_binary: bool) -> PathBuf {
     std::fs::create_dir_all(root.join("bin")).unwrap();
     std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
     std::fs::copy(manifest_dir().join("bin/torpor"), root.join("bin/torpor")).unwrap();
-    std::fs::copy(manifest_dir().join(".claude-plugin/plugin.json"), root.join(".claude-plugin/plugin.json")).unwrap();
+    std::fs::copy(
+        manifest_dir().join(".claude-plugin/plugin.json"),
+        root.join(".claude-plugin/plugin.json"),
+    )
+    .unwrap();
     if with_binary {
         let d = root.join("dist").join(dist_target());
         std::fs::create_dir_all(&d).unwrap();
@@ -858,20 +1151,42 @@ pub fn clear_dir(dir: &Path) {
 pub fn assert_store_sound(env: &Env) {
     use torpor::store::Ws;
     let ws = Ws::open_in(&env.thome, &env.proj, false).unwrap();
-    let ic: String = ws.conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+    let ic: String = ws
+        .conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(ic, "ok", "PRAGMA integrity_check");
-    let mut st = ws.conn.prepare("SELECT id,tree_id FROM points WHERE dropped=0").unwrap();
-    let rows: Vec<(i64, Vec<u8>)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+    let mut st = ws
+        .conn
+        .prepare("SELECT id,tree_id FROM points WHERE dropped=0")
+        .unwrap();
+    let rows: Vec<(i64, Vec<u8>)> = st
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     for (id, tree) in rows {
         let tree: [u8; 32] = tree.try_into().unwrap();
-        let flat = torpor::capture::flatten_tree(&ws, &ws.conn, &tree).unwrap_or_else(|e| panic!("point {id}: tree unreadable: {e}"));
+        let flat = torpor::capture::flatten_tree(&ws, &ws.conn, &tree)
+            .unwrap_or_else(|e| panic!("point {id}: tree unreadable: {e}"));
         for (path, e) in flat {
             if matches!(e.kind, 'f' | 'l' | 's') {
                 let bid = torpor::util::unhex32(&e.id).unwrap();
-                assert!(ws.blob_exists(&ws.conn, &bid), "point {id}: {path} names a missing blob");
-                let loose: i64 = ws.conn.query_row("SELECT loose FROM blobs WHERE id=?1", [&bid[..]], |r| r.get(0)).unwrap();
+                assert!(
+                    ws.blob_exists(&ws.conn, &bid),
+                    "point {id}: {path} names a missing blob"
+                );
+                let loose: i64 = ws
+                    .conn
+                    .query_row("SELECT loose FROM blobs WHERE id=?1", [&bid[..]], |r| {
+                        r.get(0)
+                    })
+                    .unwrap();
                 if loose != 0 {
-                    assert!(ws.loose_path(&bid).exists(), "point {id}: {path}: loose file missing");
+                    assert!(
+                        ws.loose_path(&bid).exists(),
+                        "point {id}: {path}: loose file missing"
+                    );
                 }
             }
         }
@@ -884,15 +1199,31 @@ pub fn on_terminal(mut c: Command, typed: &str) -> Out {
     // SAFETY: openpty fills in two new descriptors, each wrapped in an OwnedFd right away.
     let (master, slave) = unsafe {
         // macOS declares the last two as *mut, Linux as *const: null_mut fits both.
-        assert_eq!(libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()), 0);
+        assert_eq!(
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ),
+            0
+        );
         (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave))
     };
-    c.stdin(Stdio::from(slave)).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.stdin(Stdio::from(slave))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let t0 = std::time::Instant::now();
     let child = c.spawn().unwrap();
     drop(c);
     let mut keys = std::fs::File::from(master);
     keys.write_all(format!("{typed}\n").as_bytes()).unwrap();
     let o = child.wait_with_output().unwrap();
-    Out { code: o.status.code().unwrap_or(-1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned(), elapsed: t0.elapsed() }
+    Out {
+        code: o.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        elapsed: t0.elapsed(),
+    }
 }

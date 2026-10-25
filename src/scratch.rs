@@ -28,13 +28,29 @@ const TAIL_KEEP: usize = 2048;
 const STALE_SCRATCH_SECS: u64 = 3600;
 const GRACE_MS: u64 = 3000;
 
-const NODE_LOCKS: [&str; 5] = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
+const NODE_LOCKS: [&str; 5] = [
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+];
 const PY_LOCKS: [&str; 2] = ["poetry.lock", "uv.lock"];
 /// Folders the scan leaves out of every tree and the lockfiles that say what is in them.
-const DEP_DIRS: [(&str, &[&str]); 3] = [("node_modules", &NODE_LOCKS), (".venv", &PY_LOCKS), ("venv", &PY_LOCKS)];
+const DEP_DIRS: [(&str, &[&str]); 3] = [
+    ("node_modules", &NODE_LOCKS),
+    (".venv", &PY_LOCKS),
+    ("venv", &PY_LOCKS),
+];
 
 fn unr(reason: impl Into<String>) -> Judged {
-    Judged { verdict: Verdict::Unrunnable, failed_step: None, reason: trunc_chars(&reason.into(), 240), assertions: 0, token_ok: false }
+    Judged {
+        verdict: Verdict::Unrunnable,
+        failed_step: None,
+        reason: trunc_chars(&reason.into(), 240),
+        assertions: 0,
+        token_ok: false,
+    }
 }
 
 // ---------------------------------------------------------------- the live project as a tree
@@ -45,7 +61,17 @@ pub fn snapshot(ws: &mut Ws, budget: Duration) -> Result<[u8; 32]> {
     ws.lock_shared(crate::restore::LOCK_WAIT_MS)?;
     let r = (|| -> Result<capture::Captured> {
         let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
-        let c = capture::capture(ws, &tx, &Req { session: "", points: Vec::new(), turn: None, only_if_changed: false, budget: Some(budget) })?;
+        let c = capture::capture(
+            ws,
+            &tx,
+            &Req {
+                session: "",
+                points: Vec::new(),
+                turn: None,
+                only_if_changed: false,
+                budget: Some(budget),
+            },
+        )?;
         tx.commit()?;
         Ok(c)
     })();
@@ -74,7 +100,13 @@ impl RunLock {
         if HELD.with(|h| h.get()) {
             return Ok(RunLock { _f: None });
         }
-        let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(ws.dir.join("run.lock"))?;
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(ws.dir.join("run.lock"))?;
         let t = Instant::now();
         loop {
             match f.try_lock() {
@@ -146,7 +178,13 @@ fn remove_scratch(base: &Path, dir: &Path) {
 
 /// Run `cmd` (`sh -c`, the sanitized environment of an app) in a scratch copy of `tree` with `opts` laid over it.
 /// `Some(true)` = it ended with 0, `Some(false)` = it ended otherwise, `None` = it could not run or ran past `limit` (or the thread's deadline).
-pub fn run_command(ws: &Ws, tree: &[u8; 32], opts: &Opts, cmd: &str, limit: Duration) -> Option<bool> {
+pub fn run_command(
+    ws: &Ws,
+    tree: &[u8; 32],
+    opts: &Opts,
+    cmd: &str,
+    limit: Duration,
+) -> Option<bool> {
     let _lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).ok()?;
     let sc = Scratch::create(ws).ok()?;
     materialize(ws, tree, &sc.app).ok()?;
@@ -171,14 +209,23 @@ fn gc_scratch(ws: &Ws) {
 fn reap_dir(base: &Path) {
     let Ok(rd) = fs::read_dir(base) else { return };
     for e in rd.flatten() {
-        let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).map_or(u64::MAX, |d| d.as_secs());
+        let age = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map_or(u64::MAX, |d| d.as_secs());
         let mut left_by_a_run = false;
         for f in fs::read_dir(e.path()).into_iter().flatten().flatten() {
             if !f.file_name().to_string_lossy().ends_with(".pgid") {
                 continue;
             }
             left_by_a_run = true;
-            if let Some(pg) = fs::read_to_string(f.path()).ok().and_then(|t| t.trim().parse::<i32>().ok()).filter(|pg| *pg > 1 && age <= STALE_SCRATCH_SECS && group_works_in(*pg, &e.path())) {
+            if let Some(pg) = fs::read_to_string(f.path())
+                .ok()
+                .and_then(|t| t.trim().parse::<i32>().ok())
+                .filter(|pg| *pg > 1 && age <= STALE_SCRATCH_SECS && group_works_in(*pg, &e.path()))
+            {
                 // SAFETY: the group id was written by the process that started this group, and a live member still works in its folder (not a reused id).
                 unsafe { libc::kill(-pg, libc::SIGKILL) };
             }
@@ -192,17 +239,30 @@ fn reap_dir(base: &Path) {
 /// True when a live process of group `pg` has its working folder inside `dir`, so a reused group id is never killed.
 /// shortcut: reads /proc, so off Linux nothing is killed (leftovers stay, as before S2d); add a libproc check if macOS needs it.
 fn group_works_in(pg: i32, dir: &Path) -> bool {
-    let Ok(dir) = dir.canonicalize() else { return false };
-    fs::read_dir("/proc").into_iter().flatten().flatten().any(|p| {
-        let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else { return false };
-        // SAFETY: getpgid only reads the group id of a process.
-        (unsafe { libc::getpgid(pid) }) == pg && fs::read_link(p.path().join("cwd")).is_ok_and(|c| c.starts_with(&dir))
-    })
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|p| {
+            let Some(pid) = p.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+                return false;
+            };
+            // SAFETY: getpgid only reads the group id of a process.
+            (unsafe { libc::getpgid(pid) }) == pg
+                && fs::read_link(p.path().join("cwd")).is_ok_and(|c| c.starts_with(&dir))
+        })
 }
 
 /// A tree path that stays inside the folder: plain names only.
 fn safe_rel(p: &str) -> bool {
-    !p.is_empty() && Path::new(p).components().all(|c| matches!(c, Component::Normal(_))) && !p.contains('\0')
+    !p.is_empty()
+        && Path::new(p)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+        && !p.contains('\0')
 }
 
 /// A link target that would leave the copy (absolute, or `..` past the root) is not recreated.
@@ -227,14 +287,21 @@ fn link_escapes(link_path: &str, target: &[u8]) -> bool {
 }
 
 fn is_dotenv(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|n| n.starts_with(".env"))
+    path.rsplit('/')
+        .next()
+        .is_some_and(|n| n.starts_with(".env"))
 }
 
 /// Both lockfile sets equal (an absent file equals an absent file).
 fn locks_equal(entries: &[(String, TreeEntry)], live: &Path, names: &[&str]) -> bool {
     names.iter().all(|n| {
-        let in_tree = entries.iter().find(|(p, e)| p == n && e.kind == 'f').map(|(_, e)| e.id.clone());
-        let on_disk = fs::read(live.join(n)).ok().map(|b| hex(blake3::hash(&b).as_bytes()));
+        let in_tree = entries
+            .iter()
+            .find(|(p, e)| p == n && e.kind == 'f')
+            .map(|(_, e)| e.id.clone());
+        let on_disk = fs::read(live.join(n))
+            .ok()
+            .map(|b| hex(blake3::hash(&b).as_bytes()));
         in_tree == on_disk
     })
 }
@@ -264,7 +331,12 @@ pub fn materialize(ws: &Ws, tree: &[u8; 32], app: &Path) -> Result<Made> {
                     fs::create_dir_all(parent)?;
                 }
                 let mode = if e.mode == 755 { 0o755 } else { 0o644 };
-                OpenOptions::new().write(true).create_new(true).mode(mode).open(&dest)?.write_all(&bytes)?;
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(mode)
+                    .open(&dest)?
+                    .write_all(&bytes)?;
             }
             'l' if !is_dotenv(path) => {
                 let Some(id) = unhex32(&e.id) else { continue };
@@ -305,12 +377,19 @@ pub fn materialize(ws: &Ws, tree: &[u8; 32], app: &Path) -> Result<Made> {
 /// shortcut: a link that cannot be resolved now (dangling or a loop) is kept, and one that starts to resolve only after the app creates something is not seen.
 fn drop_outward_links(app: &Path, links: &[&str]) -> Result<()> {
     let root = fs::canonicalize(app)?;
-    let deps: Vec<PathBuf> = DEP_DIRS.iter().filter_map(|(d, _)| fs::canonicalize(app.join(d)).ok()).collect();
+    let deps: Vec<PathBuf> = DEP_DIRS
+        .iter()
+        .filter_map(|(d, _)| fs::canonicalize(app.join(d)).ok())
+        .collect();
     // All are judged before any is removed, so the answer does not depend on the order of the links.
     let out: Vec<&str> = links
         .iter()
         .copied()
-        .filter(|l| fs::canonicalize(app.join(l)).is_ok_and(|t| t == root || !(t.starts_with(&root) || deps.iter().any(|d| t.starts_with(d)))))
+        .filter(|l| {
+            fs::canonicalize(app.join(l)).is_ok_and(|t| {
+                t == root || !(t.starts_with(&root) || deps.iter().any(|d| t.starts_with(d)))
+            })
+        })
         .collect();
     for l in out {
         fs::remove_file(app.join(l))?;
@@ -321,7 +400,9 @@ fn drop_outward_links(app: &Path, links: &[&str]) -> Result<()> {
 // ---------------------------------------------------------------- the app's environment
 
 fn quote(v: &str) -> String {
-    if v.bytes().all(|c| c.is_ascii_alphanumeric() || b"_./:@%+,-".contains(&c)) {
+    if v.bytes()
+        .all(|c| c.is_ascii_alphanumeric() || b"_./:@%+,-".contains(&c))
+    {
         v.to_string()
     } else {
         format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
@@ -329,19 +410,27 @@ fn quote(v: &str) -> String {
 }
 
 pub fn dotenv(vars: &[(String, String)]) -> String {
-    vars.iter().map(|(k, v)| format!("{k}={}\n", quote(v))).collect()
+    vars.iter()
+        .map(|(k, v)| format!("{k}={}\n", quote(v)))
+        .collect()
 }
 
 /// The app's whole environment (spec 16): empty, then the toolchain variables, the spec's env, PORT; Torpor's own values win.
 /// Returns (everything the process gets, the part that also goes into `.env`).
-pub fn app_env(ws_dir: &Path, run: &Path, spec_env: &BTreeMap<String, String>, port: u16) -> (Vec<(String, String)>, Vec<(String, String)>) {
+pub fn app_env(
+    ws_dir: &Path,
+    run: &Path,
+    spec_env: &BTreeMap<String, String>,
+    port: u16,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let mut m: BTreeMap<String, String> = BTreeMap::new();
     for k in ["PATH", "LANG", "LC_ALL", "TERM", "SHELL", "USER"] {
         if let Some(v) = std::env::var_os(k).filter(|v| !v.is_empty()) {
             m.insert(k.to_string(), v.to_string_lossy().into_owned());
         }
     }
-    m.entry("PATH".into()).or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
+    m.entry("PATH".into())
+        .or_insert_with(|| "/usr/local/bin:/usr/bin:/bin".into());
     let home = user_home();
     let defaults: [(&str, &[&str]); 7] = [
         ("CARGO_HOME", &[".cargo"]),
@@ -353,20 +442,34 @@ pub fn app_env(ws_dir: &Path, run: &Path, spec_env: &BTreeMap<String, String>, p
         ("PYENV_ROOT", &[".pyenv"]),
     ];
     for (k, rels) in defaults {
-        let real = std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let real = std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
         let found = real.or_else(|| rels.iter().map(|r| home.join(r)).find(|d| d.is_dir()));
         if let Some(d) = found {
             m.insert(k.to_string(), d.to_string_lossy().into_owned());
         }
     }
-    let mut own: Vec<(String, String)> = spec_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut own: Vec<(String, String)> = spec_env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     own.push(("PORT".into(), port.to_string()));
-    own.push(("HOME".into(), run.join("home").to_string_lossy().into_owned()));
-    own.push(("TMPDIR".into(), run.join("tmp").to_string_lossy().into_owned()));
+    own.push((
+        "HOME".into(),
+        run.join("home").to_string_lossy().into_owned(),
+    ));
+    own.push((
+        "TMPDIR".into(),
+        run.join("tmp").to_string_lossy().into_owned(),
+    ));
     for (k, v) in &own {
         m.insert(k.clone(), v.clone());
     }
-    m.insert("CARGO_TARGET_DIR".into(), ws_dir.join("cargo-target").to_string_lossy().into_owned());
+    m.insert(
+        "CARGO_TARGET_DIR".into(),
+        ws_dir.join("cargo-target").to_string_lossy().into_owned(),
+    );
     (m.into_iter().collect(), own)
 }
 
@@ -409,7 +512,10 @@ impl Drop for Spawning<'_> {
 }
 
 fn live_add(table: &[AtomicI32], pg: i32) -> bool {
-    table.iter().any(|s| s.compare_exchange(0, pg, Ordering::SeqCst, Ordering::SeqCst).is_ok())
+    table.iter().any(|s| {
+        s.compare_exchange(0, pg, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    })
 }
 
 fn live_del(table: &[AtomicI32], pg: i32) {
@@ -424,7 +530,11 @@ fn kill_groups(table: &[AtomicI32], spawning: &AtomicUsize, wait: Duration) {
     while spawning.load(Ordering::SeqCst) > 0 && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
-    for pg in table.iter().map(|s| s.load(Ordering::SeqCst)).filter(|p| *p > 1) {
+    for pg in table
+        .iter()
+        .map(|s| s.load(Ordering::SeqCst))
+        .filter(|p| *p > 1)
+    {
         // SAFETY: the ids are groups this process created and has not yet reaped through App::drop.
         unsafe { libc::kill(-pg, libc::SIGKILL) };
     }
@@ -494,10 +604,26 @@ impl App {
 
     /// `c` in `cwd` with exactly `env`, in its own process group, stdout and stderr into `log` (first 1 MiB; the same bytes stay in memory, see `head`) and a short tail.
     /// stdin is closed, or carries `input` (the browser runner reads its spec there, never from argv or the environment).
-    pub fn launch(mut c: Command, cwd: &Path, env: &[(String, String)], log: PathBuf, input: Option<Vec<u8>>) -> Result<App> {
+    pub fn launch(
+        mut c: Command,
+        cwd: &Path,
+        env: &[(String, String)],
+        log: PathBuf,
+        input: Option<Vec<u8>>,
+    ) -> Result<App> {
         let (rd, wr) = std::io::pipe()?;
-        let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
-        c.current_dir(cwd).env_clear().envs(env.iter().map(|(k, v)| (k, v))).stdin(stdin).stdout(wr.try_clone()?).stderr(wr).process_group(0);
+        let stdin = if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        };
+        c.current_dir(cwd)
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .stdin(stdin)
+            .stdout(wr.try_clone()?)
+            .stderr(wr)
+            .process_group(0);
         let spawning = Spawning::begin(&SPAWNING);
         let mut child = c.spawn()?;
         let pgid = child.id() as i32;
@@ -506,7 +632,12 @@ impl App {
         drop(spawning);
         let to_child = child.stdin.take();
         // From here on `app` owns the group: every way out below (an error, a panic) drops it, and that stops the group.
-        let app = App { child, pgid, tail: Arc::new(Mutex::new(Tail::default())), stopped: false };
+        let app = App {
+            child,
+            pgid,
+            tail: Arc::new(Mutex::new(Tail::default())),
+            stopped: false,
+        };
         if !registered {
             return Err(Error::msg("too many apps are running at once"));
         }
@@ -615,7 +746,10 @@ impl App {
 fn free_port(attempt: usize) -> Result<u16> {
     // Tests: the ports of the 1st and the 2nd start, comma separated, to put the app on a port somebody else holds (fault-inject builds only).
     #[cfg(feature = "fault-inject")]
-    if let Some(p) = std::env::var("TORPOR_TEST_PORT").ok().and_then(|s| s.split(',').nth(attempt)?.trim().parse::<u16>().ok()) {
+    if let Some(p) = std::env::var("TORPOR_TEST_PORT")
+        .ok()
+        .and_then(|s| s.split(',').nth(attempt)?.trim().parse::<u16>().ok())
+    {
         return Ok(p);
     }
     // Tests: one window of ports per test, so two tests starting an app in the same moment never pick the same port (fault-inject builds only).
@@ -624,7 +758,11 @@ fn free_port(attempt: usize) -> Result<u16> {
         let (a, b) = s.split_once('-')?;
         Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?))
     }) {
-        let (lo, n, mut r) = (u32::from(lo), u32::from(hi.saturating_sub(lo).max(1)), [0u8; 4]);
+        let (lo, n, mut r) = (
+            u32::from(lo),
+            u32::from(hi.saturating_sub(lo).max(1)),
+            [0u8; 4],
+        );
         let _ = getrandom::fill(&mut r);
         for i in 0..n {
             let p = (lo + (u32::from_le_bytes(r) % n + i) % n) as u16; // below hi, so it fits
@@ -655,18 +793,38 @@ enum Holder {
 /// ::ffff:127.0.0.1. A listener on ::1 or 127.0.0.2 can sit beside another process on 127.0.0.1:port and never answers that client.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn listening_sockets(table: &str, port: u16) -> Vec<String> {
-    const REACHED: [&str; 4] = ["0100007F", "00000000", "00000000000000000000000000000000", "0000000000000000FFFF00000100007F"];
-    let rows = table.lines().skip(1).map(|l| l.split_whitespace().collect::<Vec<_>>());
-    rows.filter(|f| f.get(3) == Some(&"0A") && f.get(1).and_then(|a| a.split_once(':')).is_some_and(|(addr, p)| REACHED.contains(&addr) && u16::from_str_radix(p, 16) == Ok(port)))
-        .filter_map(|f| f.get(9).map(|i| format!("socket:[{i}]")))
-        .collect()
+    const REACHED: [&str; 4] = [
+        "0100007F",
+        "00000000",
+        "00000000000000000000000000000000",
+        "0000000000000000FFFF00000100007F",
+    ];
+    let rows = table
+        .lines()
+        .skip(1)
+        .map(|l| l.split_whitespace().collect::<Vec<_>>());
+    rows.filter(|f| {
+        f.get(3) == Some(&"0A")
+            && f.get(1)
+                .and_then(|a| a.split_once(':'))
+                .is_some_and(|(addr, p)| {
+                    REACHED.contains(&addr) && u16::from_str_radix(p, 16) == Ok(port)
+                })
+    })
+    .filter_map(|f| f.get(9).map(|i| format!("socket:[{i}]")))
+    .collect()
 }
 
 /// The processes of an app: its group and everything started below them, from (pid, parent, group) of every process.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn app_pids(procs: &[(u32, u32, i32)], pgid: i32) -> std::collections::BTreeSet<u32> {
-    let mut ours: std::collections::BTreeSet<u32> = procs.iter().filter(|p| p.2 == pgid).map(|p| p.0).collect();
-    while let Some(add) = procs.iter().find(|p| ours.contains(&p.1) && !ours.contains(&p.0)).map(|p| p.0) {
+    let mut ours: std::collections::BTreeSet<u32> =
+        procs.iter().filter(|p| p.2 == pgid).map(|p| p.0).collect();
+    while let Some(add) = procs
+        .iter()
+        .find(|p| ours.contains(&p.1) && !ours.contains(&p.0))
+        .map(|p| p.0)
+    {
         ours.insert(add);
     }
     ours
@@ -676,13 +834,21 @@ fn app_pids(procs: &[(u32, u32, i32)], pgid: i32) -> std::collections::BTreeSet<
 /// elsewhere it is Unknown, so a port taken by someone else goes unnoticed there. shortcut: no lsof for macOS, upgrade when that matters.
 #[cfg(target_os = "linux")]
 fn holder_of(pgid: i32, port: u16) -> Holder {
-    let sockets: Vec<String> = ["/proc/net/tcp", "/proc/net/tcp6"].iter().flat_map(|t| listening_sockets(&fs::read_to_string(t).unwrap_or_default(), port)).collect();
+    let sockets: Vec<String> = ["/proc/net/tcp", "/proc/net/tcp6"]
+        .iter()
+        .flat_map(|t| listening_sockets(&fs::read_to_string(t).unwrap_or_default(), port))
+        .collect();
     if sockets.is_empty() {
         return Holder::Unknown;
     }
     let holds = |pid: u32| {
         let fds = fs::read_dir(format!("/proc/{pid}/fd"));
-        fds.is_ok_and(|d| d.flatten().any(|e| fs::read_link(e.path()).is_ok_and(|t| sockets.iter().any(|s| t.to_str() == Some(s.as_str())))))
+        fds.is_ok_and(|d| {
+            d.flatten().any(|e| {
+                fs::read_link(e.path())
+                    .is_ok_and(|t| sockets.iter().any(|s| t.to_str() == Some(s.as_str())))
+            })
+        })
     };
     let procs: Vec<(u32, u32, i32)> = fs::read_dir("/proc")
         .into_iter()
@@ -700,7 +866,11 @@ fn holder_of(pgid: i32, port: u16) -> Holder {
     if ours.iter().any(|p| holds(*p)) {
         return Holder::App;
     }
-    procs.iter().map(|p| p.0).find(|p| holds(*p)).map_or(Holder::Unknown, Holder::Other)
+    procs
+        .iter()
+        .map(|p| p.0)
+        .find(|p| holds(*p))
+        .map_or(Holder::Unknown, Holder::Other)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -716,7 +886,10 @@ pub struct Stopped {
 }
 
 fn stop(reason: impl Into<String>) -> Stopped {
-    Stopped { judged: unr(reason), tail: String::new() }
+    Stopped {
+        judged: unr(reason),
+        tail: String::new(),
+    }
 }
 
 /// What differs from a plain run: files written over the copy after it is made (`None` deletes the file) and variables added to the app's
@@ -733,7 +906,11 @@ pub struct Opts {
 
 /// May a changed copy write this path? Not one that leaves the copy, not an `.env*` file, not inside a dependency folder.
 pub fn overlay_ok(rel: &str) -> bool {
-    safe_rel(rel) && !is_dotenv(rel) && !rel.split('/').any(|c| DEP_DIRS.iter().any(|(d, _)| *d == c))
+    safe_rel(rel)
+        && !is_dotenv(rel)
+        && !rel
+            .split('/')
+            .any(|c| DEP_DIRS.iter().any(|(d, _)| *d == c))
 }
 
 /// Each path is removed and written new, so a link in its place is replaced, never followed; a path that leaves the copy, a dependency
@@ -748,7 +925,11 @@ fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)], exec: &[Stri
         let parent = dest.parent().unwrap_or(app);
         if content.is_some() {
             // The missing folders are made below the nearest one that exists: a link in the way must not lead out of the copy before anything is made.
-            if !parent.ancestors().find_map(|a| fs::canonicalize(a).ok()).is_some_and(|p| p.starts_with(&root)) {
+            if !parent
+                .ancestors()
+                .find_map(|a| fs::canonicalize(a).ok())
+                .is_some_and(|p| p.starts_with(&root))
+            {
                 return Err(Error::Msg(format!("{rel} leaves the copy")));
             }
             fs::create_dir_all(parent)?;
@@ -757,7 +938,12 @@ fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)], exec: &[Stri
             return Err(Error::Msg(format!("{rel} leaves the copy")));
         }
         let mode = match fs::symlink_metadata(&dest) {
-            Ok(m) if m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0 => 0o755,
+            Ok(m)
+                if m.is_file()
+                    && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0 =>
+            {
+                0o755
+            }
             _ if exec.contains(rel) => 0o755,
             _ => 0o644,
         };
@@ -766,7 +952,12 @@ fn apply_overlay(app: &Path, overlay: &[(String, Option<Vec<u8>>)], exec: &[Stri
             _ => {}
         }
         if let Some(bytes) = content {
-            OpenOptions::new().write(true).create_new(true).mode(mode).open(&dest)?.write_all(bytes)?;
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&dest)?
+                .write_all(bytes)?;
         }
     }
     Ok(())
@@ -799,9 +990,15 @@ impl Run {
     }
 
     /// `start`, with files written over the copy and variables added for this run only (a mutant, a dependency-recording run).
-    pub fn start_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &Opts) -> std::result::Result<Run, Stopped> {
+    pub fn start_with(
+        ws: &Ws,
+        spec: &Spec,
+        tree: &[u8; 32],
+        opts: &Opts,
+    ) -> std::result::Result<Run, Stopped> {
         // Before anything starts: without random numbers the check cannot run (the run token must not be a fixed one).
-        let no_random = |e: std::io::Error| stop(format!("the system gave no random numbers ({e})"));
+        let no_random =
+            |e: std::io::Error| stop(format!("the system gave no random numbers ({e})"));
         let rand = runner::new_rand().map_err(no_random)?;
         let nonce = runner::new_nonce().map_err(no_random)?;
         for (k, v) in &spec.env {
@@ -813,22 +1010,41 @@ impl Run {
         if !spec.http_only() {
             dom::preflight(&ws.home, opts).map_err(stop)?;
         }
-        let lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).map_err(|_| stop(if runner::out_of_time() { runner::OUT_OF_TIME } else { "another check is still running in this project" }))?;
+        let lock = RunLock::acquire(ws, RUN_LOCK_WAIT_MS).map_err(|_| {
+            stop(if runner::out_of_time() {
+                runner::OUT_OF_TIME
+            } else {
+                "another check is still running in this project"
+            })
+        })?;
         gc_scratch(ws);
         let scratch = Scratch::create(ws).map_err(|e| stop(format!("no scratch folder ({e})")))?;
-        let made = materialize(ws, tree, &scratch.app).map_err(|e| stop(format!("the saved version could not be copied ({e})")))?;
+        let made = materialize(ws, tree, &scratch.app)
+            .map_err(|e| stop(format!("the saved version could not be copied ({e})")))?;
         if let Some(dep) = made.needs_install {
-            return Err(stop(format!("needs-install: the saved version's lockfile differs from the one in the project, so {dep} cannot be reused")));
+            return Err(stop(format!(
+                "needs-install: the saved version's lockfile differs from the one in the project, so {dep} cannot be reused"
+            )));
         }
-        apply_overlay(&scratch.app, &opts.overlay, &opts.exec).map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
+        apply_overlay(&scratch.app, &opts.overlay, &opts.exec)
+            .map_err(|e| stop(format!("the changed copy could not be made ({e})")))?;
         // The port is picked here, as late as it can be: another process may take it between the pick and the app's bind. When the app ends at
         // once, or a process that is not the app answers on the port, the app is started once more on another port.
         let mut again = false;
         loop {
-            let port = free_port(usize::from(again)).map_err(|e| stop(format!("no free port ({e})")))?;
+            let port =
+                free_port(usize::from(again)).map_err(|e| stop(format!("no free port ({e})")))?;
             match start_app(ws, spec, &scratch, opts, &rand, port) {
                 Ok(app) => {
-                    return Ok(Run { port, rand, nonce, app_dir: scratch.app.clone(), app, _scratch: scratch, _lock: lock });
+                    return Ok(Run {
+                        port,
+                        rand,
+                        nonce,
+                        app_dir: scratch.app.clone(),
+                        app,
+                        _scratch: scratch,
+                        _lock: lock,
+                    });
                 }
                 Err(n) if n.retry && !again && !runner::out_of_time() => again = true,
                 Err(n) => return Err(n.stopped),
@@ -850,9 +1066,23 @@ struct NoStart {
 
 /// One start of the app on `port`, up to "its ready path answers" (spec 16). The answer must come from the app itself: on Linux, a 2xx that
 /// a process outside the app gives on that port is not trusted. Torpor never stops such a process, only its own app.
-fn start_app(ws: &Ws, spec: &Spec, scratch: &Scratch, opts: &Opts, rand: &str, port: u16) -> std::result::Result<App, NoStart> {
-    let plain = |stopped: Stopped| NoStart { stopped, retry: false };
-    let spec_env: BTreeMap<String, String> = spec.env.iter().map(|(k, v)| (k.clone(), spec::subst(v, rand, port))).collect();
+fn start_app(
+    ws: &Ws,
+    spec: &Spec,
+    scratch: &Scratch,
+    opts: &Opts,
+    rand: &str,
+    port: u16,
+) -> std::result::Result<App, NoStart> {
+    let plain = |stopped: Stopped| NoStart {
+        stopped,
+        retry: false,
+    };
+    let spec_env: BTreeMap<String, String> = spec
+        .env
+        .iter()
+        .map(|(k, v)| (k.clone(), spec::subst(v, rand, port)))
+        .collect();
     let (mut env, dotenv_part) = app_env(&ws.dir, &scratch.dir, &spec_env, port);
     for (k, v) in &opts.env {
         match env.iter_mut().find(|(n, _)| n == k) {
@@ -863,11 +1093,13 @@ fn start_app(ws: &Ws, spec: &Spec, scratch: &Scratch, opts: &Opts, rand: &str, p
     }
     let text = dotenv(&dotenv_part);
     for name in [".env.torpor", ".env"] {
-        fs::write(scratch.app.join(name), &text).map_err(|e| plain(stop(format!("no .env in the scratch copy ({e})"))))?;
+        fs::write(scratch.app.join(name), &text)
+            .map_err(|e| plain(stop(format!("no .env in the scratch copy ({e})"))))?;
     }
     let cmd = spec::subst(&spec.start.cmd, rand, port);
     let started = Instant::now();
-    let mut app = App::spawn(&cmd, &scratch.app, &env, scratch.dir.join("server.log")).map_err(|e| plain(stop(format!("the app could not be started ({e})"))))?;
+    let mut app = App::spawn(&cmd, &scratch.app, &env, scratch.dir.join("server.log"))
+        .map_err(|e| plain(stop(format!("the app could not be started ({e})"))))?;
     let shown = trunc_chars(&cmd, 40);
     let ready = spec::subst(&spec.start.ready, rand, port);
     let deadline = started + Duration::from_secs(spec.start.timeout_s);
@@ -876,20 +1108,44 @@ fn start_app(ws: &Ws, spec: &Spec, scratch: &Scratch, opts: &Opts, rand: &str, p
     loop {
         if let Some(end) = app.ended() {
             let tail = app.tail();
-            return Err(NoStart { stopped: Stopped { judged: unr(format!("the app did not start ({shown} {end})")), tail }, retry: started.elapsed() < AT_ONCE });
+            return Err(NoStart {
+                stopped: Stopped {
+                    judged: unr(format!("the app did not start ({shown} {end})")),
+                    tail,
+                },
+                retry: started.elapsed() < AT_ONCE,
+            });
         }
         match client.request("GET", &ready, None) {
             Ok(r) if (200..300).contains(&r.status) => match holder_of(app.pgid, port) {
-                Holder::Other(pid) => return Err(NoStart { stopped: stop(format!("port {port} is used by another process (pid {pid}), not by the app")), retry: true }),
+                Holder::Other(pid) => {
+                    return Err(NoStart {
+                        stopped: stop(format!(
+                            "port {port} is used by another process (pid {pid}), not by the app"
+                        )),
+                        retry: true,
+                    });
+                }
                 _ => return Ok(app),
             },
             Ok(r) => last = format!("GET {ready} gave {}", r.status),
-            Err(ReqErr::Unrunnable(m)) => return Err(plain(Stopped { judged: unr(m), tail: app.tail() })),
+            Err(ReqErr::Unrunnable(m)) => {
+                return Err(plain(Stopped {
+                    judged: unr(m),
+                    tail: app.tail(),
+                }));
+            }
             Err(ReqErr::Down(_)) => {}
         }
         if Instant::now() >= deadline {
             let tail = app.tail();
-            return Err(plain(Stopped { judged: unr(format!("the app did not start ({shown}: {last} for {} s)", spec.start.timeout_s)), tail }));
+            return Err(plain(Stopped {
+                judged: unr(format!(
+                    "the app did not start ({shown}: {last} for {} s)",
+                    spec.start.timeout_s
+                )),
+                tail,
+            }));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
@@ -907,15 +1163,27 @@ pub fn run_once(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>) -> 
     run_once_with(ws, spec, tree, min_n, &Opts::default())
 }
 
-pub fn run_once_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>, opts: &Opts) -> RunResult {
+pub fn run_once_with(
+    ws: &Ws,
+    spec: &Spec,
+    tree: &[u8; 32],
+    min_n: Option<usize>,
+    opts: &Opts,
+) -> RunResult {
     let t0 = Instant::now();
     let ms = |t: Instant| t.elapsed().as_millis() as u64;
     match Run::start_with(ws, spec, tree, opts) {
-        Err(s) => RunResult { judged: s.judged, ms: ms(t0), tail: s.tail },
+        Err(s) => RunResult {
+            judged: s.judged,
+            ms: ms(t0),
+            tail: s.tail,
+        },
         Ok(run) => {
             let lines = if spec.http_only() {
                 let mut l = vec![serde_json::json!({"p": "SETUP_OK"}).to_string()];
-                l.extend(runner::run_http_steps(spec, run.port, &run.nonce, &run.rand));
+                l.extend(runner::run_http_steps(
+                    spec, run.port, &run.nonce, &run.rand,
+                ));
                 l
             } else {
                 dom::run_steps(&ws.home, spec, &run, opts)
@@ -923,7 +1191,11 @@ pub fn run_once_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], min_n: Option<usize>
             let judged = runner::judge(&lines, &run.nonce, min_n);
             let tail = run.tail();
             drop(run);
-            RunResult { judged, ms: ms(t0), tail }
+            RunResult {
+                judged,
+                ms: ms(t0),
+                tail,
+            }
         }
     }
 }
@@ -934,13 +1206,24 @@ mod tests {
 
     #[test]
     fn links_and_names_that_leave_the_copy_are_refused() {
-        assert!(safe_rel("a/b.txt") && !safe_rel("../x") && !safe_rel("a/../../x") && !safe_rel("/etc/passwd") && !safe_rel(""));
+        assert!(
+            safe_rel("a/b.txt")
+                && !safe_rel("../x")
+                && !safe_rel("a/../../x")
+                && !safe_rel("/etc/passwd")
+                && !safe_rel("")
+        );
         assert!(link_escapes("l", b"/etc/passwd"));
         assert!(link_escapes("l", b"../x"));
         assert!(link_escapes("a/l", b"../../x"));
         assert!(!link_escapes("a/l", b"../x"));
         assert!(!link_escapes("a/l", b"b/c"));
-        assert!(is_dotenv(".env") && is_dotenv("sub/.env.local") && is_dotenv(".env.example") && is_dotenv(".envrc"));
+        assert!(
+            is_dotenv(".env")
+                && is_dotenv("sub/.env.local")
+                && is_dotenv(".env.example")
+                && is_dotenv(".envrc")
+        );
         assert!(!is_dotenv("environment.ts") && !is_dotenv("a.env") && !is_dotenv("sub/env"));
     }
 
@@ -952,9 +1235,17 @@ mod tests {
         fs::write(app.join("old.sh"), "old").unwrap();
         fs::set_permissions(app.join("old.sh"), fs::Permissions::from_mode(0o755)).unwrap();
         let put = |p: &str| (p.to_string(), Some(b"x".to_vec()));
-        apply_overlay(app, &[put("old.sh"), put("bin/new.sh"), put("plain.txt")], &["bin/new.sh".to_string()]).unwrap();
+        apply_overlay(
+            app,
+            &[put("old.sh"), put("bin/new.sh"), put("plain.txt")],
+            &["bin/new.sh".to_string()],
+        )
+        .unwrap();
         let exec = |p: &str| fs::metadata(app.join(p)).unwrap().permissions().mode() & 0o111 != 0;
-        assert_eq!([exec("old.sh"), exec("bin/new.sh"), exec("plain.txt")], [true, true, false]);
+        assert_eq!(
+            [exec("old.sh"), exec("bin/new.sh"), exec("plain.txt")],
+            [true, true, false]
+        );
     }
 
     #[test]
@@ -969,7 +1260,10 @@ mod tests {
             6: 0000000000000000FFFF00000100007F:1F90 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 777 1 0000000000000000 100 0 0 10 0\n";
         // 0x1F90 is 8080. A connected socket (state 01) is no listener, the IPv6 forms count, and so do not the listeners on ::1 (555) and
         // 127.0.0.2 (666): a client at 127.0.0.1 never reaches them.
-        assert_eq!(listening_sockets(table, 8080), ["socket:[111]", "socket:[444]", "socket:[777]"]);
+        assert_eq!(
+            listening_sockets(table, 8080),
+            ["socket:[111]", "socket:[444]", "socket:[777]"]
+        );
         assert_eq!(listening_sockets(table, 8081), ["socket:[333]"]);
         assert!(listening_sockets(table, 9).is_empty() && listening_sockets("", 8080).is_empty());
     }
@@ -977,8 +1271,18 @@ mod tests {
     #[test]
     fn the_app_is_its_group_and_everything_started_below_it() {
         // (pid, parent, group): 10 leads group 10 with a child 11; 12 was started by 11 in a group of its own and 13 by 12; 20 and 21 are unrelated.
-        let procs = [(10, 1, 10), (11, 10, 10), (12, 11, 12), (13, 12, 13), (20, 1, 20), (21, 20, 20)];
-        assert_eq!(app_pids(&procs, 10).into_iter().collect::<Vec<_>>(), [10, 11, 12, 13]);
+        let procs = [
+            (10, 1, 10),
+            (11, 10, 10),
+            (12, 11, 12),
+            (13, 12, 13),
+            (20, 1, 20),
+            (21, 20, 20),
+        ];
+        assert_eq!(
+            app_pids(&procs, 10).into_iter().collect::<Vec<_>>(),
+            [10, 11, 12, 13]
+        );
         assert!(app_pids(&procs, 99).is_empty());
     }
 
@@ -989,11 +1293,22 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         // SAFETY: getpgrp has no arguments and cannot fail.
         let mine = unsafe { libc::getpgrp() };
-        assert_eq!(holder_of(mine, port), Holder::App, "this process listens, and it is in its own group");
+        assert_eq!(
+            holder_of(mine, port),
+            Holder::App,
+            "this process listens, and it is in its own group"
+        );
         let mut other = group(); // a sleeping process in a group of its own
-        assert_eq!(holder_of(other.id() as i32, port), Holder::Other(std::process::id()));
+        assert_eq!(
+            holder_of(other.id() as i32, port),
+            Holder::Other(std::process::id())
+        );
         drop(l);
-        assert_eq!(holder_of(mine, port), Holder::Unknown, "nothing listens now");
+        assert_eq!(
+            holder_of(mine, port),
+            Holder::Unknown,
+            "nothing listens now"
+        );
         let _ = other.kill();
         let _ = other.wait();
     }
@@ -1004,19 +1319,63 @@ mod tests {
         let mut spec_env = BTreeMap::new();
         spec_env.insert("APP_MODE".to_string(), "test mode".to_string());
         spec_env.insert("CARGO_TARGET_DIR".to_string(), "/elsewhere".to_string());
-        let (all, own) = app_env(&tmp.path().join("ws"), &tmp.path().join("run"), &spec_env, 4321);
+        let (all, own) = app_env(
+            &tmp.path().join("ws"),
+            &tmp.path().join("run"),
+            &spec_env,
+            4321,
+        );
         let get = |k: &str| all.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
         assert_eq!(get("PORT").as_deref(), Some("4321"));
-        assert_eq!(get("HOME"), Some(tmp.path().join("run/home").to_string_lossy().into_owned()));
-        assert_eq!(get("TMPDIR"), Some(tmp.path().join("run/tmp").to_string_lossy().into_owned()));
-        assert_eq!(get("CARGO_TARGET_DIR"), Some(tmp.path().join("ws/cargo-target").to_string_lossy().into_owned()), "the spec cannot move the build folder");
+        assert_eq!(
+            get("HOME"),
+            Some(tmp.path().join("run/home").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            get("TMPDIR"),
+            Some(tmp.path().join("run/tmp").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            get("CARGO_TARGET_DIR"),
+            Some(
+                tmp.path()
+                    .join("ws/cargo-target")
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            "the spec cannot move the build folder"
+        );
         assert!(get("PATH").is_some());
-        let allowed = ["PATH", "LANG", "LC_ALL", "TERM", "SHELL", "USER", "CARGO_HOME", "RUSTUP_HOME", "NVM_DIR", "VOLTA_HOME", "PNPM_HOME", "BUN_INSTALL", "PYENV_ROOT", "APP_MODE", "PORT", "HOME", "TMPDIR", "CARGO_TARGET_DIR"];
+        let allowed = [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TERM",
+            "SHELL",
+            "USER",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "NVM_DIR",
+            "VOLTA_HOME",
+            "PNPM_HOME",
+            "BUN_INSTALL",
+            "PYENV_ROOT",
+            "APP_MODE",
+            "PORT",
+            "HOME",
+            "TMPDIR",
+            "CARGO_TARGET_DIR",
+        ];
         for (k, _) in &all {
             assert!(allowed.contains(&k.as_str()), "unexpected variable {k}");
         }
         let text = dotenv(&own);
-        assert!(text.contains("APP_MODE=\"test mode\"\n") && text.contains("PORT=4321\n") && !text.contains("PATH="), "{text}");
+        assert!(
+            text.contains("APP_MODE=\"test mode\"\n")
+                && text.contains("PORT=4321\n")
+                && !text.contains("PATH="),
+            "{text}"
+        );
         assert_eq!(quote("a\"b\\c"), "\"a\\\"b\\\\c\"");
     }
 
@@ -1034,47 +1393,95 @@ mod tests {
         assert!(outside.join("f").exists());
         remove_scratch(&base, &inside);
         assert!(!inside.exists());
-        assert!(outside.join("f").exists(), "a link inside the scratch folder is unlinked, never followed");
+        assert!(
+            outside.join("f").exists(),
+            "a link inside the scratch folder is unlinked, never followed"
+        );
     }
 
     #[test]
     fn chained_links_that_lead_out_are_dropped_and_no_folder_is_made_through_one() {
         let tmp = tempfile::tempdir().unwrap();
-        let (app, out, live) = (tmp.path().join("app"), tmp.path().join("out"), tmp.path().join("live"));
-        for d in ["app/d", "app/src", "app/bin", "out", "live/node_modules/.bin"] {
+        let (app, out, live) = (
+            tmp.path().join("app"),
+            tmp.path().join("out"),
+            tmp.path().join("live"),
+        );
+        for d in [
+            "app/d",
+            "app/src",
+            "app/bin",
+            "out",
+            "live/node_modules/.bin",
+        ] {
             fs::create_dir_all(tmp.path().join(d)).unwrap();
         }
         fs::write(app.join("src/a.txt"), "A").unwrap();
         fs::write(live.join("node_modules/.bin/tool"), "T").unwrap();
         symlink(live.join("node_modules"), app.join("node_modules")).unwrap(); // a dependency link, made on purpose
         // Every one of these passes the text check; `d/c` leads out only through `d/b` (which is the copy's own folder).
-        let links = [("d/b", ".."), ("d/c", "b/.."), ("d/in", "../src/a.txt"), ("d/dangling", "../nothing"), ("bin/tool", "../node_modules/.bin/tool"), ("bin/up", "../node_modules/..")];
+        let links = [
+            ("d/b", ".."),
+            ("d/c", "b/.."),
+            ("d/in", "../src/a.txt"),
+            ("d/dangling", "../nothing"),
+            ("bin/tool", "../node_modules/.bin/tool"),
+            ("bin/up", "../node_modules/.."),
+        ];
         for (l, t) in links {
             assert!(!link_escapes(l, t.as_bytes()), "{l}");
             symlink(t, app.join(l)).unwrap();
         }
         drop_outward_links(&app, &links.map(|(l, _)| l)).unwrap();
         let present = |l: &str| app.join(l).symlink_metadata().is_ok();
-        assert_eq!(links.map(|(l, _)| present(l)), [false, false, true, true, true, false], "d/b, d/c and bin/up are dropped; the rest stays");
+        assert_eq!(
+            links.map(|(l, _)| present(l)),
+            [false, false, true, true, true, false],
+            "d/b, d/c and bin/up are dropped; the rest stays"
+        );
         // Nothing is made below a link that leads out, even one that got through.
         symlink("../../out", app.join("d/o")).unwrap();
-        let r = apply_overlay(&app, &[("d/o/e/f.txt".to_string(), Some(b"x".to_vec()))], &[]);
-        assert!(matches!(&r, Err(Error::Msg(m)) if m.contains("leaves the copy")), "{r:?}");
-        assert!(!out.join("e").exists(), "a folder was made outside the copy");
+        let r = apply_overlay(
+            &app,
+            &[("d/o/e/f.txt".to_string(), Some(b"x".to_vec()))],
+            &[],
+        );
+        assert!(
+            matches!(&r, Err(Error::Msg(m)) if m.contains("leaves the copy")),
+            "{r:?}"
+        );
+        assert!(
+            !out.join("e").exists(),
+            "a folder was made outside the copy"
+        );
     }
 
     fn alive(pid: &str) -> bool {
-        let o = Command::new("ps").args(["-o", "pid,comm", "-p", pid]).output().unwrap();
+        let o = Command::new("ps")
+            .args(["-o", "pid,comm", "-p", pid])
+            .output()
+            .unwrap();
         let t = String::from_utf8_lossy(&o.stdout);
-        t.lines().skip(1).any(|l| l.trim_start().starts_with(pid) && !l.contains("defunct"))
+        t.lines()
+            .skip(1)
+            .any(|l| l.trim_start().starts_with(pid) && !l.contains("defunct"))
     }
 
     #[test]
     fn dropping_the_app_stops_the_whole_group() {
         let tmp = tempfile::tempdir().unwrap();
-        let env = vec![("PATH".to_string(), std::env::var("PATH").unwrap_or_default())];
+        let env = vec![(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )];
         // The shell stays alive and starts a grandchild that ignores SIGTERM, so only the SIGKILL after the grace period ends it.
-        let app = App::spawn("(trap '' TERM; sleep 120) & echo child=$!; wait", tmp.path(), &env, tmp.path().join("log")).unwrap();
+        let app = App::spawn(
+            "(trap '' TERM; sleep 120) & echo child=$!; wait",
+            tmp.path(),
+            &env,
+            tmp.path().join("log"),
+        )
+        .unwrap();
         let mut pid = String::new();
         for _ in 0..100 {
             let t = app.tail();
@@ -1090,12 +1497,20 @@ mod tests {
         drop(app);
         assert!(!alive(&pid), "the grandchild is gone");
         assert!(!group_alive(leader), "the group is empty");
-        assert!(fs::read_to_string(tmp.path().join("log")).unwrap().contains("child="));
+        assert!(
+            fs::read_to_string(tmp.path().join("log"))
+                .unwrap()
+                .contains("child=")
+        );
     }
 
     /// A sleeping process in a group of its own, the way an app is started.
     fn group() -> Child {
-        Command::new("sleep").arg("120").process_group(0).spawn().unwrap()
+        Command::new("sleep")
+            .arg("120")
+            .process_group(0)
+            .spawn()
+            .unwrap()
     }
 
     #[test]
@@ -1110,7 +1525,10 @@ mod tests {
         live_del(&table, ib);
         kill_groups(&table, &none, Duration::from_millis(50));
         assert_eq!(a.wait().unwrap().signal(), Some(9));
-        assert!(b.try_wait().unwrap().is_none(), "b was freed first, so it was left alone");
+        assert!(
+            b.try_wait().unwrap().is_none(),
+            "b was freed first, so it was left alone"
+        );
         b.kill().unwrap();
         b.wait().unwrap();
         // A spawn in flight registers its group while the watchdog waits: that group is killed too.
@@ -1137,7 +1555,11 @@ mod tests {
         assert!(live_add(&table, d.id() as i32));
         let t0 = Instant::now();
         kill_groups(&table, &stuck, Duration::from_millis(200));
-        assert!((200..5000).contains(&(t0.elapsed().as_millis() as u64)), "{:?}", t0.elapsed());
+        assert!(
+            (200..5000).contains(&(t0.elapsed().as_millis() as u64)),
+            "{:?}",
+            t0.elapsed()
+        );
         assert_eq!(d.wait().unwrap().signal(), Some(9));
     }
 
@@ -1160,20 +1582,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (base, run) = (tmp.path().join("scratch"), tmp.path().join("scratch/run1"));
         fs::create_dir_all(&run).unwrap();
-        let mut c = std::process::Command::new("sleep").arg("120").current_dir(&run).process_group(0).spawn().unwrap();
+        let mut c = std::process::Command::new("sleep")
+            .arg("120")
+            .current_dir(&run)
+            .process_group(0)
+            .spawn()
+            .unwrap();
         let pg = c.id() as i32;
         fs::write(run.join("server.log.pgid"), pg.to_string()).unwrap();
         assert!(group_alive(pg));
-        let mut other = std::process::Command::new("sleep").arg("120").process_group(0).spawn().unwrap(); // a group that works elsewhere
+        let mut other = std::process::Command::new("sleep")
+            .arg("120")
+            .process_group(0)
+            .spawn()
+            .unwrap(); // a group that works elsewhere
         let other_pg = other.id() as i32;
         let run2 = tmp.path().join("scratch/run2");
         fs::create_dir_all(&run2).unwrap();
         fs::write(run2.join("server.log.pgid"), other_pg.to_string()).unwrap();
         reap_dir(&base);
-        assert!(group_alive(other_pg), "a group id whose processes work elsewhere is not killed");
+        assert!(
+            group_alive(other_pg),
+            "a group id whose processes work elsewhere is not killed"
+        );
         other.kill().unwrap();
         other.wait().unwrap();
         c.wait().unwrap(); // reaps the killed leader, so the group id empties
-        assert!(!group_alive(pg) && !run.exists(), "the group is gone and so is the folder");
+        assert!(
+            !group_alive(pg) && !run.exists(),
+            "the group is gone and so is the folder"
+        );
     }
 }

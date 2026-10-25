@@ -29,11 +29,14 @@ fn blocked(o: &Out) -> Option<String> {
 }
 
 fn runs(s: &Sim, kind: &str, verdict: &str) -> i64 {
-    s.q_i64(&format!("SELECT count(*) FROM promise_runs WHERE kind='{kind}' AND verdict='{verdict}'"))
+    s.q_i64(&format!(
+        "SELECT count(*) FROM promise_runs WHERE kind='{kind}' AND verdict='{verdict}'"
+    ))
 }
 
 fn last_receipt(s: &Sim) -> String {
-    s.q_str("SELECT selected||'/'||ran||'/'||outcome FROM receipts ORDER BY id DESC LIMIT 1").unwrap_or_default()
+    s.q_str("SELECT selected||'/'||ran||'/'||outcome FROM receipts ORDER BY id DESC LIMIT 1")
+        .unwrap_or_default()
 }
 
 #[test]
@@ -45,16 +48,44 @@ fn b1_a_blocking_promise_stops_a_real_regression_once_per_change() {
     s.edit("server.js", &broken_server());
     let o = s.stop();
     let reason = blocked(&o).unwrap_or_else(|| panic!("no block: {}", why(&o)));
-    assert!(reason.starts_with("Torpor: promise #1 \"login works\" ("), "{reason}");
-    assert!(reason.contains(") fails now. Failing step: after sign-in the account data shows."), "{reason}");
-    assert!(reason.contains("It failed 3 of 3 fresh runs and still passes on the saved working version."), "{reason}");
-    assert!(reason.contains("Changed since it last passed: server.js (turn 4)."), "{reason}");
-    assert!(reason.contains("Fix the app, not the check") && reason.contains("torpor promise dispute 1 \"<why>\""), "{reason}");
-    assert!(reason.split_whitespace().count() <= 100, "{} words: {reason}", reason.split_whitespace().count());
-    assert_eq!((runs(&s, "gate", "FAIL"), runs(&s, "control", "PASS")), (3, 1), "3 fresh runs, then the control run on the last good version");
+    assert!(
+        reason.starts_with("Torpor: promise #1 \"login works\" ("),
+        "{reason}"
+    );
+    assert!(
+        reason.contains(") fails now. Failing step: after sign-in the account data shows."),
+        "{reason}"
+    );
+    assert!(
+        reason
+            .contains("It failed 3 of 3 fresh runs and still passes on the saved working version."),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("Changed since it last passed: server.js (turn 4)."),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("Fix the app, not the check")
+            && reason.contains("torpor promise dispute 1 \"<why>\""),
+        "{reason}"
+    );
+    assert!(
+        reason.split_whitespace().count() <= 100,
+        "{} words: {reason}",
+        reason.split_whitespace().count()
+    );
+    assert_eq!(
+        (runs(&s, "gate", "FAIL"), runs(&s, "control", "PASS")),
+        (3, 1),
+        "3 fresh runs, then the control run on the last good version"
+    );
     assert_eq!(last_receipt(&s), "1/1/block");
     assert_eq!(s.q_i64("SELECT blocks FROM gate_chain"), 1);
-    assert_eq!(s.q_str("SELECT tier||' '||state FROM promises").as_deref(), Some("blocking live"));
+    assert_eq!(
+        s.q_str("SELECT tier||' '||state FROM promises").as_deref(),
+        Some("blocking live")
+    );
     // The AI stops again without changing anything: the turn is allowed to end, and the user is told.
     let o = s.stop();
     assert!(blocked(&o).is_none(), "{}", why(&o));
@@ -63,7 +94,10 @@ fn b1_a_blocking_promise_stops_a_real_regression_once_per_change() {
     assert_eq!(last_receipt(&s), "0/0/unresolved");
     // It changes the file but the page is still broken: one more block is allowed, never a third.
     s.edit("server.js", &(broken_server() + "// second try\n"));
-    assert!(blocked(&s.stop()).is_some(), "a changed version may be blocked once more");
+    assert!(
+        blocked(&s.stop()).is_some(),
+        "a changed version may be blocked once more"
+    );
     assert_eq!(s.q_i64("SELECT SUM(blocks) FROM gate_chain"), 2);
     s.edit("server.js", &(broken_server() + "// third try\n"));
     let o = s.stop();
@@ -77,9 +111,19 @@ fn b1_a_blocking_promise_stops_a_real_regression_once_per_change() {
     assert!(blocked(&s.stop()).is_some());
     s.edit("server.js", SERVER);
     let o = s.stop();
-    assert!(blocked(&o).is_none() && !o.text().contains("promise #1"), "{}", why(&o));
+    assert!(
+        blocked(&o).is_none() && !o.text().contains("promise #1"),
+        "{}",
+        why(&o)
+    );
     assert_eq!(last_receipt(&s), "1/1/ok");
-    assert_eq!(s.q_i64("SELECT last_pass_point=(SELECT MAX(id) FROM points WHERE visible=1) FROM promises"), 1, "the version that passes is the new good one");
+    assert_eq!(
+        s.q_i64(
+            "SELECT last_pass_point=(SELECT MAX(id) FROM points WHERE visible=1) FROM promises"
+        ),
+        1,
+        "the version that passes is the new good one"
+    );
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
 
@@ -93,12 +137,23 @@ fn a_stop_chain_whose_payloads_have_no_prompt_id_blocks_at_most_twice() {
     assert!(blocked(&s.stop()).is_some(), "the first Stop is blocked");
     // The AI goes on without a new prompt: the Stop ended the turn, and no payload says which turn the edit belongs to.
     s.edit("server.js", &(broken_server() + "// second try\n"));
-    assert!(blocked(&s.stop()).is_some(), "a changed version may be blocked once more");
+    assert!(
+        blocked(&s.stop()).is_some(),
+        "a changed version may be blocked once more"
+    );
     s.edit("server.js", &(broken_server() + "// third try\n"));
     let o = s.stop();
-    assert!(blocked(&o).is_none(), "a third block in the same chain: {}", why(&o));
+    assert!(
+        blocked(&o).is_none(),
+        "a third block in the same chain: {}",
+        why(&o)
+    );
     assert_eq!(s.q_i64("SELECT SUM(blocks) FROM gate_chain"), 2);
-    assert_eq!(s.q_i64("SELECT count(*) FROM turns"), turns, "the continuations stay in the turn they began in");
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM turns"),
+        turns,
+        "the continuations stay in the turn they began in"
+    );
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
 
@@ -108,9 +163,15 @@ fn a_fail_followed_by_an_unrunnable_rerun_is_not_a_flake_and_the_promise_stays_b
     // While `arm` exists the app starts once: the next start (the re-run of a FAIL) exits 1, so that run is UNRUNNABLE.
     // The folder is named once: macOS temp paths are long and the cmd limit is 300 characters.
     let arm = s.env.home.join("arm");
-    let cmd = format!("D='{}'; if [ -e \"$D/arm\" ]; then if [ -e \"$D/flag\" ]; then exit 1; fi; touch \"$D/flag\"; fi; node server.js --port {{port}}", s.env.home.display());
+    let cmd = format!(
+        "D='{}'; if [ -e \"$D/arm\" ]; then if [ -e \"$D/flag\" ]; then exit 1; fi; touch \"$D/flag\"; fi; node server.js --port {{port}}",
+        s.env.home.display()
+    );
     let start = json!({"cmd": cmd, "ready": "/login", "timeout_s": 30}).to_string();
-    { let o = add(&mut s, &spec("login works", &start, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
+    {
+        let o = add(&mut s, &spec("login works", &start, "{}", LOGIN_STEPS));
+        assert_eq!(o.code, 0, "{}", why(&o));
+    }
     set(&s, "UPDATE promises SET tier='blocking' WHERE id=1");
     s.stop();
     s.prompt("tidy up the server");
@@ -118,9 +179,18 @@ fn a_fail_followed_by_an_unrunnable_rerun_is_not_a_flake_and_the_promise_stays_b
     std::fs::write(&arm, "x").unwrap();
     let o = s.stop();
     assert!(blocked(&o).is_none(), "{}", why(&o));
-    assert_eq!((runs(&s, "gate", "FAIL"), runs(&s, "gate", "UNRUNNABLE")), (1, 1), "{}", common::app::runs(&s));
+    assert_eq!(
+        (runs(&s, "gate", "FAIL"), runs(&s, "gate", "UNRUNNABLE")),
+        (1, 1),
+        "{}",
+        common::app::runs(&s)
+    );
     assert_eq!(last_receipt(&s), "1/1/unrunnable");
-    assert_eq!(s.q_str("SELECT tier||' '||state FROM promises").as_deref(), Some("blocking live"), "one hiccup must not retire a blocking promise");
+    assert_eq!(
+        s.q_str("SELECT tier||' '||state FROM promises").as_deref(),
+        Some("blocking live"),
+        "one hiccup must not retire a blocking promise"
+    );
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
 
@@ -131,13 +201,26 @@ fn a_dispute_or_the_gate_switch_ends_the_blocking() {
     s.edit("server.js", &broken_server());
     assert!(blocked(&s.stop()).is_some());
     // The AI disputes: the promise is the user's to decide, so it is not checked any more.
-    let d = agent(&mut s, &["promise", "dispute", "1", "the sign-in page was removed on purpose"], "");
+    let d = agent(
+        &mut s,
+        &[
+            "promise",
+            "dispute",
+            "1",
+            "the sign-in page was removed on purpose",
+        ],
+        "",
+    );
     assert_eq!(d.code, 0, "{}", why(&d));
     s.edit("server.js", &(broken_server() + "// after the dispute\n"));
     let n = s.q_i64("SELECT count(*) FROM promise_runs");
     let o = s.stop();
     assert!(blocked(&o).is_none(), "{}", why(&o));
-    assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs"), n, "a disputed promise is not run");
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM promise_runs"),
+        n,
+        "a disputed promise is not run"
+    );
     // The user can turn the gate off: the failure is shown, nobody is stopped.
     set(&s, "UPDATE promises SET state='live' WHERE id=1");
     assert_eq!(s.cli(&["gate", "off"]).code, 0);
@@ -145,14 +228,27 @@ fn a_dispute_or_the_gate_switch_ends_the_blocking() {
     s.edit("server.js", &(broken_server() + "// gate off\n"));
     let o = s.stop();
     assert!(blocked(&o).is_none(), "{}", why(&o));
-    assert!(o.text().contains("promise #1 (login works) failed after this turn") && o.text().contains("The AI was not stopped."), "{}", why(&o));
-    assert_eq!(s.q_i64("SELECT SUM(blocks) FROM gate_chain"), 1, "only the first regression was blocked");
+    assert!(
+        o.text()
+            .contains("promise #1 (login works) failed after this turn")
+            && o.text().contains("The AI was not stopped."),
+        "{}",
+        why(&o)
+    );
+    assert_eq!(
+        s.q_i64("SELECT SUM(blocks) FROM gate_chain"),
+        1,
+        "only the first regression was blocked"
+    );
 }
 
 #[test]
 fn an_advisory_failure_is_told_to_the_user_and_once_to_the_ai() {
     let mut s = story();
-    { let o = add(&mut s, &login()); assert_eq!(o.code, 0, "{}", why(&o)); }
+    {
+        let o = add(&mut s, &login());
+        assert_eq!(o.code, 0, "{}", why(&o));
+    }
     s.stop();
     s.prompt("add dark mode");
     s.edit("server.js", &broken_server());
@@ -160,12 +256,25 @@ fn an_advisory_failure_is_told_to_the_user_and_once_to_the_ai() {
     assert!(blocked(&o).is_none(), "{}", why(&o));
     let t = o.text();
     assert!(t.contains("Torpor: promise #1 (login works) failed after this turn (3 of 3 runs; it passed on the version from the start of turn 3). The AI was not stopped. torpor promise show 1"), "{t}");
-    assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs WHERE kind='control'"), 0, "an advisory promise needs no control run");
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM promise_runs WHERE kind='control'"),
+        0,
+        "an advisory promise needs no control run"
+    );
     // The next prompt gives the model one short line; the one after does not repeat it.
     let p = s.prompt("what happened?");
-    let ctx = p.json().and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(|x| x.as_str().map(String::from))).unwrap_or_default();
+    let ctx = p
+        .json()
+        .and_then(|v| {
+            v.pointer("/hookSpecificOutput/additionalContext")
+                .and_then(|x| x.as_str().map(String::from))
+        })
+        .unwrap_or_default();
     assert!(ctx.contains("Torpor: promise #1 failed after turn 4: after sign-in the account data shows. Run torpor check 1."), "{ctx}");
-    let line = ctx.lines().find(|l| l.contains("promise #1 failed")).unwrap();
+    let line = ctx
+        .lines()
+        .find(|l| l.contains("promise #1 failed"))
+        .unwrap();
     assert!(line.chars().count() <= 120, "{line}");
     let p = s.prompt("and now?");
     assert!(!p.stdout.contains("promise #1 failed"), "{}", p.stdout);
@@ -184,19 +293,39 @@ fn a_turn_that_changes_only_docs_and_tests_runs_nothing_20_of_20() {
             s.edit("tests/login.test.js", &format!("// test {i}\n"));
         }
         let o = s.stop();
-        assert!(blocked(&o).is_none() && !o.text().contains("promise #"), "trial {i}: {}", why(&o));
+        assert!(
+            blocked(&o).is_none() && !o.text().contains("promise #"),
+            "trial {i}: {}",
+            why(&o)
+        );
         assert_eq!(last_receipt(&s), "0/0/none", "trial {i}");
     }
-    assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs"), before, "no check ran");
-    assert_eq!(s.q_i64("SELECT count(*) FROM receipts"), receipts + 20, "one receipt per Stop");
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM promise_runs"),
+        before,
+        "no check ran"
+    );
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM receipts"),
+        receipts + 20,
+        "one receipt per Stop"
+    );
 }
 
 #[test]
 fn the_files_the_app_ran_are_recorded_and_a_change_to_none_of_them_waits_for_the_second_stop() {
     let mut s = blocking_story();
     let runs_before = s.q_i64("SELECT count(*) FROM promise_runs");
-    assert_eq!(s.q_str("SELECT deps_json FROM promises WHERE id=1").as_deref(), Some(r#"["server.js"]"#), "the extra run is a record, not a verdict");
-    assert_eq!(runs_before, 7, "5 on the good version and 2 on the bad one; the coverage run is not stored");
+    assert_eq!(
+        s.q_str("SELECT deps_json FROM promises WHERE id=1")
+            .as_deref(),
+        Some(r#"["server.js"]"#),
+        "the extra run is a record, not a verdict"
+    );
+    assert_eq!(
+        runs_before, 7,
+        "5 on the good version and 2 on the bad one; the coverage run is not stored"
+    );
     // A file the app never loads: the Stop picks nothing, and the Stop after it runs the check anyway (not run in the last 3 Stops).
     s.prompt("add a helper");
     s.write_tool("tools/helper.js", "module.exports = 1;\n");
@@ -222,11 +351,22 @@ fn a_setup_failure_is_unrunnable_and_never_blocks_20_of_20() {
         s.edit("server.js", &format!("this is not javascript {i}\n"));
         let o = s.stop();
         assert!(blocked(&o).is_none(), "trial {i}: {}", why(&o));
-        assert!(last_receipt(&s).ends_with("/unrunnable"), "trial {i}: {}", last_receipt(&s));
+        assert!(
+            last_receipt(&s).ends_with("/unrunnable"),
+            "trial {i}: {}",
+            last_receipt(&s)
+        );
     }
-    assert_eq!((runs(&s, "gate", "FAIL"), runs(&s, "gate", "UNRUNNABLE")), (0, 20));
+    assert_eq!(
+        (runs(&s, "gate", "FAIL"), runs(&s, "gate", "UNRUNNABLE")),
+        (0, 20)
+    );
     assert_eq!(s.q_i64("SELECT count(*) FROM gate_chain"), 0);
-    assert_eq!(s.q_str("SELECT tier||' '||state FROM promises").as_deref(), Some("blocking live"), "an unrunnable check is not a failure");
+    assert_eq!(
+        s.q_str("SELECT tier||' '||state FROM promises").as_deref(),
+        Some("blocking live"),
+        "an unrunnable check is not a failure"
+    );
 }
 
 #[test]
@@ -247,7 +387,11 @@ fn b2_the_seeded_regression_blocks_20_of_20() {
                         }
                         s.edit("server.js", &(SERVER.to_string() + &format!("// {i}\n")));
                         let o = s.stop();
-                        assert!(blocked(&o).is_none(), "the fixed version was blocked: {}", why(&o));
+                        assert!(
+                            blocked(&o).is_none(),
+                            "the fixed version was blocked: {}",
+                            why(&o)
+                        );
                     }
                     n
                 })
@@ -255,7 +399,11 @@ fn b2_the_seeded_regression_blocks_20_of_20() {
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    assert_eq!(blocks.iter().sum::<u32>(), 20, "blocks per session: {blocks:?}");
+    assert_eq!(
+        blocks.iter().sum::<u32>(),
+        20,
+        "blocks per session: {blocks:?}"
+    );
 }
 
 #[test]
@@ -270,18 +418,31 @@ fn b2_a_check_that_fails_one_run_in_three_at_random_never_blocks_20_of_20() {
                     (0..5)
                         .map(|i| {
                             let mut s = story();
-                            let o = add(&mut s, &spec("login endpoint answers", START, "{}", steps));
-                            let saved = if o.code == 0 { s.q_str("SELECT tier||' '||state FROM promises").unwrap() } else { "not saved".to_string() };
+                            let o =
+                                add(&mut s, &spec("login endpoint answers", START, "{}", steps));
+                            let saved = if o.code == 0 {
+                                s.q_str("SELECT tier||' '||state FROM promises").unwrap()
+                            } else {
+                                "not saved".to_string()
+                            };
                             s.stop();
                             let mut blocks = 0;
                             for r in 0..4 {
                                 s.prompt(&format!("change {r}"));
-                                s.edit("server.js", &(SERVER.to_string() + &format!("// {i} {r}\n")));
+                                s.edit(
+                                    "server.js",
+                                    &(SERVER.to_string() + &format!("// {i} {r}\n")),
+                                );
                                 if blocked(&s.stop()).is_some() {
                                     blocks += 1;
                                 }
                             }
-                            (blocks, saved, s.q_str("SELECT tier||' '||state FROM promises").unwrap_or_default())
+                            (
+                                blocks,
+                                saved,
+                                s.q_str("SELECT tier||' '||state FROM promises")
+                                    .unwrap_or_default(),
+                            )
                         })
                         .collect::<Vec<_>>()
                 })
@@ -294,7 +455,10 @@ fn b2_a_check_that_fails_one_run_in_three_at_random_never_blocks_20_of_20() {
     for t in &trials {
         *tally.entry(format!("{} -> {}", t.1, t.2)).or_default() += 1;
     }
-    eprintln!("B2 random flaky: {blocked_trials} of {} trials blocked; saved as -> at the end: {tally:?}", trials.len());
+    eprintln!(
+        "B2 random flaky: {blocked_trials} of {} trials blocked; saved as -> at the end: {tally:?}",
+        trials.len()
+    );
     assert_eq!(trials.len(), 20);
     assert_eq!(blocked_trials, 0, "{tally:?}");
     // The proof sees it (P(no trial of 20 is flagged) is below 1e-15), so the claim is not empty.
@@ -306,10 +470,17 @@ fn an_unproven_promise_that_fails_and_then_passes_on_one_version_turns_flaky() {
     let mut s = story();
     let counter = s.env.home.join("flaky-count");
     let env = json!({"FLAKY_FILE": counter}).to_string();
-    let steps = r#"[{"http":{"path":"/api/flaky"},"expect":{"status":200},"why":"the endpoint answers"}]"#;
-    { let o = add(&mut s, &spec("endpoint answers", START, &env, steps)); assert_eq!(o.code, 0, "{}", why(&o)); }
+    let steps =
+        r#"[{"http":{"path":"/api/flaky"},"expect":{"status":200},"why":"the endpoint answers"}]"#;
+    {
+        let o = add(&mut s, &spec("endpoint answers", START, &env, steps));
+        assert_eq!(o.code, 0, "{}", why(&o));
+    }
     // Put it where a guard promise would be: live, no earlier version fails it. The next request is the 6th, which fails.
-    set(&s, "UPDATE promises SET state='live', tier='unproven', flake_hat=0 WHERE id=1");
+    set(
+        &s,
+        "UPDATE promises SET state='live', tier='unproven', flake_hat=0 WHERE id=1",
+    );
     std::fs::write(&counter, "5").unwrap();
     s.stop();
     s.prompt("touch the server");
@@ -317,7 +488,10 @@ fn an_unproven_promise_that_fails_and_then_passes_on_one_version_turns_flaky() {
     let o = s.stop();
     assert!(blocked(&o).is_none(), "{}", why(&o));
     assert!(o.text().contains("Torpor: promise #1 (endpoint answers) passed and failed on the same version, so it is flaky and advisory only."), "{}", why(&o));
-    assert_eq!(s.q_str("SELECT tier||' '||state FROM promises").as_deref(), Some("unproven flaky"));
+    assert_eq!(
+        s.q_str("SELECT tier||' '||state FROM promises").as_deref(),
+        Some("unproven flaky")
+    );
     assert!(s.q_i64("SELECT flake_hat>0 FROM promises") == 1);
     assert_eq!(last_receipt(&s), "1/1/flaky");
     // A flaky promise is not run at the next Stop, and it never gets near blocking.
@@ -339,36 +513,73 @@ fn a_check_that_cannot_be_read_is_unverified_and_first_in_line_next_time() {
         s.edit("server.js", &(SERVER.to_string() + &format!("// {i}\n")));
         let o = s.stop();
         assert!(blocked(&o).is_none(), "{}", why(&o));
-        assert_eq!(last_receipt(&s), "1/0/unverified", "{}\n{}", why(&o), common::app::runs(&s));
-        assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
+        assert_eq!(
+            last_receipt(&s),
+            "1/0/unverified",
+            "{}\n{}",
+            why(&o),
+            common::app::runs(&s)
+        );
+        assert_eq!(
+            s.q_str("SELECT value FROM meta WHERE key='gate_unrun'")
+                .as_deref(),
+            Some("[1]")
+        );
         if i < 2 {
             assert!(!o.text().contains("cut short"), "{}", why(&o));
         } else {
-            assert!(o.text().contains("Torpor: promise checks were cut short at the last 3 turn ends. torpor status"), "three unverified Stops in a row are said: {}", why(&o));
+            assert!(
+                o.text().contains(
+                    "Torpor: promise checks were cut short at the last 3 turn ends. torpor status"
+                ),
+                "three unverified Stops in a row are said: {}",
+                why(&o)
+            );
             let st = s.status().stdout;
             assert!(st.contains("The promise checks were cut short at the last 3 turn ends. Run them: torpor check --all"), "{st}");
-            assert_eq!(s.cli(&["status", "--json"]).json().unwrap()["promises"]["checks_cut_short"], json!(true));
+            assert_eq!(
+                s.cli(&["status", "--json"]).json().unwrap()["promises"]["checks_cut_short"],
+                json!(true)
+            );
         }
     }
     // Readable again: a turn that changes only a doc, or nothing, runs nothing (spec 18 "nothing selected, nothing runs"); the promise stays first in line.
-    set(&s, &format!("UPDATE promises SET spec_id='{spec_id}' WHERE id=1"));
+    set(
+        &s,
+        &format!("UPDATE promises SET spec_id='{spec_id}' WHERE id=1"),
+    );
     let n = s.q_i64("SELECT count(*) FROM promise_runs");
     s.prompt("notes");
     s.edit("README.md", "# notes\n");
     let o = s.stop();
-    assert!(blocked(&o).is_none() && !o.text().contains("promise #"), "{}", why(&o));
+    assert!(
+        blocked(&o).is_none() && !o.text().contains("promise #"),
+        "{}",
+        why(&o)
+    );
     assert_eq!(last_receipt(&s), "0/0/none");
     s.prompt("just talking");
     s.stop();
     assert_eq!(last_receipt(&s), "0/0/none");
-    assert_eq!(s.q_i64("SELECT count(*) FROM promise_runs"), n, "no check ran");
-    assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM promise_runs"),
+        n,
+        "no check ran"
+    );
+    assert_eq!(
+        s.q_str("SELECT value FROM meta WHERE key='gate_unrun'")
+            .as_deref(),
+        Some("[1]")
+    );
     // The next turn that changes something relevant runs it.
     s.prompt("tweak");
     s.edit("server.js", &(SERVER.to_string() + "// tweak\n"));
     s.stop();
     assert_eq!(last_receipt(&s), "1/1/ok");
-    assert_eq!(s.q_i64("SELECT count(*) FROM meta WHERE key='gate_unrun'"), 0);
+    assert_eq!(
+        s.q_i64("SELECT count(*) FROM meta WHERE key='gate_unrun'"),
+        0
+    );
 }
 
 #[test]
@@ -379,14 +590,29 @@ fn silent_gates_are_noticed_at_session_start_and_at_the_next_prompt() {
         s.edit("README.md", &format!("# {i}\n"));
         s.stop();
     }
-    assert!(s.session_start().text().is_empty() || !s.session_start().text().contains("did not run"));
+    assert!(
+        s.session_start().text().is_empty() || !s.session_start().text().contains("did not run")
+    );
     // Something removed the receipts: the checks did not run at the last 3 turn ends.
     set(&s, "DELETE FROM receipts");
     let st = s.session_start();
-    assert!(st.text().contains("Torpor's promise checks did not run at the last 3 turn ends."), "{}", why(&st));
-    assert!(s.status().stdout.contains("The promise checks did not run at the last 3 turn ends. Run them: torpor check --all"));
+    assert!(
+        st.text()
+            .contains("Torpor's promise checks did not run at the last 3 turn ends."),
+        "{}",
+        why(&st)
+    );
+    assert!(s.status().stdout.contains(
+        "The promise checks did not run at the last 3 turn ends. Run them: torpor check --all"
+    ));
     let p = s.prompt("hello");
-    let ctx = p.json().and_then(|v| v.pointer("/hookSpecificOutput/additionalContext").and_then(|x| x.as_str().map(String::from))).unwrap_or_default();
+    let ctx = p
+        .json()
+        .and_then(|v| {
+            v.pointer("/hookSpecificOutput/additionalContext")
+                .and_then(|x| x.as_str().map(String::from))
+        })
+        .unwrap_or_default();
     assert!(ctx.contains("Torpor: the promise checks did not run at the last 3 turn ends. Run torpor check --all."), "{ctx}");
 }
 
@@ -395,18 +621,39 @@ fn a_slow_check_is_cut_at_the_clock_and_the_stop_is_allowed() {
     let mut s = story();
     // The app only starts slowly when slow.flag exists, so saving the promise stays fast.
     let slow = r#"{"cmd":"if [ -f slow.flag ]; then sleep 40; fi; node server.js --port {port}","ready":"/login","timeout_s":60}"#;
-    { let o = add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS)); assert_eq!(o.code, 0, "{}", why(&o)); }
+    {
+        let o = add(&mut s, &spec("login works", slow, "{}", LOGIN_STEPS));
+        assert_eq!(o.code, 0, "{}", why(&o));
+    }
     set(&s, "UPDATE promises SET tier='blocking' WHERE id=1");
     s.stop();
     s.prompt("tidy up the server");
     s.edit("server.js", &broken_server());
     s.outside_edit("slow.flag", "x");
     let o = s.stop();
-    assert!(o.elapsed < Duration::from_secs(30), "the hook took {:?}", o.elapsed);
+    assert!(
+        o.elapsed < Duration::from_secs(30),
+        "the hook took {:?}",
+        o.elapsed
+    );
     assert!(blocked(&o).is_none(), "{}", why(&o));
-    assert_eq!(last_receipt(&s), "1/0/unverified", "{}\n{}", why(&o), common::app::runs(&s));
-    assert_eq!(s.q_str("SELECT value FROM meta WHERE key='gate_unrun'").as_deref(), Some("[1]"));
-    assert_eq!(runs(&s, "gate", "FAIL"), 0, "a run cut by the clock says nothing about the check");
+    assert_eq!(
+        last_receipt(&s),
+        "1/0/unverified",
+        "{}\n{}",
+        why(&o),
+        common::app::runs(&s)
+    );
+    assert_eq!(
+        s.q_str("SELECT value FROM meta WHERE key='gate_unrun'")
+            .as_deref(),
+        Some("[1]")
+    );
+    assert_eq!(
+        runs(&s, "gate", "FAIL"),
+        0,
+        "a run cut by the clock says nothing about the check"
+    );
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }
 
@@ -414,7 +661,12 @@ fn a_slow_check_is_cut_at_the_clock_and_the_stop_is_allowed() {
 fn touch_line_of(o: &Out) -> Option<String> {
     let v = o.json()?;
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PostToolUse");
-    Some(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or("").to_string())
+    Some(
+        v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 #[test]
@@ -426,9 +678,16 @@ fn b8_an_edit_that_meets_a_promise_gets_one_short_line_per_promise_per_turn() {
     }
     s.stop();
     s.prompt("tidy up the server");
-    let line = touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// tidy\n"))).expect("a line for the edit");
-    assert_eq!(line, "Torpor: edit touches promises #1, #2; `torpor check 1 2` before finishing");
-    assert!(line.chars().count().div_ceil(4) <= 30, "at most 30 tokens: {line}");
+    let line = touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// tidy\n")))
+        .expect("a line for the edit");
+    assert_eq!(
+        line,
+        "Torpor: edit touches promises #1, #2; `torpor check 1 2` before finishing"
+    );
+    assert!(
+        line.chars().count().div_ceil(4) <= 30,
+        "at most 30 tokens: {line}"
+    );
     // Same turn, same files: nothing more. A file no promise watches: nothing.
     assert!(touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// tidy again\n"))).is_none());
     assert!(touch_line_of(&s.edit("notes.txt", "x")).is_none());
@@ -436,7 +695,10 @@ fn b8_an_edit_that_meets_a_promise_gets_one_short_line_per_promise_per_turn() {
     s.stop();
     // The next turn may say it again.
     s.prompt("one more tweak");
-    assert_eq!(touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// tweak\n"))).as_deref(), Some(line.as_str()));
+    assert_eq!(
+        touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// tweak\n"))).as_deref(),
+        Some(line.as_str())
+    );
     // A promise that is disputed or dropped is not mentioned.
     set(&s, "UPDATE promises SET state='dropped' WHERE id=1");
     s.stop();
@@ -445,6 +707,11 @@ fn b8_an_edit_that_meets_a_promise_gets_one_short_line_per_promise_per_turn() {
         touch_line_of(&s.edit("server.js", &format!("{SERVER}\n// last\n"))).as_deref(),
         Some("Torpor: edit touches promise #2; `torpor check 2` before finishing")
     );
-    assert_eq!(s.q_i64("SELECT count(*) FROM push_log WHERE kind LIKE 'touch:%' AND delivered=1 AND chars>0"), 3);
+    assert_eq!(
+        s.q_i64(
+            "SELECT count(*) FROM push_log WHERE kind LIKE 'touch:%' AND delivered=1 AND chars>0"
+        ),
+        3
+    );
     assert!(s.faults().is_empty(), "{:?}", s.faults());
 }

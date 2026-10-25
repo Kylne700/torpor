@@ -20,7 +20,10 @@ const KEEP_WORDS_MAX: usize = 200;
 /// `fail`, but a promise, save point or turn that does not exist is named.
 pub(crate) fn fail_p(e: &Error) -> i32 {
     if let Error::NotFound(w) = e {
-        if ["promise ", "save point", "turn ", "check "].iter().any(|p| w.starts_with(p)) {
+        if ["promise ", "save point", "turn ", "check "]
+            .iter()
+            .any(|p| w.starts_with(p))
+        {
             err(&format!("Torpor has no {w}.\n"));
             return 5;
         }
@@ -30,7 +33,10 @@ pub(crate) fn fail_p(e: &Error) -> i32 {
 
 /// "3" or "#3".
 pub(crate) fn num(s: &str) -> Option<i64> {
-    s.trim_start_matches('#').parse::<i64>().ok().filter(|n| *n >= 1)
+    s.trim_start_matches('#')
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n >= 1)
 }
 
 fn say(s: &str) {
@@ -64,10 +70,14 @@ pub fn promise_cmd(a: &[&str]) -> i32 {
 /// The check on standard input, linted. Lint lines go to stderr and the exit code is 3 (spec 14).
 pub(crate) fn read_check() -> Code<Linted> {
     if stdin_is_tty() {
-        return Err(usage("... - (the check is read from standard input, e.g. with <<'EOF')"));
+        return Err(usage(
+            "... - (the check is read from standard input, e.g. with <<'EOF')",
+        ));
     }
     let mut buf = Vec::new();
-    let _ = std::io::stdin().take(SPEC_BYTES_MAX as u64 + 1).read_to_end(&mut buf);
+    let _ = std::io::stdin()
+        .take(SPEC_BYTES_MAX as u64 + 1)
+        .read_to_end(&mut buf);
     let raw = String::from_utf8(buf).map_err(|_| {
         err("Rejected: the check is not valid UTF-8 text.\n");
         3
@@ -77,7 +87,10 @@ pub(crate) fn read_check() -> Code<Linted> {
             err(&format!("{l}\n"));
         }
         if lines.len() > LINT_LINES_MAX {
-            err(&format!("Rejected: and {} more problems.\n", lines.len() - LINT_LINES_MAX));
+            err(&format!(
+                "Rejected: and {} more problems.\n",
+                lines.len() - LINT_LINES_MAX
+            ));
         }
         3
     })
@@ -107,13 +120,22 @@ struct Plan {
 
 /// Everything decided before the row exists: the cap, a repeated check, the version called good, and the source (spec 14).
 /// `good` is the version `keep` just saved; `add` leaves it to the options and the turn.
-fn plan(db: &Connection, l: &Linted, who: &Who, want: &str, o: &Opts, good: Option<i64>) -> Code<Plan> {
+fn plan(
+    db: &Connection,
+    l: &Linted,
+    who: &Who,
+    want: &str,
+    o: &Opts,
+    good: Option<i64>,
+) -> Code<Plan> {
     let old = match o.replace {
         Some(id) => Some(get_live(db, id)?),
         None => None,
     };
     if old.is_none() && promise::live_count(db).map_err(|e| fail_p(&e))? >= LIVE_MAX {
-        err(&format!("Torpor keeps at most {LIVE_MAX} promises. Drop one first: torpor promise list\n"));
+        err(&format!(
+            "Torpor keeps at most {LIVE_MAX} promises. Drop one first: torpor promise list\n"
+        ));
         return Err(3);
     }
     let same: Option<i64> = db
@@ -124,7 +146,10 @@ fn plan(db: &Connection, l: &Linted, who: &Who, want: &str, o: &Opts, good: Opti
         err(&format!("Promise #{id} already has this check.\n"));
         return Err(3);
     }
-    let inherited = old.as_ref().and_then(|p| p.good_point).filter(|g| promise::point_tree(db, *g).is_ok());
+    let inherited = old
+        .as_ref()
+        .and_then(|p| p.good_point)
+        .filter(|g| promise::point_tree(db, *g).is_ok());
     let good = if o.repro {
         None
     } else {
@@ -143,14 +168,23 @@ fn plan(db: &Connection, l: &Linted, who: &Who, want: &str, o: &Opts, good: Opti
     }
     // A rewrite keeps the words it came from, once: a rewrite of a rewrite is the AI's own and stays advisory.
     let (source, want_source, turn) = match &old {
-        Some(p) if p.replaces.is_none() => (p.source.clone(), p.want_source.clone(), p.created_turn),
+        Some(p) if p.replaces.is_none() => {
+            (p.source.clone(), p.want_source.clone(), p.created_turn)
+        }
         Some(p) => ("agent".to_string(), None, p.created_turn),
         None => {
             let (s, w) = promise::source_for(db, who, want).map_err(|e| fail_p(&e))?;
             (s, w, who.turn.as_ref().map(|t| t.id))
         }
     };
-    Ok(Plan { source, want: want_source, good, bad: o.bad, turn, replaces: o.replace })
+    Ok(Plan {
+        source,
+        want: want_source,
+        good,
+        bad: o.bad,
+        turn,
+        replaces: o.replace,
+    })
 }
 
 /// The vault entry and the `proposed` row (one short transaction).
@@ -169,28 +203,44 @@ fn insert(ws: &mut Ws, key: &Key, l: &Linted, p: &Plan, now: i64) -> Result<i64>
 /// A promise that replaced another one: the old one goes once the new one is saved.
 fn after_saved(ws: &mut Ws, p: &Promise) {
     if let Some(old) = p.replaces {
-        let _ = promise::write(ws, |w| Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1 AND state<>'dropped'", [old])?));
+        let _ = promise::write(ws, |w| {
+            Ok(w.conn.execute(
+                "UPDATE promises SET state='dropped', announced=1 WHERE id=?1 AND state<>'dropped'",
+                [old],
+            )?)
+        });
     }
 }
 
 /// Qualify in the foreground and say the result. 0 saved, 1 not saved.
 fn finish_foreground(ws: &mut Ws, id: i64, not_saved_code: i32, repro: bool) -> i32 {
-    let r = if repro { crate::findbreak::prove(ws, id, &say) } else { promise::qualify(ws, id, &say) };
+    let r = if repro {
+        crate::findbreak::prove(ws, id, &say)
+    } else {
+        promise::qualify(ws, id, &say)
+    };
     match r {
         Ok(Done::Saved(s)) => {
-            let Ok(Some(p)) = promise::get(&ws.conn, id) else { return 1 };
+            let Ok(Some(p)) = promise::get(&ws.conn, id) else {
+                return 1;
+            };
             after_saved(ws, &p);
             say(&promise::saved_line(&ws.conn, &p, &s));
             0
         }
         Ok(Done::NotSaved(why)) => {
             // The AI is told here; Stop repeats only what a background run found.
-            let _ = promise::write(ws, |w| Ok(w.conn.execute("UPDATE promises SET announced=1 WHERE id=?1", [id])?));
+            let _ = promise::write(ws, |w| {
+                Ok(w.conn
+                    .execute("UPDATE promises SET announced=1 WHERE id=?1", [id])?)
+            });
             err(&format!("Not saved: {why}\n"));
             not_saved_code
         }
         Err(e) => {
-            let _ = promise::write(ws, |w| Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1 AND tier='proposed'", [id])?));
+            let _ = promise::write(ws, |w| {
+                Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1 AND tier='proposed'", [id])?)
+            });
             fail_p(&e)
         }
     }
@@ -201,7 +251,15 @@ fn spawn_qualify(id: i64, repro: bool) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let flag: &[&str] = if repro { &["--repro"] } else { &[] };
-    Command::new(std::env::current_exe()?).args(["promise", "qualify", &id.to_string()]).args(flag).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().map(|_| ())
+    Command::new(std::env::current_exe()?)
+        .args(["promise", "qualify", &id.to_string()])
+        .args(flag)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_| ())
 }
 
 fn add(args: &[&str]) -> i32 {
@@ -222,7 +280,10 @@ fn add(args: &[&str]) -> i32 {
             _ => return usage(U),
         }
     }
-    if !dash || [o.good, o.turn, o.bad, o.replace].contains(&Some(0)) || (o.good.is_some() && o.turn.is_some()) {
+    if !dash
+        || [o.good, o.turn, o.bad, o.replace].contains(&Some(0))
+        || (o.good.is_some() && o.turn.is_some())
+    {
         return usage(U);
     }
     if o.repro && (o.good.is_some() || o.turn.is_some() || o.bad.is_some()) {
@@ -236,18 +297,32 @@ fn add(args: &[&str]) -> i32 {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
     };
-    let id = match propose(&mut ws, &l, &o, if o.repro { "repro" } else { "praise" }, "promise add") {
+    let id = match propose(
+        &mut ws,
+        &l,
+        &o,
+        if o.repro { "repro" } else { "praise" },
+        "promise add",
+    ) {
         Ok(i) => i,
         Err(c) => return c,
     };
     if o.background {
         return match spawn_qualify(id, o.repro) {
             Ok(()) => {
-                say(&format!("Promise #{id} \"{}\" is being checked in the background. The result shows in the next Torpor line.", promise::clean(&l.spec.name, spec::NAME_MAX)));
+                say(&format!(
+                    "Promise #{id} \"{}\" is being checked in the background. The result shows in the next Torpor line.",
+                    promise::clean(&l.spec.name, spec::NAME_MAX)
+                ));
                 0
             }
             Err(e) => {
-                let _ = promise::write(&mut ws, |w| Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1", [id])?));
+                let _ = promise::write(&mut ws, |w| {
+                    Ok(w.conn.execute(
+                        "UPDATE promises SET state='dropped', announced=1 WHERE id=?1",
+                        [id],
+                    )?)
+                });
                 fail_p(&e.into())
             }
         };
@@ -267,7 +342,16 @@ fn propose(ws: &mut Ws, l: &Linted, o: &Opts, want: &str, sub: &str) -> Code<i64
 
 /// A repro check from `find-break --check -`: the same row `promise add --repro -` makes.
 pub(crate) fn propose_repro(ws: &mut Ws, l: &Linted) -> Code<i64> {
-    propose(ws, l, &Opts { repro: true, ..Opts::default() }, "repro", "find-break")
+    propose(
+        ws,
+        l,
+        &Opts {
+            repro: true,
+            ..Opts::default()
+        },
+        "repro",
+        "find-break",
+    )
 }
 
 /// The detached half of `promise add --background` (not in the help text).
@@ -277,7 +361,9 @@ fn qualify_cmd(args: &[&str]) -> i32 {
         [id, "--repro"] => (id, true),
         _ => return usage("promise qualify ID [--repro]"),
     };
-    let Some(id) = num(id) else { return usage("promise qualify ID [--repro]") };
+    let Some(id) = num(id) else {
+        return usage("promise qualify ID [--repro]");
+    };
     let mut ws = match open_here() {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
@@ -287,7 +373,11 @@ fn qualify_cmd(args: &[&str]) -> i32 {
         Ok(_) => return 0,
         Err(e) => return fail_p(&e),
     }
-    let r = if repro { crate::findbreak::prove(&mut ws, id, &|_| {}) } else { promise::qualify(&mut ws, id, &|_| {}) };
+    let r = if repro {
+        crate::findbreak::prove(&mut ws, id, &|_| {})
+    } else {
+        promise::qualify(&mut ws, id, &|_| {})
+    };
     match r {
         Ok(Done::Saved(_)) => {
             if let Ok(Some(p)) = promise::get(&ws.conn, id) {
@@ -297,7 +387,9 @@ fn qualify_cmd(args: &[&str]) -> i32 {
         }
         Ok(Done::NotSaved(_)) => 0,
         Err(e) => {
-            let _ = promise::write(&mut ws, |w| Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=0 WHERE id=?1 AND tier='proposed'", [id])?));
+            let _ = promise::write(&mut ws, |w| {
+                Ok(w.conn.execute("UPDATE promises SET state='dropped', announced=0 WHERE id=?1 AND tier='proposed'", [id])?)
+            });
             fail_p(&e)
         }
     }
@@ -351,14 +443,25 @@ pub fn keep(args: &[&str]) -> i32 {
             let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
             let req = Req {
                 session: &session,
-                points: vec![PointSpec { kind: PointKind::Keep, turn_id, note: (!skip).then(|| words.clone()) }],
+                points: vec![PointSpec {
+                    kind: PointKind::Keep,
+                    turn_id,
+                    note: (!skip).then(|| words.clone()),
+                }],
                 turn: req_turn,
                 only_if_changed: false,
                 budget: Some(Duration::from_secs(30)),
             };
             let c = capture::capture(&ws, &tx, &req)?;
             if !skip {
-                tx.execute("INSERT INTO constraints(turn_id,text,polarity,source) VALUES(?1,?2,'do',?3)", params![turn_id, words, if who.agent { "keep_agent" } else { "keep_user" }])?;
+                tx.execute(
+                    "INSERT INTO constraints(turn_id,text,polarity,source) VALUES(?1,?2,'do',?3)",
+                    params![
+                        turn_id,
+                        words,
+                        if who.agent { "keep_agent" } else { "keep_user" }
+                    ],
+                )?;
                 crate::constraints::supersede(&tx, tx.last_insert_rowid())?; // only the user's own keep replaces an older opposite one
             }
             tx.commit()?;
@@ -430,8 +533,16 @@ fn proof(db: &Connection, p: &Promise) -> Option<String> {
     let count = |point: Option<i64>, verdict: &str| -> Option<(i64, i64)> {
         let tree = promise::point_tree(db, point?).ok()?;
         let q = |extra: &str, v: &str| -> Option<i64> {
-            let sql = format!("SELECT COUNT(*) FROM promise_runs WHERE promise_id=?1 AND kind='create' AND tree_id=?2{extra}");
-            if extra.is_empty() { db.query_row(&sql, params![p.id, &tree[..]], |r| r.get(0)).ok() } else { db.query_row(&sql, params![p.id, &tree[..], v], |r| r.get(0)).ok() }
+            let sql = format!(
+                "SELECT COUNT(*) FROM promise_runs WHERE promise_id=?1 AND kind='create' AND tree_id=?2{extra}"
+            );
+            if extra.is_empty() {
+                db.query_row(&sql, params![p.id, &tree[..]], |r| r.get(0))
+                    .ok()
+            } else {
+                db.query_row(&sql, params![p.id, &tree[..], v], |r| r.get(0))
+                    .ok()
+            }
         };
         let total = q("", "")?;
         let hit = q(" AND verdict=?3", verdict)?;
@@ -440,7 +551,10 @@ fn proof(db: &Connection, p: &Promise) -> Option<String> {
     let (a, n) = count(p.good_point, "PASS")?;
     let good = promise::point_name(db, p.good_point?);
     Some(match count(p.bad_point, "FAIL") {
-        Some((b, m)) => format!("Proof: passed {a} of {n} on {good} and failed {b} of {m} on {}.", promise::point_name(db, p.bad_point?)),
+        Some((b, m)) => format!(
+            "Proof: passed {a} of {n} on {good} and failed {b} of {m} on {}.",
+            promise::point_name(db, p.bad_point?)
+        ),
         None => format!("Proof: passed {a} of {n} on {good}. No earlier version fails it."),
     })
 }
@@ -482,21 +596,36 @@ fn show(args: &[&str]) -> i32 {
         Ok(l) => {
             say(&format!("Why: {}", promise::clean(&l.spec.why, 200)));
             for (i, s) in l.spec.steps.iter().enumerate() {
-                let why = s.why.as_deref().map(|w| format!(": {}", promise::clean(w, 160))).unwrap_or_default();
+                let why = s
+                    .why
+                    .as_deref()
+                    .map(|w| format!(": {}", promise::clean(w, 160)))
+                    .unwrap_or_default();
                 say(&format!("  step {} {}{why}", i + 1, s.act.verb()));
             }
         }
-        Err(e) => say(&format!("The stored check could not be read ({e}). Check torpor status.")),
+        Err(e) => say(&format!(
+            "The stored check could not be read ({e}). Check torpor status."
+        )),
     }
     if let Some(line) = proof(db, &p) {
         say(&line);
     }
     if let (Some(k), Some(t)) = (p.mutants_killed, p.mutants_tried) {
-        say(&format!("Broken copies: the check failed on {k} of {t} copies with part of the fix undone."));
+        say(&format!(
+            "Broken copies: the check failed on {k} of {t} copies with part of the fix undone."
+        ));
     }
     match p.tier.as_str() {
-        "shadow" => say(&format!("Shadow: {} of 3 clean days. It starts to stop the AI after one real catch, or when you run: torpor promise block {}", p.shadow_days, p.id)),
-        "blocking" if p.catches > 0 => say(&format!("Caught: {} real failure{}.", p.catches, if p.catches == 1 { "" } else { "s" })),
+        "shadow" => say(&format!(
+            "Shadow: {} of 3 clean days. It starts to stop the AI after one real catch, or when you run: torpor promise block {}",
+            p.shadow_days, p.id
+        )),
+        "blocking" if p.catches > 0 => say(&format!(
+            "Caught: {} real failure{}.",
+            p.catches,
+            if p.catches == 1 { "" } else { "s" }
+        )),
         _ => {}
     }
     let runs: Vec<(String, String, Option<i64>, Option<String>, i64)> = (|| -> rusqlite::Result<_> {
@@ -506,11 +635,23 @@ fn show(args: &[&str]) -> i32 {
     .unwrap_or_default();
     for (kind, verdict, step, reason, at) in runs {
         let step = step.map(|s| format!(" at step {s}")).unwrap_or_default();
-        let reason = reason.filter(|r| !r.is_empty()).map(|r| format!(": {r}")).unwrap_or_default();
-        say(&format!("  {} {kind} {verdict}{step}{reason}", local_stamp(at, now)));
+        let reason = reason
+            .filter(|r| !r.is_empty())
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default();
+        say(&format!(
+            "  {} {kind} {verdict}{step}{reason}",
+            local_stamp(at, now)
+        ));
     }
-    for d in promise::disputes(&p).iter().filter(|d| d["valid"].is_null()) {
-        say(&format!("Open dispute: {}", d["why"].as_str().unwrap_or("")));
+    for d in promise::disputes(&p)
+        .iter()
+        .filter(|d| d["valid"].is_null())
+    {
+        say(&format!(
+            "Open dispute: {}",
+            d["why"].as_str().unwrap_or("")
+        ));
     }
     0
 }
@@ -519,8 +660,12 @@ fn show(args: &[&str]) -> i32 {
 
 fn dispute(args: &[&str]) -> i32 {
     const U: &str = "promise dispute ID \"<why>\"";
-    let Some((id, why)) = args.split_first() else { return usage(U) };
-    let (Some(id), why) = (num(id), promise::clean(&why.join(" "), 400)) else { return usage(U) };
+    let Some((id, why)) = args.split_first() else {
+        return usage(U);
+    };
+    let (Some(id), why) = (num(id), promise::clean(&why.join(" "), 400)) else {
+        return usage(U);
+    };
     if why.trim().is_empty() {
         return usage(U);
     }
@@ -530,12 +675,16 @@ fn dispute(args: &[&str]) -> i32 {
     };
     let now = now_ns();
     let r = promise::write(&mut ws, |w| {
-        let p = promise::get(&w.conn, id)?.filter(|p| p.state != "dropped").ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
+        let p = promise::get(&w.conn, id)?
+            .filter(|p| p.state != "dropped")
+            .ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
         promise::dispute(&w.conn, &p, &why, now)
     });
     match r {
         Ok(()) => {
-            say(&format!("Promise #{id} is advisory until the user decides."));
+            say(&format!(
+                "Promise #{id} is advisory until the user decides."
+            ));
             0
         }
         Err(e) => fail_p(&e),
@@ -544,15 +693,29 @@ fn dispute(args: &[&str]) -> i32 {
 
 /// `promise ok` (the user keeps it; the dispute is rejected) and `promise drop`. Both are user-only (cli.rs refuses them for an AI).
 fn ok_or_drop(args: &[&str], ok: bool) -> i32 {
-    let [id] = args else { return usage(if ok { "promise ok ID" } else { "promise drop ID" }) };
-    let Some(id) = num(id) else { return usage(if ok { "promise ok ID" } else { "promise drop ID" }) };
+    let [id] = args else {
+        return usage(if ok {
+            "promise ok ID"
+        } else {
+            "promise drop ID"
+        });
+    };
+    let Some(id) = num(id) else {
+        return usage(if ok {
+            "promise ok ID"
+        } else {
+            "promise drop ID"
+        });
+    };
     let mut ws = match open_here() {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
     };
     let now = now_ns();
     let r = promise::write(&mut ws, |w| {
-        let p = promise::get(&w.conn, id)?.filter(|p| p.state != "dropped").ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
+        let p = promise::get(&w.conn, id)?
+            .filter(|p| p.state != "dropped")
+            .ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
         if ok {
             promise::keep_after_dispute(&w.conn, &p, now)
         } else {
@@ -564,7 +727,9 @@ fn ok_or_drop(args: &[&str], ok: bool) -> i32 {
             say(&match (ok, had) {
                 (true, true) => format!("Promise #{id} stays. The dispute was rejected."),
                 (true, false) => format!("Promise #{id} has no open dispute."),
-                (false, _) => format!("Promise #{id} dropped. Its save points are no longer pinned."),
+                (false, _) => {
+                    format!("Promise #{id} dropped. Its save points are no longer pinned.")
+                }
             });
             0
         }
@@ -575,19 +740,36 @@ fn ok_or_drop(args: &[&str], ok: bool) -> i32 {
 /// `promise block ID` (user only, cli.rs refuses it for an AI): skips the wait of spec 17, and only that wait. A promise in shadow that is live,
 /// not flaky and has no open dispute starts to stop the AI; anything else stays as it is.
 fn block(args: &[&str]) -> i32 {
-    let [id] = args else { return usage("promise block ID") };
-    let Some(id) = num(id) else { return usage("promise block ID") };
+    let [id] = args else {
+        return usage("promise block ID");
+    };
+    let Some(id) = num(id) else {
+        return usage("promise block ID");
+    };
     let mut ws = match open_here() {
         Ok(w) => w,
         Err(e) => return fail_p(&e),
     };
     let r = promise::write(&mut ws, |w| {
-        let p = promise::get(&w.conn, id)?.filter(|p| p.state != "dropped").ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
+        let p = promise::get(&w.conn, id)?
+            .filter(|p| p.state != "dropped")
+            .ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
         let open = promise::disputes(&p).iter().any(|d| d["valid"].is_null());
         let no = if p.tier != "shadow" {
-            Some(format!("it is {}, and only a promise in shadow can be made blocking", promise::tier_label(&p)))
+            Some(format!(
+                "it is {}, and only a promise in shadow can be made blocking",
+                promise::tier_label(&p)
+            ))
         } else if p.state != "live" || open || p.flake_hat.is_some_and(|h| h > 0.0) {
-            Some(format!("it is {}{}", if p.state == "live" { "flaky" } else { p.state.as_str() }, if open { " with an open dispute" } else { "" }))
+            Some(format!(
+                "it is {}{}",
+                if p.state == "live" {
+                    "flaky"
+                } else {
+                    p.state.as_str()
+                },
+                if open { " with an open dispute" } else { "" }
+            ))
         } else {
             None
         };
@@ -598,11 +780,15 @@ fn block(args: &[&str]) -> i32 {
     });
     match r {
         Ok(None) => {
-            say(&format!("Promise #{id} now stops the AI when it fails at the end of a turn."));
+            say(&format!(
+                "Promise #{id} now stops the AI when it fails at the end of a turn."
+            ));
             0
         }
         Ok(Some(why)) => {
-            err(&format!("Promise #{id} stays as it is: {why}. torpor promise show {id}\n"));
+            err(&format!(
+                "Promise #{id} stays as it is: {why}. torpor promise show {id}\n"
+            ));
             1
         }
         Err(e) => fail_p(&e),
@@ -630,7 +816,9 @@ pub fn check(args: &[&str]) -> i32 {
         Err(e) => return fail_p(&e),
     };
     let picked: Code<Vec<Promise>> = if all {
-        promise::all(&ws.conn, false).map(|v| v.into_iter().filter(|p| p.tier != "proposed").collect()).map_err(|e| fail_p(&e))
+        promise::all(&ws.conn, false)
+            .map(|v| v.into_iter().filter(|p| p.tier != "proposed").collect())
+            .map_err(|e| fail_p(&e))
     } else {
         ids.iter().map(|id| get_live(&ws.conn, *id)).collect()
     };
@@ -652,7 +840,10 @@ pub fn check(args: &[&str]) -> i32 {
         let l = match promise::spec_of(&ws, &p) {
             Ok(l) => l,
             Err(_) => {
-                say(&format!("Promise #{} {name}: UNRUNNABLE: its stored check cannot be read (torpor status).", p.id));
+                say(&format!(
+                    "Promise #{} {name}: UNRUNNABLE: its stored check cannot be read (torpor status).",
+                    p.id
+                ));
                 worst = 1;
                 continue;
             }
@@ -661,9 +852,14 @@ pub fn check(args: &[&str]) -> i32 {
         let at = now_ns();
         let seen = promise::point_of_tree(&ws.conn, &tree);
         let rows = promise::write(&mut ws, |w| {
-            c.runs.iter().try_for_each(|r| promise::record(&w.conn, p.id, "check", Some(&tree), r, at))?;
+            c.runs
+                .iter()
+                .try_for_each(|r| promise::record(&w.conn, p.id, "check", Some(&tree), r, at))?;
             if let (Call::Pass, Some(pt)) = (c.call, seen) {
-                w.conn.execute("UPDATE promises SET last_pass_point=?2 WHERE id=?1", params![p.id, pt])?;
+                w.conn.execute(
+                    "UPDATE promises SET last_pass_point=?2 WHERE id=?1",
+                    params![p.id, pt],
+                )?;
             }
             Ok(())
         });
@@ -703,7 +899,11 @@ pub fn gate(args: &[&str]) -> i32 {
             let on = *s == "on";
             match promise::write(&mut ws, |w| promise::gate_set(&w.conn, on)) {
                 Ok(()) => {
-                    say(if on { "The gate is on." } else { "The gate is off. Promises show failures but do not stop the AI. Turn it on: torpor gate on" });
+                    say(if on {
+                        "The gate is on."
+                    } else {
+                        "The gate is off. Promises show failures but do not stop the AI. Turn it on: torpor gate on"
+                    });
                     0
                 }
                 Err(e) => fail_p(&e),

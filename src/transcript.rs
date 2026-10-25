@@ -43,7 +43,10 @@ fn map_origin(turn_origin: Option<&str>, prompt_source: Option<&str>) -> &'stati
 
 /// Look for the turn's user entry from `offset` on. Bad lines are skipped; entries are deduped by uuid.
 pub fn read_origin(path: &Path, offset: i64, prompt_id: Option<&str>) -> Read4 {
-    let mut out = Read4 { found: None, new_offset: offset.max(0) };
+    let mut out = Read4 {
+        found: None,
+        new_offset: offset.max(0),
+    };
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return out,
@@ -110,14 +113,26 @@ pub fn read_origin(path: &Path, offset: i64, prompt_id: Option<&str>) -> Read4 {
         let to = v.get("turnOrigin").and_then(|x| x.as_str());
         let ps = v.get("promptSource").and_then(|x| x.as_str());
         let labeled = to.is_some() || ps.is_some();
-        let side = v.get("isSidechain").and_then(|x| x.as_bool()).unwrap_or(false);
-        let compact = v.get("isCompactSummary").and_then(|x| x.as_bool()).unwrap_or(false);
+        let side = v
+            .get("isSidechain")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        let compact = v
+            .get("isCompactSummary")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         let pid = v.get("promptId").and_then(|x| x.as_str());
         if prompt_id.is_some() && pid == prompt_id && labeled && !side {
-            by_prompt = Some(Found { origin: map_origin(to, ps), by: "prompt_id" });
+            by_prompt = Some(Found {
+                origin: map_origin(to, ps),
+                by: "prompt_id",
+            });
         }
         if labeled && !side && !compact {
-            newest = Some(Found { origin: map_origin(to, ps), by: "order" });
+            newest = Some(Found {
+                origin: map_origin(to, ps),
+                by: "order",
+            });
         }
     }
     out.found = by_prompt.or(newest);
@@ -142,7 +157,10 @@ fn whole_lines(path: &Path, from: u64, max: u64) -> Option<(Vec<u8>, u64)> {
     let mut base = start;
     if cut {
         // The first line is probably a partial one.
-        let i = buf.iter().position(|b| *b == b'\n').map_or(buf.len(), |i| i + 1);
+        let i = buf
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(buf.len(), |i| i + 1);
         buf.drain(..i);
         base += i as u64;
     }
@@ -165,7 +183,10 @@ fn content_strings(att: &serde_json::Value) -> Vec<&str> {
 }
 
 fn context_attachment(v: &serde_json::Value) -> Option<&serde_json::Value> {
-    (v.get("type").and_then(|t| t.as_str()) == Some("attachment")).then(|| v.get("attachment")).flatten().filter(|a| a.get("type").and_then(|t| t.as_str()) == Some("hook_additional_context"))
+    (v.get("type").and_then(|t| t.as_str()) == Some("attachment"))
+        .then(|| v.get("attachment"))
+        .flatten()
+        .filter(|a| a.get("type").and_then(|t| t.as_str()) == Some("hook_additional_context"))
 }
 
 /// The id of the newest compaction in the main conversation (the last 4 MiB of the transcript). A compaction inside a subagent
@@ -179,15 +200,23 @@ pub fn newest_boundary(path: &Path) -> Option<String> {
         if !has(line, b"compact_boundary") {
             continue;
         }
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
         let is = |k: &str, w: &str| v.get(k).and_then(|x| x.as_str()) == Some(w);
         if !(is("type", "system") && is("subtype", "compact_boundary")) {
             continue;
         }
-        if v.get("agentId").is_some_and(|a| !a.is_null()) || v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true) {
+        if v.get("agentId").is_some_and(|a| !a.is_null())
+            || v.get("isSidechain").and_then(|x| x.as_bool()) == Some(true)
+        {
             continue;
         }
-        found = Some(v.get("uuid").and_then(|u| u.as_str()).map_or_else(|| format!("@{here}"), |u| u.to_string()));
+        found = Some(
+            v.get("uuid")
+                .and_then(|u| u.as_str())
+                .map_or_else(|| format!("@{here}"), |u| u.to_string()),
+        );
     }
     found
 }
@@ -200,8 +229,12 @@ pub fn holds_context(path: &Path, from: u64, marker: &str) -> Option<bool> {
         if !(has(line, b"hook_additional_context") && has(line, marker.as_bytes())) {
             continue;
         }
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
-        if context_attachment(&v).is_some_and(|a| content_strings(a).iter().any(|s| s.contains(marker))) {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        if context_attachment(&v)
+            .is_some_and(|a| content_strings(a).iter().any(|s| s.contains(marker)))
+        {
             return Some(true);
         }
     }
@@ -210,7 +243,10 @@ pub fn holds_context(path: &Path, from: u64, marker: &str) -> Option<bool> {
 
 /// The length of the transcript now (where the next delivery check starts), or None.
 pub fn len_of(path: &Path) -> Option<u64> {
-    std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+    std::fs::metadata(path)
+        .ok()
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
 }
 
 /// One `hook_additional_context` attachment: how big it is, and which prompt it follows.
@@ -232,12 +268,20 @@ pub fn context_blocks(path: &Path) -> Option<Vec<Block>> {
         if !(user || has(line, b"hook_additional_context")) {
             continue;
         }
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else { continue };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
         if let Some(att) = context_attachment(&v) {
             let parts = content_strings(att);
             let chars = parts.iter().map(|s| s.chars().count()).sum();
-            out.push(Block { prompt_id: prompt.clone(), chars, torpor: parts.first().is_some_and(|s| s.starts_with("Torpor")) });
-        } else if v.get("type").and_then(|t| t.as_str()) == Some("user") && v.get("isSidechain").and_then(|x| x.as_bool()) != Some(true) {
+            out.push(Block {
+                prompt_id: prompt.clone(),
+                chars,
+                torpor: parts.first().is_some_and(|s| s.starts_with("Torpor")),
+            });
+        } else if v.get("type").and_then(|t| t.as_str()) == Some("user")
+            && v.get("isSidechain").and_then(|x| x.as_bool()) != Some(true)
+        {
             if let Some(p) = v.get("promptId").and_then(|x| x.as_str()) {
                 prompt = Some(p.to_string());
             }
@@ -258,19 +302,46 @@ mod tests {
         let mut f = std::fs::File::create(&p).unwrap();
         writeln!(f, r#"{{"type":"user","uuid":"a","promptId":"p1","turnOrigin":"human","promptSource":"typed"}}"#).unwrap();
         writeln!(f, "not json at all").unwrap();
-        writeln!(f, r#"{{"type":"user","uuid":"b","promptId":"p1","message":"tool result, no labels"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","uuid":"b","promptId":"p1","message":"tool result, no labels"}}"#
+        )
+        .unwrap();
         writeln!(f, r#"{{"type":"user","uuid":"c","promptId":"p2","turnOrigin":"sdk","promptSource":"sdk"}}"#).unwrap();
         write!(f, r#"{{"type":"user","uuid":"d","promptId":"p3","turnOr"#).unwrap(); // partial last line
         drop(f);
         let r = read_origin(&p, 0, Some("p1"));
-        assert_eq!(r.found, Some(Found { origin: "human", by: "prompt_id" }));
+        assert_eq!(
+            r.found,
+            Some(Found {
+                origin: "human",
+                by: "prompt_id"
+            })
+        );
         let r2 = read_origin(&p, 0, Some("p2"));
-        assert_eq!(r2.found, Some(Found { origin: "sdk", by: "prompt_id" }));
+        assert_eq!(
+            r2.found,
+            Some(Found {
+                origin: "sdk",
+                by: "prompt_id"
+            })
+        );
         // unknown id: newest labeled entry, by order
         let r3 = read_origin(&p, 0, Some("zzz"));
-        assert_eq!(r3.found, Some(Found { origin: "sdk", by: "order" }));
+        assert_eq!(
+            r3.found,
+            Some(Found {
+                origin: "sdk",
+                by: "order"
+            })
+        );
         // the partial last line is not consumed
-        let consumed = std::fs::read(&p).unwrap().iter().rposition(|b| *b == b'\n').unwrap() + 1;
+        let consumed = std::fs::read(&p)
+            .unwrap()
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .unwrap()
+            + 1;
         assert_eq!(r3.new_offset as usize, consumed);
     }
 
@@ -301,8 +372,16 @@ mod tests {
         );
         assert_eq!(newest_boundary(&p).as_deref(), Some("b1"));
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-        writeln!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"b2"}}"#).unwrap();
-        write!(f, r#"{{"type":"system","subtype":"compact_boundary","uuid":"b3"#).unwrap(); // still being written
+        writeln!(
+            f,
+            r#"{{"type":"system","subtype":"compact_boundary","uuid":"b2"}}"#
+        )
+        .unwrap();
+        write!(
+            f,
+            r#"{{"type":"system","subtype":"compact_boundary","uuid":"b3"#
+        )
+        .unwrap(); // still being written
         assert_eq!(newest_boundary(&p).as_deref(), Some("b2"));
     }
 
@@ -310,21 +389,51 @@ mod tests {
     fn the_delivery_check_needs_an_attachment_after_the_start_offset() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("t.jsonl");
-        let att = |text: &str| format!(r#"{{"type":"attachment","attachment":{{"type":"hook_additional_context","content":["{text}"]}}}}"#);
-        lines(&p, &[&att("Torpor (after compaction 1, valid as of turn 4). old"), r#"{"type":"user","uuid":"u"}"#]);
+        let att = |text: &str| {
+            format!(
+                r#"{{"type":"attachment","attachment":{{"type":"hook_additional_context","content":["{text}"]}}}}"#
+            )
+        };
+        lines(
+            &p,
+            &[
+                &att("Torpor (after compaction 1, valid as of turn 4). old"),
+                r#"{"type":"user","uuid":"u"}"#,
+            ],
+        );
         let off = len_of(&p).unwrap();
         // Before the offset does not count; a user line that only quotes the text does not count.
-        assert_eq!(holds_context(&p, off, "Torpor (after compaction 1"), Some(false));
+        assert_eq!(
+            holds_context(&p, off, "Torpor (after compaction 1"),
+            Some(false)
+        );
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         writeln!(f, r#"{{"type":"user","message":"hook_additional_context Torpor (after compaction 2 quoted"}}"#).unwrap();
-        assert_eq!(holds_context(&p, off, "Torpor (after compaction 2"), Some(false));
-        writeln!(f, "{}", att("Torpor (after compaction 2, valid as of turn 9). new")).unwrap();
+        assert_eq!(
+            holds_context(&p, off, "Torpor (after compaction 2"),
+            Some(false)
+        );
+        writeln!(
+            f,
+            "{}",
+            att("Torpor (after compaction 2, valid as of turn 9). new")
+        )
+        .unwrap();
         writeln!(f, r#"{{"type":"attachment","attachment":{{"type":"hook_additional_context","content":"Torpor (after clear), as one string"}}}}"#).unwrap();
-        assert_eq!(holds_context(&p, off, "Torpor (after compaction 2"), Some(true));
+        assert_eq!(
+            holds_context(&p, off, "Torpor (after compaction 2"),
+            Some(true)
+        );
         assert_eq!(holds_context(&p, off, "Torpor (after clear"), Some(true));
-        assert_eq!(holds_context(&p, 0, "Torpor (after compaction 1"), Some(true));
+        assert_eq!(
+            holds_context(&p, 0, "Torpor (after compaction 1"),
+            Some(true)
+        );
         // A shrunk file is read from the start; a missing file is "cannot tell".
-        assert_eq!(holds_context(&p, off + 1_000_000, "Torpor (after compaction 2"), Some(true));
+        assert_eq!(
+            holds_context(&p, off + 1_000_000, "Torpor (after compaction 2"),
+            Some(true)
+        );
         assert_eq!(holds_context(&d.path().join("none.jsonl"), 0, "x"), None);
     }
 
@@ -332,7 +441,11 @@ mod tests {
     fn context_blocks_give_sizes_by_prompt_and_say_whose_they_are() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("t.jsonl");
-        let att = |text: &str| format!(r#"{{"type":"attachment","attachment":{{"type":"hook_additional_context","content":["{text}"]}}}}"#);
+        let att = |text: &str| {
+            format!(
+                r#"{{"type":"attachment","attachment":{{"type":"hook_additional_context","content":["{text}"]}}}}"#
+            )
+        };
         lines(
             &p,
             &[
@@ -348,9 +461,21 @@ mod tests {
         assert_eq!(
             b,
             vec![
-                Block { prompt_id: Some("p1".into()), chars: 16, torpor: true },
-                Block { prompt_id: Some("p1".into()), chars: 23, torpor: false },
-                Block { prompt_id: Some("p3".into()), chars: 5, torpor: false },
+                Block {
+                    prompt_id: Some("p1".into()),
+                    chars: 16,
+                    torpor: true
+                },
+                Block {
+                    prompt_id: Some("p1".into()),
+                    chars: 23,
+                    torpor: false
+                },
+                Block {
+                    prompt_id: Some("p3".into()),
+                    chars: 5,
+                    torpor: false
+                },
             ]
         );
     }

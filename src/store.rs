@@ -2,7 +2,7 @@
 use crate::util::*;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Deserialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -56,7 +56,10 @@ CREATE INDEX IF NOT EXISTS cli_calls_at ON cli_calls(at);
 // ---------------------------------------------------------------- paths
 
 pub fn user_home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Claude Code's own folder (`~/.claude`, or CLAUDE_CONFIG_DIR). Torpor only ever reads from it.
@@ -150,7 +153,12 @@ fn ensure_home(home: &Path, create: bool) -> Result<()> {
 }
 
 fn write_new_private(p: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    match OpenOptions::new().write(true).create_new(true).mode(0o600).open(p) {
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(p)
+    {
         Ok(mut f) => f.write_all(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e),
@@ -178,7 +186,10 @@ fn pick_ws_dir(home: &Path, root: &Path, create: bool) -> Result<(PathBuf, Strin
                     // `root` is written last; a half-made folder is simply redone by the next hook.
                     write_new_private(&root_file, root.as_os_str().as_bytes())?;
                     // Re-read in case of a race with another creator.
-                    if fs::read(&root_file).map(|b| b == root.as_os_str().as_bytes()).unwrap_or(false) {
+                    if fs::read(&root_file)
+                        .map(|b| b == root.as_os_str().as_bytes())
+                        .unwrap_or(false)
+                    {
                         return Ok((dir, id));
                     }
                     continue;
@@ -207,9 +218,14 @@ const WAL_KEEP_BYTES: u64 = 512 * 1024;
 impl Drop for Ws {
     fn drop(&mut self) {
         // Without this the WAL would grow for ever: a fresh process never restarts a log it had to recover.
-        if fs::metadata(self.dir.join("torpor.db-wal")).map(|m| m.len() > WAL_KEEP_BYTES).unwrap_or(false) {
+        if fs::metadata(self.dir.join("torpor.db-wal"))
+            .map(|m| m.len() > WAL_KEEP_BYTES)
+            .unwrap_or(false)
+        {
             let _ = self.conn.busy_timeout(Duration::from_millis(10));
-            let _ = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+            let _ = self
+                .conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
         }
     }
 }
@@ -231,12 +247,25 @@ impl Ws {
             }
         }
         let conn = open_db(&dir.join("torpor.db"), create)?;
-        Ok(Ws { root: root.to_path_buf(), dir, id, home, conn, lock: None })
+        Ok(Ws {
+            root: root.to_path_buf(),
+            dir,
+            id,
+            home,
+            conn,
+            lock: None,
+        })
     }
 
     fn lock_file(&mut self) -> Result<&File> {
         if self.lock.is_none() {
-            let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).open(self.dir.join("lock"))?;
+            let f = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(self.dir.join("lock"))?;
             self.lock = Some(f);
         }
         Ok(self.lock.as_ref().unwrap())
@@ -302,14 +331,20 @@ fn open_db(path: &Path, create: bool) -> Result<Connection> {
         }
         write_new_private(path, b"")?;
     }
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     conn.busy_timeout(Duration::from_millis(1000))?;
     // journal_mode answers with a row, so it goes through query_row.
     let _: String = conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // A hook is a short process: the close-time checkpoint costs two fsyncs and about 3 ms every time. `Ws::drop` truncates the WAL once it is big.
-    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v > SCHEMA_VERSION {
         return Err(Error::Newer);
@@ -349,7 +384,13 @@ fn open_db(path: &Path, create: bool) -> Result<Connection> {
 /// Spec 21: `tool_events.ek1` holds the error key of a failed shell command. Added to any version 2 store on open, without a schema bump:
 /// version 2 has not shipped, and only the rebuild after compaction reads the column. A second process adding it first is fine.
 fn ensure_ek1(conn: &Connection) {
-    let has: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('tool_events') WHERE name='ek1')", [], |r| r.get(0)).unwrap_or(true);
+    let has: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tool_events') WHERE name='ek1')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(true);
     if !has {
         let _ = conn.execute_batch("ALTER TABLE tool_events ADD COLUMN ek1 TEXT");
     }
@@ -358,7 +399,13 @@ fn ensure_ek1(conn: &Connection) {
 // ---------------------------------------------------------------- meta
 
 pub fn meta_get(db: &Connection, key: &str) -> Option<String> {
-    db.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get::<_, Option<String>>(0)).optional().ok().flatten().flatten()
+    db.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| {
+        r.get::<_, Option<String>>(0)
+    })
+    .optional()
+    .ok()
+    .flatten()
+    .flatten()
 }
 
 pub fn meta_get_i64(db: &Connection, key: &str) -> Option<i64> {
@@ -373,7 +420,10 @@ pub fn meta_set(db: &Connection, key: &str, value: &str) -> Result<()> {
 // ---------------------------------------------------------------- faults
 
 fn clean_detail(s: &str) -> String {
-    let one: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let one: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     trunc_chars(&one, 200)
 }
 
@@ -388,8 +438,20 @@ pub fn log_fault_line(home: &Path, ws_id: &str, event: &str, kind: &str, detail:
     }
     let ws = if ws_id.is_empty() { "-" } else { ws_id };
     let ev = if event.is_empty() { "-" } else { event };
-    let line = format!("{} {} {} {} {}\n", now_ns() / 1_000_000, ws, ev, kind, clean_detail(detail));
-    if let Ok(mut f) = OpenOptions::new().append(true).create(true).mode(0o600).open(&p) {
+    let line = format!(
+        "{} {} {} {} {}\n",
+        now_ns() / 1_000_000,
+        ws,
+        ev,
+        kind,
+        clean_detail(detail)
+    );
+    if let Ok(mut f) = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(&p)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -397,18 +459,34 @@ pub fn log_fault_line(home: &Path, ws_id: &str, event: &str, kind: &str, detail:
 /// Record a fault inside the caller's transaction (row) and in faults.log.
 pub fn fault_tx(db: &Connection, home: &Path, ws_id: &str, event: &str, kind: &str, detail: &str) {
     log_fault_line(home, ws_id, event, kind, detail);
-    let _ = db.execute("INSERT INTO faults(at,event,kind,detail,seen) VALUES(?1,?2,?3,?4,0)", params![now_ns(), event, kind, clean_detail(detail)]);
+    let _ = db.execute(
+        "INSERT INTO faults(at,event,kind,detail,seen) VALUES(?1,?2,?3,?4,0)",
+        params![now_ns(), event, kind, clean_detail(detail)],
+    );
 }
 
 /// Record a fault from outside any transaction: log line plus a best-effort row through a short connection.
-pub fn record_fault(home: &Path, ws_dir: Option<&Path>, ws_id: &str, event: &str, kind: &str, detail: &str) {
+pub fn record_fault(
+    home: &Path,
+    ws_dir: Option<&Path>,
+    ws_id: &str,
+    event: &str,
+    kind: &str,
+    detail: &str,
+) {
     log_fault_line(home, ws_id, event, kind, detail);
     if let Some(d) = ws_dir {
         let p = d.join("torpor.db");
         if p.exists() {
-            if let Ok(c) = Connection::open_with_flags(&p, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX) {
+            if let Ok(c) = Connection::open_with_flags(
+                &p,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) {
                 let _ = c.busy_timeout(Duration::from_millis(50));
-                let _ = c.execute("INSERT INTO faults(at,event,kind,detail,seen) VALUES(?1,?2,?3,?4,0)", params![now_ns(), event, kind, clean_detail(detail)]);
+                let _ = c.execute(
+                    "INSERT INTO faults(at,event,kind,detail,seen) VALUES(?1,?2,?3,?4,0)",
+                    params![now_ns(), event, kind, clean_detail(detail)],
+                );
             }
         }
     }
@@ -442,7 +520,10 @@ pub fn disk_floor(total: u64) -> u64 {
 pub fn free_space(path: &Path) -> (u64, u64) {
     let (mut free, total) = disk_space(path);
     #[cfg(feature = "fault-inject")]
-    if let Some(v) = std::env::var("TORPOR_TEST_FREE_BYTES").ok().and_then(|s| s.parse::<u64>().ok()) {
+    if let Some(v) = std::env::var("TORPOR_TEST_FREE_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
         free = v;
     }
     #[cfg(not(feature = "fault-inject"))]
@@ -490,7 +571,10 @@ impl Key {
             _ => return Ok(None),
         };
         match unhex32(k) {
-            Some(bytes) => Ok(Some(Key { bytes, id: id.to_string() })),
+            Some(bytes) => Ok(Some(Key {
+                bytes,
+                id: id.to_string(),
+            })),
             None => Ok(None),
         }
     }
@@ -505,13 +589,20 @@ impl Key {
         getrandom::fill(&mut bytes).map_err(|e| Error::msg(format!("random: {e}")))?;
         let id = key_id_of(&bytes);
         let line = format!("torpor-key-v1 {} {}\n", id, hex(&bytes));
-        match OpenOptions::new().write(true).create_new(true).mode(0o600).open(&p) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&p)
+        {
             Ok(mut f) => {
                 f.write_all(line.as_bytes())?;
                 f.sync_all()?;
                 Ok(Key { bytes, id })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Key::load()?.ok_or_else(|| Error::msg("key file unreadable")),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Key::load()?.ok_or_else(|| Error::msg("key file unreadable"))
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -556,7 +647,14 @@ pub fn prepare_plain(kind: &'static str, bytes: &[u8]) -> Result<Prepared> {
 fn prepare_plain_with_id(kind: &'static str, bytes: &[u8], id: [u8; 32]) -> Result<Prepared> {
     let stored = zstd::bulk::compress(bytes, 3)?;
     let loose = stored.len() > INLINE_MAX;
-    Ok(Prepared { id, kind, size: bytes.len() as u64, stored, key_id: None, loose })
+    Ok(Prepared {
+        id,
+        kind,
+        size: bytes.len() as u64,
+        stored,
+        key_id: None,
+        loose,
+    })
 }
 
 pub fn prepare_secret(bytes: &[u8], key: &Key) -> Result<Prepared> {
@@ -566,10 +664,25 @@ pub fn prepare_secret(bytes: &[u8], key: &Key) -> Result<Prepared> {
     let cipher = XChaCha20Poly1305::new(&key.blob_key().into());
     let mut aad = b"torpor-secret-v1".to_vec();
     aad.extend_from_slice(&id);
-    let ct = cipher.encrypt(&XNonce::from(nonce), Payload { msg: bytes, aad: &aad }).map_err(|_| Error::msg("encrypt failed"))?;
+    let ct = cipher
+        .encrypt(
+            &XNonce::from(nonce),
+            Payload {
+                msg: bytes,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| Error::msg("encrypt failed"))?;
     let mut stored = nonce.to_vec();
     stored.extend_from_slice(&ct);
-    Ok(Prepared { id, kind: "secret", size: bytes.len() as u64, stored, key_id: Some(key.id.clone()), loose: false })
+    Ok(Prepared {
+        id,
+        kind: "secret",
+        size: bytes.len() as u64,
+        stored,
+        key_id: Some(key.id.clone()),
+        loose: false,
+    })
 }
 
 fn fsync_dir(d: &Path) -> std::io::Result<()> {
@@ -578,14 +691,20 @@ fn fsync_dir(d: &Path) -> std::io::Result<()> {
 
 /// Protocol A (spec 6.2) for one file: temp file in the same folder, write, sync, rename, fsync the folder.
 pub fn write_atomic(target: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
-    let dir = target.parent().ok_or_else(|| std::io::Error::other("no parent"))?;
+    let dir = target
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent"))?;
     let mut last = None;
     for _ in 0..2 {
         let mut r = [0u8; 8];
         let _ = getrandom::fill(&mut r);
         let tmp = dir.join(format!(".torpor-{}.tmp", hex(&r)));
         let res = (|| {
-            let mut f = OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp)?;
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&tmp)?;
             f.write_all(bytes)?;
             f.sync_all()?;
             drop(f);
@@ -631,16 +750,29 @@ impl Ws {
     }
 
     pub fn blob_exists(&self, db: &Connection, id: &[u8; 32]) -> bool {
-        db.prepare_cached("SELECT 1 FROM blobs WHERE id=?1").and_then(|mut s| s.exists([&id[..]])).unwrap_or(false)
+        db.prepare_cached("SELECT 1 FROM blobs WHERE id=?1")
+            .and_then(|mut s| s.exists([&id[..]]))
+            .unwrap_or(false)
     }
 
-    fn stored_bytes(&self, db: &Connection, id: &[u8; 32]) -> Result<(String, Option<String>, Vec<u8>)> {
+    fn stored_bytes(
+        &self,
+        db: &Connection,
+        id: &[u8; 32],
+    ) -> Result<(String, Option<String>, Vec<u8>)> {
         let row: Option<(String, Option<String>, Option<Vec<u8>>, i64)> = db
             .prepare_cached("SELECT kind,key_id,data,loose FROM blobs WHERE id=?1")?
-            .query_row([&id[..]], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .query_row([&id[..]], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
             .optional()?;
-        let (kind, key_id, data, loose) = row.ok_or_else(|| Error::NotFound(format!("blob {}", &hex(id)[..12])))?;
-        let stored = if loose != 0 { fs::read(self.loose_path(id))? } else { data.unwrap_or_default() };
+        let (kind, key_id, data, loose) =
+            row.ok_or_else(|| Error::NotFound(format!("blob {}", &hex(id)[..12])))?;
+        let stored = if loose != 0 {
+            fs::read(self.loose_path(id))?
+        } else {
+            data.unwrap_or_default()
+        };
         Ok((kind, key_id, stored))
     }
 
@@ -650,7 +782,8 @@ impl Ws {
         if kind == "secret" {
             return Err(Error::msg("secret blob needs the key"));
         }
-        let raw = zstd::stream::decode_all(&stored[..]).map_err(|_| Error::msg("damaged save point file"))?;
+        let raw = zstd::stream::decode_all(&stored[..])
+            .map_err(|_| Error::msg("damaged save point file"))?;
         if blake3::hash(&raw).as_bytes() != id {
             return Err(Error::msg("damaged save point file"));
         }
@@ -658,7 +791,12 @@ impl Ws {
     }
 
     /// Decrypt a secret blob. Err(NotFound("key")) when the key id differs or the key file is gone.
-    pub fn read_secret(&self, db: &Connection, id: &[u8; 32], key: Option<&Key>) -> Result<Vec<u8>> {
+    pub fn read_secret(
+        &self,
+        db: &Connection,
+        id: &[u8; 32],
+        key: Option<&Key>,
+    ) -> Result<Vec<u8>> {
         let (_kind, key_id, stored) = self.stored_bytes(db, id)?;
         let key = key.ok_or_else(|| Error::NotFound("key".into()))?;
         if key_id.as_deref() != Some(key.id.as_str()) || stored.len() < 24 + 16 {
@@ -670,7 +808,9 @@ impl Ws {
         let cipher = XChaCha20Poly1305::new(&key.blob_key().into());
         let mut aad = b"torpor-secret-v1".to_vec();
         aad.extend_from_slice(id);
-        let raw = cipher.decrypt(&XNonce::from(n), Payload { msg: ct, aad: &aad }).map_err(|_| Error::msg("damaged save point file"))?;
+        let raw = cipher
+            .decrypt(&XNonce::from(n), Payload { msg: ct, aad: &aad })
+            .map_err(|_| Error::msg("damaged save point file"))?;
         if blake3::keyed_hash(&key.id_key(), &raw).as_bytes() != id {
             return Err(Error::msg("damaged save point file"));
         }
@@ -710,7 +850,12 @@ fn push_json_str(out: &mut Vec<u8>, s: &str) {
 /// Canonical tree bytes. `entries` must already be sorted by name bytes.
 /// Written by hand, with the bytes serde_json gives (a unit test compares them): this runs for every folder at every scan.
 pub fn encode_tree(entries: &[TreeEntry]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16 + entries.iter().map(|e| e.name.len() + e.id.len() + 32).sum::<usize>());
+    let mut out = Vec::with_capacity(
+        16 + entries
+            .iter()
+            .map(|e| e.name.len() + e.id.len() + 32)
+            .sum::<usize>(),
+    );
     out.extend_from_slice(br#"{"v":1,"e":["#);
     for (i, e) in entries.iter().enumerate() {
         if i > 0 {
@@ -738,7 +883,16 @@ pub fn decode_tree(bytes: &[u8]) -> Result<Vec<TreeEntry>> {
     if d.v != 1 {
         return Err(Error::Newer);
     }
-    Ok(d.e.into_iter().map(|(name, k, mode, id, size)| TreeEntry { name, kind: k.chars().next().unwrap_or('x'), mode, id, size }).collect())
+    Ok(d.e
+        .into_iter()
+        .map(|(name, k, mode, id, size)| TreeEntry {
+            name,
+            kind: k.chars().next().unwrap_or('x'),
+            mode,
+            id,
+            size,
+        })
+        .collect())
 }
 
 impl Ws {
@@ -762,14 +916,24 @@ pub fn last_point(db: &Connection) -> Result<Option<PointRow>> {
         .prepare_cached("SELECT id,kind,tree_id,created_at FROM points ORDER BY id DESC LIMIT 1")?
         .query_row([], |r| {
             let t: Vec<u8> = r.get(2)?;
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, t, r.get::<_, i64>(3)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                t,
+                r.get::<_, i64>(3)?,
+            ))
         })
         .optional()?;
     Ok(r.and_then(|(id, kind, t, created_at)| {
         let mut tree_id = [0u8; 32];
         if t.len() == 32 {
             tree_id.copy_from_slice(&t);
-            Some(PointRow { id, kind, tree_id, created_at })
+            Some(PointRow {
+                id,
+                kind,
+                tree_id,
+                created_at,
+            })
         } else {
             None
         }
@@ -800,8 +964,27 @@ mod tests {
     /// The hand-written encoder must give the bytes serde_json gave, and decode_tree must read them back.
     #[test]
     fn encode_tree_matches_serde_json() {
-        let names = ["a.txt", "dir", "we\"ird", "back\\slash", "tab\there", "new\nline", "\u{1}ctl", "caf\u{e9}", "\u{1f600}", "\u{7f}del", "", "x/y"];
-        let ids = ["", "00ff", "too_big", "unreadable", "d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e"];
+        let names = [
+            "a.txt",
+            "dir",
+            "we\"ird",
+            "back\\slash",
+            "tab\there",
+            "new\nline",
+            "\u{1}ctl",
+            "caf\u{e9}",
+            "\u{1f600}",
+            "\u{7f}del",
+            "",
+            "x/y",
+        ];
+        let ids = [
+            "",
+            "00ff",
+            "too_big",
+            "unreadable",
+            "d41d8cd98f00b204e9800998ecf8427ed41d8cd98f00b204e9800998ecf8427e",
+        ];
         let mut state = 0x2545_F491_4F6C_DD1Du64;
         let mut next = || {
             state ^= state << 13;
@@ -820,10 +1003,28 @@ mod tests {
                     size: [0, 1, 4096, u64::MAX][(next() % 4) as usize],
                 })
                 .collect();
-            let doc = TreeDocOut { v: 1, e: entries.iter().map(|e| (e.name.as_str(), e.kind.to_string(), e.mode, e.id.as_str(), e.size)).collect() };
+            let doc = TreeDocOut {
+                v: 1,
+                e: entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.name.as_str(),
+                            e.kind.to_string(),
+                            e.mode,
+                            e.id.as_str(),
+                            e.size,
+                        )
+                    })
+                    .collect(),
+            };
             let want = serde_json::to_vec(&doc).unwrap();
             let got = encode_tree(&entries);
-            assert_eq!(String::from_utf8_lossy(&got), String::from_utf8_lossy(&want), "round {round}");
+            assert_eq!(
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(&want),
+                "round {round}"
+            );
             assert_eq!(decode_tree(&got).unwrap(), entries, "round {round}");
         }
     }

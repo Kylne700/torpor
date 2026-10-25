@@ -5,13 +5,23 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 fn want(rows: &[(&str, &str)]) -> BTreeMap<String, String> {
-    rows.iter().map(|(p, c)| (p.to_string(), c.to_string())).collect()
+    rows.iter()
+        .map(|(p, c)| (p.to_string(), c.to_string()))
+        .collect()
 }
 
 fn seed(sim: &Sim) {
     write_files(
         sim.proj(),
-        &[("a.txt", "A1\n"), ("b.txt", "B1\n"), ("c.txt", "C1\n"), ("d.txt", "D1\n"), ("notes.md", "notes\n"), ("src/main.rs", "fn main() {}\n"), ("run.sh", "echo run\n")],
+        &[
+            ("a.txt", "A1\n"),
+            ("b.txt", "B1\n"),
+            ("c.txt", "C1\n"),
+            ("d.txt", "D1\n"),
+            ("notes.md", "notes\n"),
+            ("src/main.rs", "fn main() {}\n"),
+            ("run.sh", "echo run\n"),
+        ],
     );
 }
 
@@ -32,7 +42,11 @@ fn full_scenario(mode: &str) {
     assert_eq!(sim.bash("rm d.txt"), 0);
     assert_eq!(sim.bash("echo x > e.txt"), 0);
     assert_eq!(sim.bash("chmod +x run.sh"), 0);
-    assert_ne!(sim.bash("echo partial > f.txt; exit 3"), 0, "a failing command still changed a file");
+    assert_ne!(
+        sim.bash("echo partial > f.txt; exit 3"),
+        0,
+        "a failing command still changed a file"
+    );
     sim.subagent_edit("agent-1", "sub/s1.txt", "S1\n");
     let mut t1 = vec![
         ("a.txt", "edit"),
@@ -51,11 +65,20 @@ fn full_scenario(mode: &str) {
     let stop = sim.stop();
     assert_eq!(sim.changes_since(mark), want(&t1), "turn 1 ({mode})");
     let line = stop.text();
-    assert!(line.starts_with("Torpor: save point ") && line.contains(&format!("turn 1 changed {} files", t1.len())) && line.contains("undo it: torpor undo 1") && line.ends_with(" · saved before rm d.txt"), "stop line: {line}");
+    assert!(
+        line.starts_with("Torpor: save point ")
+            && line.contains(&format!("turn 1 changed {} files", t1.len()))
+            && line.contains("undo it: torpor undo 1")
+            && line.ends_with(" · saved before rm d.txt"),
+        "stop line: {line}"
+    );
     sim.verify_last_point();
     let tool_points = sim.q_i64("SELECT COUNT(*) FROM points WHERE kind='tool'");
     if mode == "fast" {
-        assert!(tool_points >= 4, "fast mode scans after every Bash ({tool_points} tool points)");
+        assert!(
+            tool_points >= 4,
+            "fast mode scans after every Bash ({tool_points} tool points)"
+        );
     } else {
         assert_eq!(tool_points, 0, "slow mode makes no per-Bash save points");
     }
@@ -64,7 +87,11 @@ fn full_scenario(mode: &str) {
     sim.outside_edit("notes.md", "edited by hand\n");
     let mark = sim.max_point();
     sim.prompt("turn two");
-    assert_eq!(sim.changes_since(mark), want(&[("notes.md", "outside")]), "outside edit ({mode})");
+    assert_eq!(
+        sim.changes_since(mark),
+        want(&[("notes.md", "outside")]),
+        "outside edit ({mode})"
+    );
     sim.write_tool("a.txt", "A3\n");
     sim.stop();
     sim.verify_last_point();
@@ -79,8 +106,20 @@ fn full_scenario(mode: &str) {
     sim.rewind_to(&snap);
     let mark = sim.max_point();
     sim.prompt("turn four");
-    assert_eq!(sim.changes_since(mark), want(&[("a.txt", "rewind"), ("new.txt", "rewind"), ("c.txt", "rewind")]), "rewind ({mode})");
-    assert!(sim.q_str("SELECT note FROM points WHERE note LIKE 'rewind:%' ORDER BY id DESC LIMIT 1").is_some(), "the rewind note names the save point");
+    assert_eq!(
+        sim.changes_since(mark),
+        want(&[
+            ("a.txt", "rewind"),
+            ("new.txt", "rewind"),
+            ("c.txt", "rewind")
+        ]),
+        "rewind ({mode})"
+    );
+    assert!(
+        sim.q_str("SELECT note FROM points WHERE note LIKE 'rewind:%' ORDER BY id DESC LIMIT 1")
+            .is_some(),
+        "the rewind note names the save point"
+    );
     // turn four ends with a background task still running
     sim.stop_with_background(json!([{"id": "bg-1", "command": "npm run dev"}]));
 
@@ -88,7 +127,11 @@ fn full_scenario(mode: &str) {
     sim.outside_edit("bg.log", "tick\n");
     let mark = sim.max_point();
     sim.prompt("turn five");
-    assert_eq!(sim.changes_since(mark), want(&[("bg.log", "background")]), "background ({mode})");
+    assert_eq!(
+        sim.changes_since(mark),
+        want(&[("bg.log", "background")]),
+        "background ({mode})"
+    );
     sim.stop();
     sim.verify_last_point();
 
@@ -96,7 +139,11 @@ fn full_scenario(mode: &str) {
     sim.outside_edit("late.txt", "late\n");
     let mark = sim.max_point();
     sim.prompt("turn six");
-    assert_eq!(sim.changes_since(mark), want(&[("late.txt", "outside")]), "outside after background ended ({mode})");
+    assert_eq!(
+        sim.changes_since(mark),
+        want(&[("late.txt", "outside")]),
+        "outside after background ended ({mode})"
+    );
 
     // ---- a second session works while turn six is open: its shell edit is shared, its Write is an edit
     let mark = sim.max_point();
@@ -107,7 +154,11 @@ fn full_scenario(mode: &str) {
     b.write_tool("h.txt", "H\n");
     b.stop();
     sim.stop();
-    assert_eq!(sim.changes_since(mark), want(&[("g.txt", "shared"), ("h.txt", "edit")]), "two sessions ({mode})");
+    assert_eq!(
+        sim.changes_since(mark),
+        want(&[("g.txt", "shared"), ("h.txt", "edit")]),
+        "two sessions ({mode})"
+    );
     sim.verify_last_point();
     sim.session_end("other");
 }

@@ -1,7 +1,7 @@
 //! Retention (spec 2.4): the window, thinning, the store cap and garbage collection.
 use crate::store::*;
 use crate::util::*;
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, Transaction, TransactionBehavior, params};
 use std::collections::HashSet;
 
 pub const DAY_NS: i64 = 86_400 * NS_PER_SEC;
@@ -15,9 +15,14 @@ pub fn claude_days() -> (i64, Option<String>) {
     let mut w = 30i64;
     let mut note = None;
     if let Ok(s) = std::fs::read_to_string(claude_dir().join("settings.json")) {
-        if let Some(d) = serde_json::from_str::<serde_json::Value>(&s).ok().and_then(|v| v.get("cleanupPeriodDays").and_then(|x| x.as_i64())) {
+        if let Some(d) = serde_json::from_str::<serde_json::Value>(&s)
+            .ok()
+            .and_then(|v| v.get("cleanupPeriodDays").and_then(|x| x.as_i64()))
+        {
             if d < 2 {
-                note = Some(format!("Claude Code is set to keep chats for {d} day(s); Torpor keeps save points for at least 2 days."));
+                note = Some(format!(
+                    "Claude Code is set to keep chats for {d} day(s); Torpor keeps save points for at least 2 days."
+                ));
                 w = 2;
             } else {
                 w = d;
@@ -37,7 +42,10 @@ pub fn window_days(db: &Connection) -> (i64, Option<String>) {
 }
 
 pub fn store_bytes(db: &Connection) -> i64 {
-    db.query_row("SELECT COALESCE(SUM(stored_size),0) FROM blobs", [], |r| r.get(0)).unwrap_or(0)
+    db.query_row("SELECT COALESCE(SUM(stored_size),0) FROM blobs", [], |r| {
+        r.get(0)
+    })
+    .unwrap_or(0)
 }
 
 /// Points a live promise names stay inside W (spec 13). A query at thinning time, not the `pinned` flag; past W they drop like any point.
@@ -47,18 +55,32 @@ const PROMISE_POINTS: &str = "SELECT good_point FROM promises WHERE state<>'drop
 pub fn thin(db: &Connection, now: i64, w_days: i64, harder: bool) -> Result<usize> {
     let newest: i64 = db.query_row("SELECT COALESCE(MAX(id),0) FROM points", [], |r| r.get(0))?;
     let w_ns = w_days * DAY_NS;
-    let (keep_all, window) = if harder { (DAY_NS, 7 * DAY_NS) } else { (2 * DAY_NS, w_ns) };
-    let mut n = db.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2", params![newest, now - w_ns])?;
+    let (keep_all, window) = if harder {
+        (DAY_NS, 7 * DAY_NS)
+    } else {
+        (2 * DAY_NS, w_ns)
+    };
+    let mut n = db.execute(
+        "UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2",
+        params![newest, now - w_ns],
+    )?;
     if harder {
         n += db.execute(&format!("UPDATE points SET dropped=1 WHERE dropped=0 AND pinned=0 AND id<>?1 AND created_at<?2 AND id NOT IN ({PROMISE_POINTS})"), params![newest, now - window])?;
     }
-    n += db.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND kind='tool' AND id<>?1 AND created_at<?2", params![newest, now - keep_all])?;
+    n += db.execute(
+        "UPDATE points SET dropped=1 WHERE dropped=0 AND kind='tool' AND id<>?1 AND created_at<?2",
+        params![newest, now - keep_all],
+    )?;
     // From then on: the last visible, unpinned point of each day.
     let mut st = db.prepare(&format!("SELECT id,created_at FROM points WHERE dropped=0 AND visible=1 AND pinned=0 AND created_at<?1 AND id NOT IN ({PROMISE_POINTS}) ORDER BY id"))?;
-    let rows: Vec<(i64, i64)> = st.query_map([now - keep_all], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+    let rows: Vec<(i64, i64)> = st
+        .query_map([now - keep_all], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
     let mut drop_ids: Vec<i64> = Vec::new();
     for (i, (id, at)) in rows.iter().enumerate() {
-        let next_same_day = rows.get(i + 1).is_some_and(|(_, at2)| utc_day(*at2) == utc_day(*at));
+        let next_same_day = rows
+            .get(i + 1)
+            .is_some_and(|(_, at2)| utc_day(*at2) == utc_day(*at));
         if next_same_day && *id != newest {
             drop_ids.push(*id);
         }
@@ -68,10 +90,19 @@ pub fn thin(db: &Connection, now: i64, w_days: i64, harder: bool) -> Result<usiz
         n += upd.execute([id])?;
     }
     // Text goes at W; the metadata rows stay.
-    db.execute("UPDATE turns SET preview=NULL WHERE preview IS NOT NULL AND started_at<?1", [now - w_ns])?;
-    db.execute("UPDATE tool_events SET cmd_preview=NULL WHERE cmd_preview IS NOT NULL AND at<?1", [now - w_ns])?;
+    db.execute(
+        "UPDATE turns SET preview=NULL WHERE preview IS NOT NULL AND started_at<?1",
+        [now - w_ns],
+    )?;
+    db.execute(
+        "UPDATE tool_events SET cmd_preview=NULL WHERE cmd_preview IS NOT NULL AND at<?1",
+        [now - w_ns],
+    )?;
     db.execute("UPDATE texts SET prompt=NULL WHERE prompt IS NOT NULL AND turn_id IN (SELECT id FROM turns WHERE started_at<?1)", [now - w_ns])?;
-    db.execute("UPDATE points SET note=NULL WHERE kind='pre_bash' AND note IS NOT NULL AND created_at<?1", [now - w_ns])?;
+    db.execute(
+        "UPDATE points SET note=NULL WHERE kind='pre_bash' AND note IS NOT NULL AND created_at<?1",
+        [now - w_ns],
+    )?;
     Ok(n)
 }
 
@@ -107,8 +138,12 @@ pub enum GcOutcome {
 /// Every blob id reachable from a point that is not dropped (and from the newest point).
 fn mark(ws: &Ws, db: &Connection) -> Result<HashSet<[u8; 32]>> {
     let mut live: HashSet<[u8; 32]> = HashSet::new();
-    let mut st = db.prepare("SELECT DISTINCT tree_id FROM points WHERE dropped=0 OR id=(SELECT MAX(id) FROM points)")?;
-    let roots: Vec<Vec<u8>> = st.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+    let mut st = db.prepare(
+        "SELECT DISTINCT tree_id FROM points WHERE dropped=0 OR id=(SELECT MAX(id) FROM points)",
+    )?;
+    let roots: Vec<Vec<u8>> = st
+        .query_map([], |r| r.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
     let mut stack: Vec<[u8; 32]> = roots.iter().filter_map(|b| blob_id_from_vec(b)).collect();
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
     while let Some(t) = stack.pop() {
@@ -164,11 +199,15 @@ pub fn gc_opts(ws: &mut Ws, if_quiet: bool, now: i64, force: bool) -> Result<GcO
         }
         let live = mark(ws, &tx)?;
         let mut st = tx.prepare("SELECT id,loose,stored_size FROM blobs WHERE created_at<?1")?;
-        let rows: Vec<(Vec<u8>, i64, i64)> = st.query_map([now - grace], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+        let rows: Vec<(Vec<u8>, i64, i64)> = st
+            .query_map([now - grace], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<std::result::Result<_, _>>()?;
         drop(st);
         let mut del = tx.prepare("DELETE FROM blobs WHERE id=?1")?;
         for (id, loose, size) in rows {
-            let Some(arr) = blob_id_from_vec(&id) else { continue };
+            let Some(arr) = blob_id_from_vec(&id) else {
+                continue;
+            };
             if live.contains(&arr) {
                 continue;
             }
@@ -181,7 +220,10 @@ pub fn gc_opts(ws: &mut Ws, if_quiet: bool, now: i64, force: bool) -> Result<GcO
         }
         drop(del);
         // A cached hash must never name a blob that is gone.
-        tx.execute("DELETE FROM stat_cache WHERE blob_id NOT IN (SELECT id FROM blobs)", [])?;
+        tx.execute(
+            "DELETE FROM stat_cache WHERE blob_id NOT IN (SELECT id FROM blobs)",
+            [],
+        )?;
         meta_set(&tx, "last_gc", &now.to_string())?;
         tx.commit()?;
     }
@@ -197,15 +239,28 @@ pub fn forget_before(ws: &mut Ws, cutoff: i64, now: i64) -> Result<(usize, GcSta
     ws.lock_exclusive(5000)?;
     let n = {
         let tx = Transaction::new_unchecked(&ws.conn, TransactionBehavior::Immediate)?;
-        let newest: i64 = tx.query_row("SELECT COALESCE(MAX(id),0) FROM points", [], |r| r.get(0))?;
-        let n = tx.execute("UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2", params![newest, cutoff])?;
+        let newest: i64 =
+            tx.query_row("SELECT COALESCE(MAX(id),0) FROM points", [], |r| r.get(0))?;
+        let n = tx.execute(
+            "UPDATE points SET dropped=1 WHERE dropped=0 AND id<>?1 AND created_at<?2",
+            params![newest, cutoff],
+        )?;
         for t in ["changes", "not_captured"] {
             tx.execute(&format!("DELETE FROM {t} WHERE point_id IN (SELECT id FROM points WHERE dropped=1 AND created_at<?1)"), [cutoff])?;
         }
-        tx.execute("UPDATE turns SET preview=NULL WHERE started_at<?1", [cutoff])?;
+        tx.execute(
+            "UPDATE turns SET preview=NULL WHERE started_at<?1",
+            [cutoff],
+        )?;
         tx.execute("UPDATE texts SET prompt=NULL WHERE turn_id IN (SELECT id FROM turns WHERE started_at<?1)", [cutoff])?;
-        tx.execute("UPDATE tool_events SET cmd_preview=NULL,paths_json=NULL WHERE at<?1", [cutoff])?;
-        tx.execute("UPDATE points SET note=NULL WHERE id<>?1 AND created_at<?2", params![newest, cutoff])?;
+        tx.execute(
+            "UPDATE tool_events SET cmd_preview=NULL,paths_json=NULL WHERE at<?1",
+            [cutoff],
+        )?;
+        tx.execute(
+            "UPDATE points SET note=NULL WHERE id<>?1 AND created_at<?2",
+            params![newest, cutoff],
+        )?;
         tx.commit()?;
         n
     };
@@ -218,9 +273,13 @@ pub fn forget_before(ws: &mut Ws, cutoff: i64, now: i64) -> Result<(usize, GcSta
 /// Loose files that no blob row names (a rolled-back capture, a crash) and temp files, once last written before `before`.
 fn sweep_orphan_files(ws: &Ws, before: i64) -> usize {
     let mut n = 0;
-    let Ok(top) = std::fs::read_dir(ws.objects_dir()) else { return 0 };
+    let Ok(top) = std::fs::read_dir(ws.objects_dir()) else {
+        return 0;
+    };
     for d in top.flatten() {
-        let Ok(files) = std::fs::read_dir(d.path()) else { continue };
+        let Ok(files) = std::fs::read_dir(d.path()) else {
+            continue;
+        };
         for f in files.flatten() {
             let name = f.file_name().to_string_lossy().to_string();
             let old = f

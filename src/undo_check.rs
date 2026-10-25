@@ -24,7 +24,10 @@ const SAVE_SECS: u64 = 30;
 /// The two limits, with test overrides (fault-inject builds only, like the other TORPOR_TEST_* variables).
 fn check_secs() -> u64 {
     #[cfg(feature = "fault-inject")]
-    if let Some(v) = std::env::var("TORPOR_TEST_CHECK_SECS").ok().and_then(|s| s.parse().ok()) {
+    if let Some(v) = std::env::var("TORPOR_TEST_CHECK_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
         return v;
     }
     CHECK_SECS
@@ -32,7 +35,10 @@ fn check_secs() -> u64 {
 
 fn run_wait_ms() -> u64 {
     #[cfg(feature = "fault-inject")]
-    if let Some(v) = std::env::var("TORPOR_TEST_RUN_WAIT_MS").ok().and_then(|s| s.parse().ok()) {
+    if let Some(v) = std::env::var("TORPOR_TEST_RUN_WAIT_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
         return v;
     }
     RUN_WAIT_MS
@@ -62,7 +68,12 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// "#1 (login works), #3 (cart works) and 2 more"
 fn names(ps: &[Promise]) -> String {
-    let mut s = ps.iter().take(NAMES_MAX).map(gate::short_name).collect::<Vec<_>>().join(", ");
+    let mut s = ps
+        .iter()
+        .take(NAMES_MAX)
+        .map(gate::short_name)
+        .collect::<Vec<_>>()
+        .join(", ");
     if ps.len() > NAMES_MAX {
         s.push_str(&format!(" and {} more", ps.len() - NAMES_MAX));
     }
@@ -82,7 +93,10 @@ fn changed_copy(ws: &Ws, plan: &Plan) -> (Opts, usize) {
         let bytes = match e.act {
             _ if !scratch::overlay_ok(&e.path) => None,
             Act::Delete => Some(None),
-            Act::Create | Act::Overwrite if e.kind == 'f' && e.size <= FILE_MAX => e.blob.and_then(|b| ws.read_blob(&ws.conn, &b).ok()).map(Some),
+            Act::Create | Act::Overwrite if e.kind == 'f' && e.size <= FILE_MAX => e
+                .blob
+                .and_then(|b| ws.read_blob(&ws.conn, &b).ok())
+                .map(Some),
             _ => None,
         };
         match bytes {
@@ -117,44 +131,71 @@ pub struct Ready {
 /// `Err` is an undo with nothing to run, and the notes for its report. A dry run only says which promises it would run.
 pub fn ready(ws: &Ws, plan: &Plan, dry_run: bool) -> Result<Ready, Checks> {
     let mut out = Checks::default();
-    let files: Vec<String> = plan.entries.iter().filter(|e| !matches!(e.act, Act::Mkdir | Act::RmdirIfEmpty)).map(|e| e.path.clone()).collect();
+    let files: Vec<String> = plan
+        .entries
+        .iter()
+        .filter(|e| !matches!(e.act, Act::Mkdir | Act::RmdirIfEmpty))
+        .map(|e| e.path.clone())
+        .collect();
     let picked: Vec<Promise> = match promise::all(&ws.conn, false) {
-        Ok(v) => v.into_iter().filter(|p| gate::eligible(p) && gate::meets(p, &files)).collect(),
+        Ok(v) => v
+            .into_iter()
+            .filter(|p| gate::eligible(p) && gate::meets(p, &files))
+            .collect(),
         Err(_) => {
-            out.notes.push("The promise checks could not be read, so the result is untested.".to_string());
+            out.notes.push(
+                "The promise checks could not be read, so the result is untested.".to_string(),
+            );
             return Err(out);
         }
     };
     if picked.is_empty() && (dry_run || build_command(ws).is_none()) {
         if !dry_run {
-            out.notes.push("No checks cover these files, so the result is untested.".to_string());
+            out.notes
+                .push("No checks cover these files, so the result is untested.".to_string());
         }
         return Err(out);
     }
     if dry_run {
-        out.notes.push(format!("Would check the result first: {} (a dry run does not run the checks).", names(&picked)));
+        out.notes.push(format!(
+            "Would check the result first: {} (a dry run does not run the checks).",
+            names(&picked)
+        ));
         return Err(out);
     }
     let (opts, left_out) = changed_copy(ws, plan);
-    Ok(Ready { picked, opts, left_out })
+    Ok(Ready {
+        picked,
+        opts,
+        left_out,
+    })
 }
 
 /// Run the promises on the result of undoing turn `k`. No store lock is held: the project as it is now is saved first (shared lock, committed
 /// at once) and the checks work on that tree. The 90 seconds start before the saving.
 pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
     let mut out = Checks::default();
-    let Ready { picked, opts, left_out } = ready;
+    let Ready {
+        picked,
+        opts,
+        left_out,
+    } = ready;
     let _deadline = runner::Deadline::set(Instant::now() + Duration::from_secs(check_secs()));
     let live = match scratch::snapshot(ws, Duration::from_secs(SAVE_SECS)) {
         Ok(t) => t,
         Err(e) => {
-            out.notes.push(format!("The project could not be saved for the checks ({}), so the result is untested.", promise::clean(&e.to_string(), 120)));
+            out.notes.push(format!(
+                "The project could not be saved for the checks ({}), so the result is untested.",
+                promise::clean(&e.to_string(), 120)
+            ));
             return out;
         }
     };
     let ws = &*ws;
     let Ok(_held) = scratch::hold_run_lock(ws, run_wait_ms()) else {
-        out.notes.push("Another check is running in this project, so the result is untested.".to_string());
+        out.notes.push(
+            "Another check is running in this project, so the result is untested.".to_string(),
+        );
         return out;
     };
     let (mut passed, mut late) = (Vec::<&Promise>::new(), 0);
@@ -165,7 +206,9 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         }
         let name = gate::short_name(p);
         let Ok(l) = promise::spec_of(ws, p) else {
-            out.notes.push(format!("Promise {name} did not count: its check cannot be read."));
+            out.notes.push(format!(
+                "Promise {name} did not count: its check cannot be read."
+            ));
             continue;
         };
         let mut c = promise::check_tree_with(ws, &l.spec, &live, &opts);
@@ -177,25 +220,42 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         }
         match c.call {
             Call::Pass => passed.push(p),
-            Call::Flaky => out.notes.push(format!("Promise {name} did not count: it is flaky.")),
+            Call::Flaky => out
+                .notes
+                .push(format!("Promise {name} did not count: it is flaky.")),
             Call::Unrunnable if c.reason.contains(runner::OUT_OF_TIME) => late += 1,
             Call::Unrunnable => {
                 let why = promise::clean(c.reason.trim_end_matches('.'), 160);
-                if c.reason.starts_with(NO_START) && passes_now(ws, &l.spec, &live, p.id, &mut out) {
-                    out.refuse = Some(format!("Undoing turn {k} stops the app from starting (promise {name}), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force\nStart: {why}."));
+                if c.reason.starts_with(NO_START) && passes_now(ws, &l.spec, &live, p.id, &mut out)
+                {
+                    out.refuse = Some(format!(
+                        "Undoing turn {k} stops the app from starting (promise {name}), so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force\nStart: {why}."
+                    ));
                     return out;
                 }
-                out.notes.push(format!("Promise {name} did not count: it could not run ({why})."));
+                out.notes.push(format!(
+                    "Promise {name} did not count: it could not run ({why})."
+                ));
             }
             Call::Fail => {
                 if !passes_now(ws, &l.spec, &live, p.id, &mut out) {
-                    out.notes.push(format!("Promise {name} did not count: it does not pass now either."));
+                    out.notes.push(format!(
+                        "Promise {name} did not count: it does not pass now either."
+                    ));
                     continue;
                 }
-                let step = c.failed_step.and_then(|n| l.spec.steps.get(n.wrapping_sub(1))).and_then(|s| s.why.clone());
-                let mut text = format!("Undoing turn {k} breaks promise {name}, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force");
+                let step = c
+                    .failed_step
+                    .and_then(|n| l.spec.steps.get(n.wrapping_sub(1)))
+                    .and_then(|s| s.why.clone());
+                let mut text = format!(
+                    "Undoing turn {k} breaks promise {name}, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force"
+                );
                 if let Some(why) = step {
-                    text.push_str(&format!("\nFailing step: {}.", promise::clean(why.trim_end_matches('.'), 160)));
+                    text.push_str(&format!(
+                        "\nFailing step: {}.",
+                        promise::clean(why.trim_end_matches('.'), 160)
+                    ));
                 }
                 out.refuse = Some(text);
                 return out;
@@ -207,14 +267,28 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
         return out;
     }
     if late > 0 {
-        out.notes.push(format!("{} did not run: the {} seconds for checks were up.", plural(late, "check", "checks"), check_secs()));
+        out.notes.push(format!(
+            "{} did not run: the {} seconds for checks were up.",
+            plural(late, "check", "checks"),
+            check_secs()
+        ));
     }
     if !passed.is_empty() {
-        let list = passed.iter().map(|p| gate::short_name(p)).collect::<Vec<_>>().join(", ");
-        out.notes.insert(0, format!("Checked first in a scratch copy, still passing: {list}."));
+        let list = passed
+            .iter()
+            .map(|p| gate::short_name(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.notes.insert(
+            0,
+            format!("Checked first in a scratch copy, still passing: {list}."),
+        );
     }
     if left_out > 0 {
-        out.notes.push(format!("{} (links, permissions, secret files or very big ones) were not part of the check.", plural(left_out, "change", "changes")));
+        out.notes.push(format!(
+            "{} (links, permissions, secret files or very big ones) were not part of the check.",
+            plural(left_out, "change", "changes")
+        ));
     }
     out
 }
@@ -223,16 +297,34 @@ pub fn run(ws: &mut Ws, ready: Ready, k: i64) -> Checks {
 fn build_command(ws: &Ws) -> Option<String> {
     let mut q = ws.conn.prepare("SELECT cmd_preview FROM tool_events WHERE tool_name='Bash' AND exit_code=0 AND failed=0 AND cmd_preview IS NOT NULL ORDER BY id DESC LIMIT 300").ok()?;
     let rows = q.query_map([], |r| r.get::<_, String>(0)).ok()?;
-    rows.flatten().map(|c| c.trim().to_string()).find(|c| is_build(c))
+    rows.flatten()
+        .map(|c| c.trim().to_string())
+        .find(|c| is_build(c))
 }
 
 fn is_build(c: &str) -> bool {
     const HEADS: [&str; 13] = [
-        "npm run build", "pnpm build", "pnpm run build", "yarn build", "yarn run build", "bun run build", "tsc", "npx tsc", "cargo build", "cargo check",
-        "python -m compileall", "python3 -m compileall", "npm run typecheck",
+        "npm run build",
+        "pnpm build",
+        "pnpm run build",
+        "yarn build",
+        "yarn run build",
+        "bun run build",
+        "tsc",
+        "npx tsc",
+        "cargo build",
+        "cargo check",
+        "python -m compileall",
+        "python3 -m compileall",
+        "npm run typecheck",
     ];
-    let plain = c.chars().all(|ch| ch.is_ascii_alphanumeric() || " _./:=@-".contains(ch));
-    plain && HEADS.iter().any(|h| c == *h || c.strip_prefix(h).is_some_and(|rest| rest.starts_with(' ')))
+    let plain = c
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || " _./:=@-".contains(ch));
+    plain
+        && HEADS
+            .iter()
+            .any(|h| c == *h || c.strip_prefix(h).is_some_and(|rest| rest.starts_with(' ')))
 }
 
 /// Spec 20 item 1: the build command the AI last ran with success must still succeed on the result. It refuses the undo only when it fails
@@ -240,17 +332,30 @@ fn is_build(c: &str) -> bool {
 fn build_step(ws: &Ws, live: &[u8; 32], opts: &Opts, k: i64, out: &mut Checks) {
     let Some(cmd) = build_command(ws) else { return };
     if runner::out_of_time() {
-        out.notes.push(format!("The build `{cmd}` did not run: the {} seconds for checks were up.", check_secs()));
+        out.notes.push(format!(
+            "The build `{cmd}` did not run: the {} seconds for checks were up.",
+            check_secs()
+        ));
         return;
     }
     let limit = Duration::from_secs(BUILD_SECS);
     match scratch::run_command(ws, live, opts, &cmd, limit) {
-        Some(true) => out.notes.push(format!("The build `{cmd}` still passes on the result.")),
+        Some(true) => out
+            .notes
+            .push(format!("The build `{cmd}` still passes on the result.")),
         Some(false) => match scratch::run_command(ws, live, &Opts::default(), &cmd, limit) {
-            Some(true) => out.refuse = Some(format!("Undoing turn {k} stops the build `{cmd}` from passing, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force")),
-            _ => out.notes.push(format!("The build `{cmd}` did not count: it does not pass on the project as it is either.")),
+            Some(true) => {
+                out.refuse = Some(format!(
+                    "Undoing turn {k} stops the build `{cmd}` from passing, so nothing was changed. To do it anyway, run this in your own terminal: torpor undo {k} --force"
+                ))
+            }
+            _ => out.notes.push(format!(
+                "The build `{cmd}` did not count: it does not pass on the project as it is either."
+            )),
         },
-        None => out.notes.push(format!("The build `{cmd}` did not count: it could not run in time.")),
+        None => out.notes.push(format!(
+            "The build `{cmd}` did not count: it could not run in time."
+        )),
     }
 }
 
@@ -261,7 +366,9 @@ pub fn record(ws: &Ws, runs: &[(i64, Vec<RunResult>)]) {
     for (id, rs) in runs {
         for r in rs {
             // A run cut by the clock says nothing about the check.
-            if r.judged.verdict == Verdict::Unrunnable && r.judged.reason.contains(runner::OUT_OF_TIME) {
+            if r.judged.verdict == Verdict::Unrunnable
+                && r.judged.reason.contains(runner::OUT_OF_TIME)
+            {
                 continue;
             }
             let _ = promise::record(&ws.conn, *id, "undo", None, r, now);
@@ -275,10 +382,22 @@ mod tests {
 
     #[test]
     fn only_plain_build_commands_count() {
-        for c in ["npm run build", "cargo check --all", "tsc -p .", "python3 -m compileall -q ."] {
+        for c in [
+            "npm run build",
+            "cargo check --all",
+            "tsc -p .",
+            "python3 -m compileall -q .",
+        ] {
             assert!(is_build(c), "{c}");
         }
-        for c in ["npm run builder", "cargo build && rm -rf x", "tsc | tee log", "cargo test", "npm run build -- --token=[hidden]", "ls"] {
+        for c in [
+            "npm run builder",
+            "cargo build && rm -rf x",
+            "tsc | tee log",
+            "cargo test",
+            "npm run build -- --token=[hidden]",
+            "ls",
+        ] {
             assert!(!is_build(c), "{c}");
         }
     }

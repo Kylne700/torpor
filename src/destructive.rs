@@ -16,14 +16,42 @@ const MAX_DEPTH: u8 = 2;
 pub const USER_ONLY: [&str; 4] = ["off", "on", "forget", "retain"];
 
 const WRITERS: [&str; 6] = ["rm", "mv", "cp", "sqlite3", "truncate", "chmod"];
-const GIT_LOCAL: [&str; 13] = ["clean", "reset", "checkout", "restore", "stash", "switch", "rebase", "merge", "pull", "cherry-pick", "revert", "am", "apply"];
+const GIT_LOCAL: [&str; 13] = [
+    "clean",
+    "reset",
+    "checkout",
+    "restore",
+    "stash",
+    "switch",
+    "rebase",
+    "merge",
+    "pull",
+    "cherry-pick",
+    "revert",
+    "am",
+    "apply",
+];
 const SHELLS: [&str; 6] = ["bash", "sh", "zsh", "dash", "ksh", "ash"];
 /// Tools that print or search text. Their words cannot reach a database, so SQL words in them mean nothing.
 /// (`echo` and `printf` are not here: their output can be piped into `psql`.)
-const TEXT_ONLY: [&str; 18] = ["grep", "egrep", "fgrep", "rg", "ag", "ack", "git", "gh", "cat", "less", "more", "head", "tail", "wc", "ls", "man", "tree", "fd"];
+const TEXT_ONLY: [&str; 18] = [
+    "grep", "egrep", "fgrep", "rg", "ag", "ack", "git", "gh", "cat", "less", "more", "head",
+    "tail", "wc", "ls", "man", "tree", "fd",
+];
 /// Tools that take SQL on stdin: a here-document fed to them is looked at.
-const SQL_CLIENTS: [&str; 8] = ["psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "duckdb", "usql", "clickhouse-client"];
-const FLAG_WORDS: [&str; 9] = ["reset", "push", "delete", "destroy", "drop", "execute", "migrate", "rm", "remove"];
+const SQL_CLIENTS: [&str; 8] = [
+    "psql",
+    "mysql",
+    "mariadb",
+    "sqlite3",
+    "sqlcmd",
+    "duckdb",
+    "usql",
+    "clickhouse-client",
+];
+const FLAG_WORDS: [&str; 9] = [
+    "reset", "push", "delete", "destroy", "drop", "execute", "migrate", "rm", "remove",
+];
 
 /// What to do about one Bash command. The strongest finding wins (declaration order, weakest first).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +90,18 @@ pub fn judge_with(cmd: &str, dirs: &[PathBuf], store: &[String]) -> Verdict {
         end -= 1;
     }
     // What is cut off is not read, so a cut command is never judged harmless.
-    let verdict = if end < cmd.len() { Verdict::Save } else { Verdict::Clear };
-    let mut w = Walk { dirs, store, in_store: false, verdict, calls: Vec::new() };
+    let verdict = if end < cmd.len() {
+        Verdict::Save
+    } else {
+        Verdict::Clear
+    };
+    let mut w = Walk {
+        dirs,
+        store,
+        in_store: false,
+        verdict,
+        calls: Vec::new(),
+    };
     w.text(&cmd[..end], 0);
     w.verdict
 }
@@ -75,14 +113,23 @@ pub fn torpor_calls(cmd: &str) -> Vec<String> {
     while !cmd.is_char_boundary(end) {
         end -= 1;
     }
-    let mut w = Walk { dirs: &[], store: &[], in_store: false, verdict: Verdict::Clear, calls: Vec::new() };
+    let mut w = Walk {
+        dirs: &[],
+        store: &[],
+        in_store: false,
+        verdict: Verdict::Clear,
+        calls: Vec::new(),
+    };
     w.text(&cmd[..end], 0);
     w.calls
 }
 
 /// The name a `torpor` call goes by in `cli_calls`: the first word, plus the second for `promise`, `gate` and `runner`.
 pub fn call_name<S: AsRef<str>>(args: &[S]) -> Option<String> {
-    let mut words = args.iter().map(|a| a.as_ref()).filter(|a| !a.starts_with('-'));
+    let mut words = args
+        .iter()
+        .map(|a| a.as_ref())
+        .filter(|a| !a.starts_with('-'));
     let sub = words.next()?;
     Some(match (sub, words.next()) {
         ("promise" | "gate" | "runner", Some(o)) => format!("{sub} {o}"),
@@ -95,7 +142,10 @@ pub fn call_name<S: AsRef<str>>(args: &[S]) -> Option<String> {
 pub fn store_needles() -> Vec<String> {
     let home = user_home().to_string_lossy().to_string();
     let mut paths = vec![home_dir(), key_path()];
-    if let Some(d) = key_path().parent().filter(|d| d.file_name().is_some_and(|n| n == "torpor")) {
+    if let Some(d) = key_path()
+        .parent()
+        .filter(|d| d.file_name().is_some_and(|n| n == "torpor"))
+    {
         paths.push(d.to_path_buf());
     }
     let mut v = Vec::new();
@@ -275,7 +325,12 @@ fn segments(text: &str) -> Vec<Seg> {
                         i += 1;
                     }
                     let mut delim = String::new();
-                    while i < n && !matches!(ch[i], ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>') {
+                    while i < n
+                        && !matches!(
+                            ch[i],
+                            ' ' | '\t' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>'
+                        )
+                    {
                         if !matches!(ch[i], '\'' | '"' | '\\') {
                             delim.push(ch[i]);
                         }
@@ -304,7 +359,11 @@ fn base(w: &str) -> &str {
 }
 
 fn is_assignment(w: &str) -> bool {
-    w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    w.split_once('=').is_some_and(|(k, _)| {
+        !k.is_empty()
+            && !k.starts_with(|c: char| c.is_ascii_digit())
+            && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// Skips leading `-flags`. A short flag listed in `valued` (`-u root`) also takes the word after it.
@@ -331,12 +390,18 @@ fn strip(mut w: &[String]) -> &[String] {
             _ if is_assignment(first) => rest,
             "if" | "then" | "else" | "elif" | "do" | "while" | "until" | "!" | "{" => rest,
             "sudo" | "doas" => skip_flags(rest, "ugphCUrtDRT"),
-            "command" | "exec" | "nohup" | "time" | "env" => skip_flags(rest, if base(first) == "env" { "uCS" } else { "" }),
+            "command" | "exec" | "nohup" | "time" | "env" => {
+                skip_flags(rest, if base(first) == "env" { "uCS" } else { "" })
+            }
             "nice" => skip_flags(rest, "n"),
             "timeout" => skip_flags(rest, "sk").get(1..).unwrap_or(&[]),
             "xargs" => skip_flags(rest, "nIPLdEsa"),
             "npx" | "bunx" => skip_flags(rest, "p"),
-            "pnpm" | "yarn" | "npm" if matches!(rest.first().map(String::as_str), Some("dlx" | "exec")) => skip_flags(&rest[1..], ""),
+            "pnpm" | "yarn" | "npm"
+                if matches!(rest.first().map(String::as_str), Some("dlx" | "exec")) =>
+            {
+                skip_flags(&rest[1..], "")
+            }
             _ => return w,
         };
     }
@@ -373,7 +438,10 @@ fn package_script(w: &[String], dirs: &[PathBuf]) -> Option<String> {
             return None;
         }
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
-        v.get("scripts")?.get(name.as_str())?.as_str().map(String::from)
+        v.get("scripts")?
+            .get(name.as_str())?
+            .as_str()
+            .map(String::from)
     })
 }
 
@@ -388,22 +456,57 @@ struct Rule {
     name: &'static str,
 }
 
-const fn rule(tool: &'static str, words: &'static [&'static str], flags: &'static [&'static str], name: &'static str) -> Rule {
-    Rule { tool, words, flags, name }
+const fn rule(
+    tool: &'static str,
+    words: &'static [&'static str],
+    flags: &'static [&'static str],
+    name: &'static str,
+) -> Rule {
+    Rule {
+        tool,
+        words,
+        flags,
+        name,
+    }
 }
 
 const RULES: &[Rule] = &[
     rule("terraform", &["destroy"], &[], "terraform destroy"),
-    rule("terraform", &["apply"], &["destroy"], "terraform apply -destroy"),
-    rule("terraform", &["apply"], &["auto-approve"], "terraform apply -auto-approve"),
+    rule(
+        "terraform",
+        &["apply"],
+        &["destroy"],
+        "terraform apply -destroy",
+    ),
+    rule(
+        "terraform",
+        &["apply"],
+        &["auto-approve"],
+        "terraform apply -auto-approve",
+    ),
     rule("tofu", &["destroy"], &[], "tofu destroy"),
     rule("tofu", &["apply"], &["destroy"], "tofu apply -destroy"),
-    rule("tofu", &["apply"], &["auto-approve"], "tofu apply -auto-approve"),
+    rule(
+        "tofu",
+        &["apply"],
+        &["auto-approve"],
+        "tofu apply -auto-approve",
+    ),
     rule("pulumi", &["destroy"], &[], "pulumi destroy"),
     rule("dropdb", &[], &[], "dropdb"),
     rule("prisma", &["migrate", "reset"], &[], "prisma migrate reset"),
-    rule("prisma", &["db", "push"], &["force-reset"], "prisma db push --force-reset"),
-    rule("prisma", &["db", "push"], &["accept-data-loss"], "prisma db push --accept-data-loss"),
+    rule(
+        "prisma",
+        &["db", "push"],
+        &["force-reset"],
+        "prisma db push --force-reset",
+    ),
+    rule(
+        "prisma",
+        &["db", "push"],
+        &["accept-data-loss"],
+        "prisma db push --accept-data-loss",
+    ),
     rule("supabase", &["db", "reset"], &[], "supabase db reset"),
     rule("gh", &["repo", "delete"], &[], "gh repo delete"),
     rule("gh", &["release", "delete"], &[], "gh release delete"),
@@ -415,15 +518,27 @@ const RULES: &[Rule] = &[
     rule("docker", &["volume", "rm"], &[], "docker volume rm"),
     rule("docker", &["volume", "prune"], &[], "docker volume prune"),
     rule("docker", &["system", "prune"], &[], "docker system prune"),
-    rule("docker", &["compose", "down"], &["v", "volumes"], "docker compose down -v"),
-    rule("docker-compose", &["down"], &["v", "volumes"], "docker compose down -v"),
+    rule(
+        "docker",
+        &["compose", "down"],
+        &["v", "volumes"],
+        "docker compose down -v",
+    ),
+    rule(
+        "docker-compose",
+        &["down"],
+        &["v", "volumes"],
+        "docker compose down -v",
+    ),
 ];
 
 /// The words after `tool`, when the segment runs it (directly, or as `yarn|pnpm|bun|npm <tool>`).
 fn after_tool<'a>(w: &'a [String], tool: &str) -> Option<&'a [String]> {
     if base(&w[0]) == tool {
         Some(&w[1..])
-    } else if matches!(base(&w[0]), "yarn" | "pnpm" | "bun" | "npm") && w.get(1).is_some_and(|x| base(x) == tool) {
+    } else if matches!(base(&w[0]), "yarn" | "pnpm" | "bun" | "npm")
+        && w.get(1).is_some_and(|x| base(x) == tool)
+    {
         Some(&w[2..])
     } else {
         None
@@ -437,7 +552,8 @@ fn in_order(have: &[&str], want: &[&str]) -> bool {
 }
 
 fn flag_name(a: &str) -> Option<&str> {
-    a.strip_prefix('-').map(|f| f.trim_start_matches('-').split('=').next().unwrap_or(""))
+    a.strip_prefix('-')
+        .map(|f| f.trim_start_matches('-').split('=').next().unwrap_or(""))
 }
 
 /// Index of the git subcommand in `args` (after git's own options such as `-C dir`).
@@ -459,7 +575,9 @@ fn git_push(w: &[String]) -> Option<String> {
     for x in &a[i + 1..] {
         if let Some(long) = x.strip_prefix("--") {
             match long.split('=').next().unwrap_or("") {
-                f @ ("force" | "force-with-lease" | "delete" | "mirror") => return Some(format!("git push --{f}")),
+                f @ ("force" | "force-with-lease" | "delete" | "mirror") => {
+                    return Some(format!("git push --{f}"));
+                }
                 _ => {}
             }
         } else if let Some(short) = x.strip_prefix('-') {
@@ -481,7 +599,10 @@ fn git_push(w: &[String]) -> Option<String> {
 /// `DROP TABLE|DATABASE|SCHEMA` and `TRUNCATE` as whole words in any case, and `dropDatabase`.
 fn sql_in(text: &str) -> Option<&'static str> {
     let t = text.to_lowercase();
-    let words: Vec<&str> = t.split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|s| !s.is_empty()).collect();
+    let words: Vec<&str> = t
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|s| !s.is_empty())
+        .collect();
     for (i, w) in words.iter().enumerate() {
         match *w {
             "truncate" => return Some("SQL TRUNCATE"),
@@ -502,10 +623,19 @@ fn sql_in(text: &str) -> Option<&'static str> {
 fn remote(w: &[String], heredoc: &str) -> Option<String> {
     let name = base(&w[0]);
     for r in RULES {
-        let Some(args) = after_tool(w, r.tool) else { continue };
-        let plain: Vec<&str> = args.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+        let Some(args) = after_tool(w, r.tool) else {
+            continue;
+        };
+        let plain: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .filter(|a| !a.starts_with('-'))
+            .collect();
         let order = in_order(&plain, r.words);
-        let flag = r.flags.is_empty() || args.iter().any(|a| flag_name(a).is_some_and(|f| r.flags.contains(&f)));
+        let flag = r.flags.is_empty()
+            || args
+                .iter()
+                .any(|a| flag_name(a).is_some_and(|f| r.flags.contains(&f)));
         if order && flag {
             return Some(r.name.into());
         }
@@ -526,9 +656,17 @@ fn remote(w: &[String], heredoc: &str) -> Option<String> {
             return Some(r.into());
         }
     }
-    let flag = w.iter().find(|a| matches!(a.split('=').next(), Some("--linked" | "--remote" | "--prod" | "--production")))?;
+    let flag = w.iter().find(|a| {
+        matches!(
+            a.split('=').next(),
+            Some("--linked" | "--remote" | "--prod" | "--production")
+        )
+    })?;
     let act = w.iter().find(|a| FLAG_WORDS.contains(&a.as_str()))?;
-    Some(format!("{} with {act}", flag.split('=').next().unwrap_or("")))
+    Some(format!(
+        "{} with {act}",
+        flag.split('=').next().unwrap_or("")
+    ))
 }
 
 /// Deletes or overwrites local files, or rewrites history: worth a save point first.
@@ -537,7 +675,13 @@ fn local(w: &[String]) -> bool {
     match base(&w[0]) {
         "rm" | "rmdir" | "unlink" | "shred" | "truncate" | "mv" => true,
         "dd" => a.iter().any(|x| x.starts_with("of=")),
-        "find" => a.iter().any(|x| x == "-delete") || a.windows(2).any(|p| matches!(p[0].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") && base(&p[1]) == "rm"),
+        "find" => {
+            a.iter().any(|x| x == "-delete")
+                || a.windows(2).any(|p| {
+                    matches!(p[0].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir")
+                        && base(&p[1]) == "rm"
+                })
+        }
         "git" => git_sub(a).is_some_and(|i| GIT_LOCAL.contains(&a[i].as_str())),
         _ => false,
     }
@@ -552,18 +696,25 @@ fn torpor_args(w: &[String]) -> Option<&[String]> {
 /// Is `torpor <args>` a command only the user may run? Gives it as the refusal shows it ("torpor promise drop").
 /// One list for the CLI refusal and the PreToolUse deny, so they cannot drift apart.
 pub fn user_only_args<S: AsRef<str>>(args: &[S]) -> Option<String> {
-    let mut words = args.iter().map(|a| a.as_ref()).filter(|a| !a.starts_with('-'));
+    let mut words = args
+        .iter()
+        .map(|a| a.as_ref())
+        .filter(|a| !a.starts_with('-'));
     let sub = words.next()?;
     match (sub, words.next()) {
         (s, _) if USER_ONLY.contains(&s) => Some(format!("torpor {s}")),
         // The one download Torpor makes: the AI asks you to run it (spec 24).
         ("runner", Some("install")) => Some("torpor runner install".into()),
         // `--force` skips the checks of an undo: only the user decides that (the refusal tells the AI to ask).
-        ("undo", _) if args.iter().any(|a| a.as_ref() == "--force") => Some("torpor undo --force".into()),
+        ("undo", _) if args.iter().any(|a| a.as_ref() == "--force") => {
+            Some("torpor undo --force".into())
+        }
         ("gate", Some(o @ ("on" | "off"))) => Some(format!("torpor gate {o}")),
         ("promise", Some(o @ ("ok" | "drop" | "block"))) => Some(format!("torpor promise {o}")),
         // Any `--spec...` spelling: the check source stays hidden from the AI (spec 14).
-        ("promise", Some("show")) if args.iter().any(|a| a.as_ref().starts_with("--spec")) => Some("torpor promise show --spec".into()),
+        ("promise", Some("show")) if args.iter().any(|a| a.as_ref().starts_with("--spec")) => {
+            Some("torpor promise show --spec".into())
+        }
         _ => None,
     }
 }
@@ -577,7 +728,8 @@ fn names(word: &str, store: &[String]) -> bool {
     word.split('/').any(|c| c == ".torpor")
         || store.iter().any(|n| {
             word.match_indices(n.as_str()).any(|(i, _)| {
-                (i == 0 || matches!(word.as_bytes()[i - 1], b'=' | b':' | b',')) && matches!(word.as_bytes().get(i + n.len()), None | Some(b'/'))
+                (i == 0 || matches!(word.as_bytes()[i - 1], b'=' | b':' | b','))
+                    && matches!(word.as_bytes().get(i + n.len()), None | Some(b'/'))
             })
         })
 }
@@ -646,7 +798,14 @@ impl Walk<'_> {
 
 /// Folders to look for package.json in: where the command runs and the folders above it (npm looks up too).
 pub fn script_dirs(cwd: Option<&str>) -> Vec<PathBuf> {
-    cwd.map(|c| Path::new(c).ancestors().take(5).map(Path::to_path_buf).collect()).unwrap_or_default()
+    cwd.map(|c| {
+        Path::new(c)
+            .ancestors()
+            .take(5)
+            .map(Path::to_path_buf)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -654,7 +813,17 @@ mod tests {
     use super::*;
 
     fn store() -> Vec<String> {
-        ["/h/.torpor", "~/.torpor", "/h/.config/torpor/key", "~/.config/torpor/key", "/h/.config/torpor", "/t/torpor-home"].iter().map(|s| s.to_string()).collect()
+        [
+            "/h/.torpor",
+            "~/.torpor",
+            "/h/.config/torpor/key",
+            "~/.config/torpor/key",
+            "/h/.config/torpor",
+            "/t/torpor-home",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     }
 
     fn j(cmd: &str) -> Verdict {
@@ -670,21 +839,41 @@ mod tests {
 
     /// Each command as its words joined with a dot.
     fn words(s: &str) -> Vec<String> {
-        segments(s).into_iter().map(|g| g.words.join("\u{b7}")).collect()
+        segments(s)
+            .into_iter()
+            .map(|g| g.words.join("\u{b7}"))
+            .collect()
     }
 
     #[test]
     fn reader_splits_and_unquotes() {
-        assert_eq!(words("a b; c && d || e | f & g\nh"), ["a\u{b7}b", "c", "d", "e", "f", "g", "h"]);
-        assert_eq!(words(r#"echo 'a b' "c; d" e\ f 'it''s'"#), ["echo\u{b7}a b\u{b7}c; d\u{b7}e f\u{b7}its"]);
+        assert_eq!(
+            words("a b; c && d || e | f & g\nh"),
+            ["a\u{b7}b", "c", "d", "e", "f", "g", "h"]
+        );
+        assert_eq!(
+            words(r#"echo 'a b' "c; d" e\ f 'it''s'"#),
+            ["echo\u{b7}a b\u{b7}c; d\u{b7}e f\u{b7}its"]
+        );
         assert_eq!(words("rm \\\n x"), ["rm\u{b7}x"]);
         assert_eq!(words("ls # rm x\nls"), ["ls", "ls"]);
         assert_eq!(words("echo a#b"), ["echo\u{b7}a#b"]);
-        assert_eq!(words("echo $(rm x) `rm y`"), ["echo\u{b7}$", "rm\u{b7}x", "rm\u{b7}y"]);
+        assert_eq!(
+            words("echo $(rm x) `rm y`"),
+            ["echo\u{b7}$", "rm\u{b7}x", "rm\u{b7}y"]
+        );
         // 2>&1 and &> are not the end of a command; a quoted > is not a redirection.
         assert_eq!(words("ls 2>&1 | wc"), ["ls", "wc"]);
-        assert!(segments("echo hi > f")[0].redirect && segments("echo hi>>f")[0].redirect && segments("ls &> f")[0].redirect);
-        assert!(!segments("ls 2>&1")[0].redirect && !segments("echo '>'")[0].redirect && !segments("echo \">\"")[0].redirect);
+        assert!(
+            segments("echo hi > f")[0].redirect
+                && segments("echo hi>>f")[0].redirect
+                && segments("ls &> f")[0].redirect
+        );
+        assert!(
+            !segments("ls 2>&1")[0].redirect
+                && !segments("echo '>'")[0].redirect
+                && !segments("echo \">\"")[0].redirect
+        );
         assert_eq!(words("echo hi>f"), ["echo\u{b7}hi\u{b7}f"]);
     }
 
@@ -811,10 +1000,16 @@ mod tests {
     fn remote_rules_name_themselves() {
         let cases = [
             ("terraform destroy", "terraform destroy"),
-            ("terraform -chdir=infra destroy -auto-approve", "terraform destroy"),
+            (
+                "terraform -chdir=infra destroy -auto-approve",
+                "terraform destroy",
+            ),
             ("terraform apply -destroy", "terraform apply -destroy"),
             ("terraform apply --destroy", "terraform apply -destroy"),
-            ("terraform apply -var a=b -auto-approve", "terraform apply -auto-approve"),
+            (
+                "terraform apply -var a=b -auto-approve",
+                "terraform apply -auto-approve",
+            ),
             ("tofu apply -auto-approve=true", "tofu apply -auto-approve"),
             ("sudo tofu destroy", "tofu destroy"),
             ("pulumi destroy --yes", "pulumi destroy"),
@@ -833,16 +1028,28 @@ mod tests {
             ("pnpm dlx prisma migrate reset", "prisma migrate reset"),
             ("pnpm exec prisma migrate reset", "prisma migrate reset"),
             ("yarn prisma migrate reset", "prisma migrate reset"),
-            ("prisma db push --force-reset", "prisma db push --force-reset"),
-            ("prisma db push --accept-data-loss", "prisma db push --accept-data-loss"),
+            (
+                "prisma db push --force-reset",
+                "prisma db push --force-reset",
+            ),
+            (
+                "prisma db push --accept-data-loss",
+                "prisma db push --accept-data-loss",
+            ),
             ("supabase db reset", "supabase db reset"),
             ("supabase db push --linked", "--linked with push"),
-            ("wrangler d1 execute DB --remote --command 'select 1'", "--remote with execute"),
+            (
+                "wrangler d1 execute DB --remote --command 'select 1'",
+                "--remote with execute",
+            ),
             ("deploy --prod delete", "--prod with delete"),
             ("git push --force origin main", "git push --force"),
             ("git push -f", "git push --force"),
             ("git push -fu origin x", "git push --force"),
-            ("git -C repo push --force-with-lease=main:abc", "git push --force-with-lease"),
+            (
+                "git -C repo push --force-with-lease=main:abc",
+                "git push --force-with-lease",
+            ),
             ("git push origin --delete old", "git push --delete"),
             ("git push -d origin old", "git push --delete"),
             ("git push --mirror backup", "git push --mirror"),
@@ -860,7 +1067,10 @@ mod tests {
             ("docker system prune -a", "docker system prune"),
             ("docker compose down -v", "docker compose down -v"),
             ("docker-compose down --volumes", "docker compose down -v"),
-            ("docker compose -f prod.yml down -v", "docker compose down -v"),
+            (
+                "docker compose -f prod.yml down -v",
+                "docker compose down -v",
+            ),
             ("kubectl -n prod delete deploy x", "kubectl delete"),
             ("bash -c 'terraform destroy'", "terraform destroy"),
             ("ls && terraform destroy", "terraform destroy"),
@@ -921,13 +1131,25 @@ mod tests {
             ("cd x && torpor -q off", "torpor off"),
             ("torpor undo 3 --force", "torpor undo --force"),
             ("torpor undo --force 3", "torpor undo --force"),
-            ("cd x && torpor undo 3 --dry-run --force", "torpor undo --force"),
+            (
+                "cd x && torpor undo 3 --dry-run --force",
+                "torpor undo --force",
+            ),
             ("bash -c 'torpor undo 3 --force'", "torpor undo --force"),
             ("~/.torpor/bin/torpor undo 3 --force", "torpor undo --force"),
         ] {
             assert_eq!(j(c), Verdict::UserOnly(name.into()), "{c}");
         }
-        for c in ["torpor status", "torpor back 1", "torpor undo 3", "torpor undo 3 --dry-run", "torpor undo 3 --forced", "torpor log", "echo torpor off", "echo torpor undo 3 --force"] {
+        for c in [
+            "torpor status",
+            "torpor back 1",
+            "torpor undo 3",
+            "torpor undo 3 --dry-run",
+            "torpor undo 3 --forced",
+            "torpor log",
+            "echo torpor off",
+            "echo torpor undo 3 --force",
+        ] {
             assert!(matches!(j(c), Verdict::Clear | Verdict::Save), "{c}");
         }
     }
@@ -942,15 +1164,27 @@ mod tests {
             ("torpor gate on", "torpor gate on"),
             ("torpor promise show 2 --spec", "torpor promise show --spec"),
             ("torpor promise show --spec 2", "torpor promise show --spec"),
-            ("torpor promise show 2 --spec=1", "torpor promise show --spec"),
+            (
+                "torpor promise show 2 --spec=1",
+                "torpor promise show --spec",
+            ),
             ("CLAUDECODE= torpor promise drop 2", "torpor promise drop"),
-            ("env -u CLAUDECODE torpor promise drop 2", "torpor promise drop"),
+            (
+                "env -u CLAUDECODE torpor promise drop 2",
+                "torpor promise drop",
+            ),
             ("command torpor promise drop 2", "torpor promise drop"),
             ("exec torpor gate off", "torpor gate off"),
             ("sh -c 'torpor promise drop 2'", "torpor promise drop"),
             ("bash -lc \"cd x && torpor gate off\"", "torpor gate off"),
-            ("~/.torpor/bin/2.3.1/torpor promise drop 2", "torpor promise drop"),
-            ("bash ~/.torpor/bin/torpor promise block 3", "torpor promise block"),
+            (
+                "~/.torpor/bin/2.3.1/torpor promise drop 2",
+                "torpor promise drop",
+            ),
+            (
+                "bash ~/.torpor/bin/torpor promise block 3",
+                "torpor promise block",
+            ),
             ("torpor -q promise -- drop 2", "torpor promise drop"),
             ("torpor promise drop 2 | cat", "torpor promise drop"),
         ] {
@@ -974,12 +1208,27 @@ mod tests {
 
     #[test]
     fn torpor_calls_are_named_the_same_way_on_both_sides() {
-        assert_eq!(torpor_calls("cd x && torpor keep \"a b\" --check - && npm test"), vec!["keep"]);
-        assert_eq!(torpor_calls("torpor promise add --good 5 - <<'EOF'\n{}\nEOF"), vec!["promise add"]);
-        assert_eq!(torpor_calls("bash -c 'torpor check --all; torpor gate on'"), vec!["check", "gate on"]);
-        assert_eq!(torpor_calls("env FOO=1 ~/.torpor/bin/torpor find-break"), vec!["find-break"]);
+        assert_eq!(
+            torpor_calls("cd x && torpor keep \"a b\" --check - && npm test"),
+            vec!["keep"]
+        );
+        assert_eq!(
+            torpor_calls("torpor promise add --good 5 - <<'EOF'\n{}\nEOF"),
+            vec!["promise add"]
+        );
+        assert_eq!(
+            torpor_calls("bash -c 'torpor check --all; torpor gate on'"),
+            vec!["check", "gate on"]
+        );
+        assert_eq!(
+            torpor_calls("env FOO=1 ~/.torpor/bin/torpor find-break"),
+            vec!["find-break"]
+        );
         assert!(torpor_calls("echo torpor keep; ls").is_empty());
-        assert_eq!(call_name(&["promise", "show", "--spec", "2"]).as_deref(), Some("promise show"));
+        assert_eq!(
+            call_name(&["promise", "show", "--spec", "2"]).as_deref(),
+            Some("promise show")
+        );
         assert_eq!(call_name(&["-q", "keep", "words"]).as_deref(), Some("keep"));
         assert_eq!(call_name::<&str>(&[]), None);
     }
@@ -994,7 +1243,10 @@ mod tests {
         assert_eq!(at("pnpm run clean"), Verdict::Save);
         assert_eq!(at("yarn run --silent clean"), Verdict::Save);
         assert_eq!(at("bun run clean"), Verdict::Save);
-        assert_eq!(at("npm run nuke"), Verdict::Remote("terraform destroy".into()));
+        assert_eq!(
+            at("npm run nuke"),
+            Verdict::Remote("terraform destroy".into())
+        );
         assert_eq!(at("bash -c 'npm run clean'"), Verdict::Save);
         assert_eq!(at("npm run ok"), Verdict::Clear);
         assert_eq!(at("npm run missing"), Verdict::Clear);
@@ -1004,9 +1256,15 @@ mod tests {
 
     #[test]
     fn the_strongest_finding_wins() {
-        assert_eq!(j("rm x && terraform destroy"), Verdict::Remote("terraform destroy".into()));
+        assert_eq!(
+            j("rm x && terraform destroy"),
+            Verdict::Remote("terraform destroy".into())
+        );
         assert_eq!(j("terraform destroy; rm -rf ~/.torpor"), Verdict::Store);
-        assert_eq!(j("torpor off; rm x"), Verdict::UserOnly("torpor off".into()));
+        assert_eq!(
+            j("torpor off; rm x"),
+            Verdict::UserOnly("torpor off".into())
+        );
     }
 
     #[test]
@@ -1016,6 +1274,10 @@ mod tests {
         let mut deny = format!("rm ~/.torpor; echo {}", "a".repeat(10));
         assert_eq!(j(&deny), Verdict::Store);
         deny = format!("echo {}", "a".repeat(MAX_TEXT - 5));
-        assert_eq!(j(&deny), Verdict::Clear, "just under the limit is read in full");
+        assert_eq!(
+            j(&deny),
+            Verdict::Clear,
+            "just under the limit is read in full"
+        );
     }
 }

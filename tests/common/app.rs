@@ -10,7 +10,9 @@ pub const LOGIN_STEPS: &str = r#"[
   {"http":{"path":"/api/me"},"expect":{"status":200,"json_has":["email"]},"why":"after sign-in the account data shows"}]"#;
 
 pub fn spec(name: &str, start: &str, env: &str, steps: &str) -> String {
-    format!(r#"{{"v":1,"name":"{name}","why":"{name} for the user","start":{start},"env":{env},"steps":{steps}}}"#)
+    format!(
+        r#"{{"v":1,"name":"{name}","why":"{name} for the user","start":{start},"env":{env},"steps":{steps}}}"#
+    )
 }
 
 pub fn login() -> String {
@@ -53,7 +55,10 @@ pub fn rw(s: &Sim) -> rusqlite::Connection {
 pub fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
     let t = Instant::now();
     while !f() {
-        assert!(t.elapsed() < Duration::from_secs(secs), "timed out waiting for {what}");
+        assert!(
+            t.elapsed() < Duration::from_secs(secs),
+            "timed out waiting for {what}"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
@@ -69,7 +74,10 @@ pub fn add(s: &mut Sim, spec: &str) -> Out {
 }
 
 pub fn why(o: &Out) -> String {
-    format!("exit {}\nstdout: {}\nstderr: {}", o.code, o.stdout, o.stderr)
+    format!(
+        "exit {}\nstdout: {}\nstderr: {}",
+        o.code, o.stdout, o.stderr
+    )
 }
 
 /// Every stored run of a check, one line each, for the message of a failed assertion.

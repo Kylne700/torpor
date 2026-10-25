@@ -36,8 +36,9 @@ impl Rng {
 }
 
 const WORDS: [&str; 32] = [
-    "const", "let", "function", "return", "import", "from", "export", "default", "async", "await", "if", "else", "for", "of", "class", "extends", "this",
-    "props", "state", "value", "index", "count", "name", "path", "data", "result", "error", "config", "items", "user", "id", "type",
+    "const", "let", "function", "return", "import", "from", "export", "default", "async", "await",
+    "if", "else", "for", "of", "class", "extends", "this", "props", "state", "value", "index",
+    "count", "name", "path", "data", "result", "error", "config", "items", "user", "id", "type",
 ];
 
 /// Source-looking text: compresses about like code does, and no two files are alike.
@@ -76,7 +77,10 @@ fn generate_repo(root: &std::path::Path, r: &mut Rng) -> Vec<String> {
     for a in 0..20 {
         for b in 0..20 {
             for k in 0..20 {
-                let rel = format!("src/g{a:02}/d{b:02}/f{k:02}.{}", exts[(a + b + k) % exts.len()]);
+                let rel = format!(
+                    "src/g{a:02}/d{b:02}/f{k:02}.{}",
+                    exts[(a + b + k) % exts.len()]
+                );
                 let n = pick_size(r);
                 put(root, &rel, &source_text(r, n));
                 sources.push(rel);
@@ -86,11 +90,19 @@ fn generate_repo(root: &std::path::Path, r: &mut Rng) -> Vec<String> {
     for p in 0..200 {
         for k in 0..100 {
             let n = 200 + r.below(1300) as usize;
-            put(root, &format!("node_modules/pkg{p:03}/lib/f{k:03}.js"), &source_text(r, n));
+            put(
+                root,
+                &format!("node_modules/pkg{p:03}/lib/f{k:03}.js"),
+                &source_text(r, n),
+            );
         }
     }
     put(root, ".git/HEAD", b"ref: refs/heads/main\n");
-    put(root, ".git/config", b"[core]\n\trepositoryformatversion = 0\n");
+    put(
+        root,
+        ".git/config",
+        b"[core]\n\trepositoryformatversion = 0\n",
+    );
     for x in 0..20 {
         for _k in 0..100 {
             let name = format!("{:038x}", r.next() as u128 * r.next() as u128);
@@ -98,10 +110,18 @@ fn generate_repo(root: &std::path::Path, r: &mut Rng) -> Vec<String> {
             put(root, &format!(".git/objects/{x:02x}/{name}"), &bytes);
         }
     }
-    put(root, "package.json", b"{\"name\":\"a5-project\",\"version\":\"1.0.0\"}\n");
+    put(
+        root,
+        "package.json",
+        b"{\"name\":\"a5-project\",\"version\":\"1.0.0\"}\n",
+    );
     put(root, ".gitignore", b"node_modules/\ndist/\n.env\n*.log\n");
     put(root, ".env", b"API_KEY=synthetic-a5-not-a-secret\n");
-    put(root, "prisma/dev.db", &(0..8192).map(|_| r.next() as u8).collect::<Vec<u8>>());
+    put(
+        root,
+        "prisma/dev.db",
+        &(0..8192).map(|_| r.next() as u8).collect::<Vec<u8>>(),
+    );
     sources
 }
 
@@ -162,7 +182,10 @@ impl Bench {
         let c = self.shell_cmd(true);
         assert_eq!(self.sim.bash(&c), 3);
         self.sim.subagent_stop("agent-x");
-        self.sim.hook("PreCompact", json!({"trigger": "auto", "custom_instructions": ""}));
+        self.sim.hook(
+            "PreCompact",
+            json!({"trigger": "auto", "custom_instructions": ""}),
+        );
         self.touch_some();
         self.sim.stop();
         self.sim.session_end("other");
@@ -173,7 +196,8 @@ impl Bench {
         self.touch_some();
         self.sim.prompt("work on the project");
         self.edit();
-        self.sim.hook("StopFailure", json!({"error": "server_error"}));
+        self.sim
+            .hook("StopFailure", json!({"error": "server_error"}));
     }
 }
 
@@ -181,15 +205,27 @@ impl Bench {
 #[ignore = "slow and needs a quiet machine: cargo test --release --test a5_latency -- --ignored --nocapture"]
 fn a5_latency() {
     // A5_RUNS lowers the count for quick profiling; only the default is the spec's run.
-    let runs: usize = std::env::var("A5_RUNS").ok().and_then(|s| s.parse().ok()).unwrap_or(SPEC_RUNS);
+    let runs: usize = std::env::var("A5_RUNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(SPEC_RUNS);
     let base = manifest_dir().join("target").join("a5-run");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let env = Arc::new(Env::in_dir(tempfile::Builder::new().prefix("a5-").tempdir_in(&base).unwrap()));
+    let env = Arc::new(Env::in_dir(
+        tempfile::Builder::new()
+            .prefix("a5-")
+            .tempdir_in(&base)
+            .unwrap(),
+    ));
     let t0 = Instant::now();
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let sources = generate_repo(&env.proj, &mut rng);
-    println!("generated the project in {:.1} s ({} source files)", t0.elapsed().as_secs_f64(), sources.len());
+    println!(
+        "generated the project in {:.1} s ({} source files)",
+        t0.elapsed().as_secs_f64(),
+        sources.len()
+    );
     if std::env::var_os("A5_KEEP").is_some() {
         // For profiling by hand: the project and its store stay under target/a5-run.
         println!("kept: {}", env.proj.display());
@@ -239,8 +275,18 @@ fn a5_latency() {
         by_event.entry(e).or_default().push(d);
     }
     let mut failures: Vec<String> = Vec::new();
-    println!("\n{:<28} {:>5} {:>9} {:>9} {:>9}", "event", "runs", "p50 ms", "p99 ms", "max ms");
-    println!("{:<28} {:>5} {:>9.1} {:>9.1} {:>9.1}", "(launcher: torpor version)", startup.len(), pctl(&startup, 50.0), pctl(&startup, 99.0), pctl(&startup, 100.0));
+    println!(
+        "\n{:<28} {:>5} {:>9} {:>9} {:>9}",
+        "event", "runs", "p50 ms", "p99 ms", "max ms"
+    );
+    println!(
+        "{:<28} {:>5} {:>9.1} {:>9.1} {:>9.1}",
+        "(launcher: torpor version)",
+        startup.len(),
+        pctl(&startup, 50.0),
+        pctl(&startup, 99.0),
+        pctl(&startup, 100.0)
+    );
     let mut all: Vec<Duration> = Vec::new();
     for (e, v) in by_event.iter_mut() {
         v.sort();
@@ -258,10 +304,21 @@ fn a5_latency() {
         }
     }
     all.sort();
-    println!("{:<28} {:>5} {:>9.1} {:>9.1} {:>9.1}", "(all hooks together)", all.len(), pctl(&all, 50.0), pctl(&all, 99.0), pctl(&all, 100.0));
+    println!(
+        "{:<28} {:>5} {:>9.1} {:>9.1} {:>9.1}",
+        "(all hooks together)",
+        all.len(),
+        pctl(&all, 50.0),
+        pctl(&all, 99.0),
+        pctl(&all, 100.0)
+    );
 
     // The scan alone (walk + stat + ignore rules), warm, with the thread count the product uses for this size.
-    let files = b.sim.q_str("SELECT value FROM meta WHERE key='file_count'").and_then(|s| s.parse().ok()).unwrap_or(8000);
+    let files = b
+        .sim
+        .q_str("SELECT value FROM meta WHERE key='file_count'")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8000);
     let threads = torpor::scan::thread_count(files);
     let mut scans = Vec::new();
     let mut entries = 0;
@@ -273,7 +330,11 @@ fn a5_latency() {
     }
     scans.sort();
     let scan_p50 = pctl(&scans, 50.0);
-    println!("\nscan ({entries} entries, {threads} threads): p50 {scan_p50:.1} ms, p99 {:.1} ms, max {:.1} ms (budget p50 {SCAN_P50_MS} ms)", pctl(&scans, 99.0), pctl(&scans, 100.0));
+    println!(
+        "\nscan ({entries} entries, {threads} threads): p50 {scan_p50:.1} ms, p99 {:.1} ms, max {:.1} ms (budget p50 {SCAN_P50_MS} ms)",
+        pctl(&scans, 99.0),
+        pctl(&scans, 100.0)
+    );
     println!(
         "store: mode {:?}, points {}, faults {}",
         b.sim.q_str("SELECT value FROM meta WHERE key='mode'"),
@@ -281,9 +342,19 @@ fn a5_latency() {
         b.sim.q_i64("SELECT COUNT(*) FROM faults"),
     );
     if scan_p50 > SCAN_P50_MS {
-        failures.push(format!("scan p50 {scan_p50:.1} ms is over {SCAN_P50_MS} ms"));
+        failures.push(format!(
+            "scan p50 {scan_p50:.1} ms is over {SCAN_P50_MS} ms"
+        ));
     }
-    assert_eq!(b.sim.q_i64("SELECT COUNT(*) FROM faults"), 0, "no hook faulted during the run");
+    assert_eq!(
+        b.sim.q_i64("SELECT COUNT(*) FROM faults"),
+        0,
+        "no hook faulted during the run"
+    );
     b.sim.verify_last_point();
-    assert!(failures.is_empty(), "A5 budget missed:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "A5 budget missed:\n{}",
+        failures.join("\n")
+    );
 }

@@ -90,18 +90,37 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Promise> {
 }
 
 pub fn get(db: &Connection, id: i64) -> Result<Option<Promise>> {
-    Ok(db.query_row(&format!("SELECT {COLS} FROM promises WHERE id=?1"), [id], row).optional()?)
+    Ok(db
+        .query_row(
+            &format!("SELECT {COLS} FROM promises WHERE id=?1"),
+            [id],
+            row,
+        )
+        .optional()?)
 }
 
 /// All promises in id order; dropped ones only when asked.
 pub fn all(db: &Connection, with_dropped: bool) -> Result<Vec<Promise>> {
-    let mut st = db.prepare(&format!("SELECT {COLS} FROM promises {} ORDER BY id", if with_dropped { "" } else { "WHERE state<>'dropped'" }))?;
-    let v = st.query_map([], row)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut st = db.prepare(&format!(
+        "SELECT {COLS} FROM promises {} ORDER BY id",
+        if with_dropped {
+            ""
+        } else {
+            "WHERE state<>'dropped'"
+        }
+    ))?;
+    let v = st
+        .query_map([], row)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(v)
 }
 
 pub fn live_count(db: &Connection) -> Result<i64> {
-    Ok(db.query_row("SELECT COUNT(*) FROM promises WHERE state<>'dropped'", [], |r| r.get(0))?)
+    Ok(db.query_row(
+        "SELECT COUNT(*) FROM promises WHERE state<>'dropped'",
+        [],
+        |r| r.get(0),
+    )?)
 }
 
 /// The stored check of a promise, read back through the vault (its bytes are checked against their hash).
@@ -112,7 +131,10 @@ pub fn spec_of(ws: &Ws, p: &Promise) -> Result<Linted> {
 
 /// Text from a check or a person, safe to print and to store: no control characters, no secrets, at most `max` chars.
 pub fn clean(s: &str, max: usize) -> String {
-    let s: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let s: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     trunc_chars(&texts::redact(&s).0, max)
 }
 
@@ -160,7 +182,9 @@ fn newest_open_turn(db: &Connection) -> Result<Option<Turn>> {
         .optional()?;
     let id = match id {
         Some(i) => Some(i),
-        None => db.query_row("SELECT MAX(id) FROM turns", [], |r| r.get::<_, Option<i64>>(0))?,
+        None => db.query_row("SELECT MAX(id) FROM turns", [], |r| {
+            r.get::<_, Option<i64>>(0)
+        })?,
     };
     match id {
         Some(i) => turn::by_id(db, i),
@@ -184,10 +208,16 @@ pub fn who(db: &Connection, sub: &str, now: i64) -> Result<Who> {
             Some(t) => Some(t),
             None => turn::open_of(db, &session)?,
         };
-        return Ok(Who { agent: true, turn: t });
+        return Ok(Who {
+            agent: true,
+            turn: t,
+        });
     }
     let agent = std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty());
-    Ok(Who { agent, turn: newest_open_turn(db)? })
+    Ok(Who {
+        agent,
+        turn: newest_open_turn(db)?,
+    })
 }
 
 /// The origin of `turn` as far as the transcript says now. Runs the section 4.4 reader mid-turn (the offset stays where Stop left it).
@@ -202,7 +232,9 @@ pub fn source_for(db: &Connection, who: &Who, want: &str) -> Result<(String, Opt
     if !who.agent {
         return Ok((want.to_string(), None));
     }
-    let Some(t) = &who.turn else { return Ok(("agent".into(), None)) };
+    let Some(t) = &who.turn else {
+        return Ok(("agent".into(), None));
+    };
     Ok(match origin_now(db, t)?.as_str() {
         "human" => (want.to_string(), None),
         "unknown" | "none" => ("agent".into(), Some(want.to_string())),
@@ -212,32 +244,57 @@ pub fn source_for(db: &Connection, who: &Who, want: &str) -> Result<(String, Opt
 
 /// Stop has read the origin: provisional sources become what was asked for when the turn is human, and are final either way.
 pub fn upgrade_sources(db: &Connection, t: &Turn) -> Result<()> {
-    let origin: String = db.query_row("SELECT origin FROM turns WHERE id=?1", [t.id], |r| r.get(0))?;
+    let origin: String =
+        db.query_row("SELECT origin FROM turns WHERE id=?1", [t.id], |r| r.get(0))?;
     if origin == "human" {
         db.execute("UPDATE promises SET source=want_source WHERE want_source IS NOT NULL AND created_turn=?1", [t.id])?;
     } else {
         // Shadow was granted on the words of a turn that turned out not to be the user's (spec 17: the AI's own promises stay advisory).
         db.execute("UPDATE promises SET tier='advisory' WHERE tier='shadow' AND want_source IS NOT NULL AND created_turn=?1", [t.id])?;
     }
-    db.execute("UPDATE promises SET want_source=NULL WHERE want_source IS NOT NULL AND created_turn=?1", [t.id])?;
+    db.execute(
+        "UPDATE promises SET want_source=NULL WHERE want_source IS NOT NULL AND created_turn=?1",
+        [t.id],
+    )?;
     Ok(())
 }
 
 // ---------------------------------------------------------------- save points
 
 pub fn point_tree(db: &Connection, point: i64) -> Result<[u8; 32]> {
-    let b: Option<Vec<u8>> = db.query_row("SELECT tree_id FROM points WHERE id=?1 AND dropped=0", [point], |r| r.get(0)).optional()?;
+    let b: Option<Vec<u8>> = db
+        .query_row(
+            "SELECT tree_id FROM points WHERE id=?1 AND dropped=0",
+            [point],
+            |r| r.get(0),
+        )
+        .optional()?;
     let b = b.ok_or_else(|| Error::NotFound(format!("save point {point}")))?;
-    b.try_into().map_err(|_| Error::msg("a save point has a damaged tree id"))
+    b.try_into()
+        .map_err(|_| Error::msg("a save point has a damaged tree id"))
 }
 
 /// The newest save point whose tree is `tree` (a `check` of the live folder has none when nothing was saved since).
 pub fn point_of_tree(db: &Connection, tree: &[u8; 32]) -> Option<i64> {
-    db.query_row("SELECT id FROM points WHERE tree_id=?1 AND dropped=0 ORDER BY id DESC LIMIT 1", [&tree[..]], |r| r.get(0)).optional().ok().flatten()
+    db.query_row(
+        "SELECT id FROM points WHERE tree_id=?1 AND dropped=0 ORDER BY id DESC LIMIT 1",
+        [&tree[..]],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
 fn point_info(db: &Connection, id: i64) -> Option<(String, Option<i64>)> {
-    db.query_row("SELECT p.kind,t.n FROM points p LEFT JOIN turns t ON t.id=p.turn_id WHERE p.id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).optional().ok().flatten()
+    db.query_row(
+        "SELECT p.kind,t.n FROM points p LEFT JOIN turns t ON t.id=p.turn_id WHERE p.id=?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
 }
 
 /// How a save point is named in a sentence: "the start of turn 12", "the kept version (save point 61)".
@@ -252,18 +309,32 @@ pub fn point_name(db: &Connection, id: i64) -> String {
 
 pub(crate) fn good_name(db: &Connection, id: i64) -> String {
     let n = point_name(db, id);
-    if n.starts_with("the start") || n.starts_with("the end") { format!("the version from {n}") } else { n }
+    if n.starts_with("the start") || n.starts_with("the end") {
+        format!("the version from {n}")
+    } else {
+        n
+    }
 }
 
 /// The version the user called good (spec 14): `--good`, `--turn K`, or the START of the newest human turn, which is what the user saw
 /// before they spoke. A turn that is not the user's own (origin known and not human) gives way to the newest human one.
-pub fn pick_good(db: &Connection, who: &Who, point: Option<i64>, turn_k: Option<i64>) -> Result<i64> {
+pub fn pick_good(
+    db: &Connection,
+    who: &Who,
+    point: Option<i64>,
+    turn_k: Option<i64>,
+) -> Result<i64> {
     if let Some(p) = point {
         point_tree(db, p)?;
         return Ok(p);
     }
     if let Some(k) = turn_k {
-        let sp: Option<i64> = db.query_row("SELECT start_point FROM turns WHERE n=?1", [k], |r| r.get(0)).optional()?.flatten();
+        let sp: Option<i64> = db
+            .query_row("SELECT start_point FROM turns WHERE n=?1", [k], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten();
         let sp = sp.ok_or_else(|| Error::NotFound(format!("turn {k}")))?;
         point_tree(db, sp)?;
         return Ok(sp);
@@ -284,7 +355,9 @@ pub fn pick_good(db: &Connection, who: &Who, point: Option<i64>, turn_k: Option<
         "SELECT start_point FROM turns WHERE start_point IS NOT NULL AND id<=?1 ORDER BY id DESC LIMIT 5",
     ] {
         let mut st = db.prepare(sql)?;
-        let ids = st.query_map([cur_id], |r| r.get::<_, i64>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let ids = st
+            .query_map([cur_id], |r| r.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         if let Some(sp) = ids.into_iter().find(|sp| point_tree(db, *sp).is_ok()) {
             return Ok(sp);
         }
@@ -296,7 +369,9 @@ pub fn pick_good(db: &Connection, who: &Who, point: Option<i64>, turn_k: Option<
 /// its work (keep, `--good`), then the STARTs of the turns 1, 2, 4 and 8 before it. Versions with the good tree are left out.
 pub fn bad_candidates(db: &Connection, good: i64) -> Result<Vec<i64>> {
     let gtree = point_tree(db, good)?;
-    let Some((kind, Some(n))) = point_info(db, good) else { return Ok(Vec::new()) };
+    let Some((kind, Some(n))) = point_info(db, good) else {
+        return Ok(Vec::new());
+    };
     let mut ns: Vec<i64> = Vec::new();
     if kind != "start" {
         ns.push(n);
@@ -304,7 +379,12 @@ pub fn bad_candidates(db: &Connection, good: i64) -> Result<Vec<i64>> {
     ns.extend([1i64, 2, 4, 8].iter().map(|o| n - o));
     let mut out: Vec<i64> = Vec::new();
     for k in ns {
-        let sp: Option<i64> = db.query_row("SELECT start_point FROM turns WHERE n=?1", [k], |r| r.get(0)).optional()?.flatten();
+        let sp: Option<i64> = db
+            .query_row("SELECT start_point FROM turns WHERE n=?1", [k], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten();
         if let Some(sp) = sp {
             if sp != good && !out.contains(&sp) && point_tree(db, sp).is_ok_and(|t| t != gtree) {
                 out.push(sp);
@@ -349,7 +429,9 @@ pub struct Checked {
 
 /// Under a deadline another run starts only if the longest run so far would still fit.
 fn fits_another(runs: &[RunResult]) -> bool {
-    runner::time_left().is_none_or(|left| left.as_millis() as u64 >= runs.iter().map(|r| r.ms).max().unwrap_or(0) * 5 / 4 + 300)
+    runner::time_left().is_none_or(|left| {
+        left.as_millis() as u64 >= runs.iter().map(|r| r.ms).max().unwrap_or(0) * 5 / 4 + 300
+    })
 }
 
 /// One verdict for `tree` (spec 16): a PASS stands; a FAIL is re-run in up to 2 more fresh scratch copies and is a FAIL only in 3 of 3.
@@ -386,19 +468,40 @@ pub fn check_tree_with(ws: &Ws, spec: &Spec, tree: &[u8; 32], opts: &scratch::Op
         }
     }
     let pick = match call {
-        Call::Flaky => runs.iter().find(|r| r.judged.verdict == Verdict::Fail).unwrap_or(&runs[0]),
+        Call::Flaky => runs
+            .iter()
+            .find(|r| r.judged.verdict == Verdict::Fail)
+            .unwrap_or(&runs[0]),
         _ => &runs[runs.len() - 1],
     };
-    let (failed_step, mut reason, assertions) = (pick.judged.failed_step, pick.judged.reason.clone(), pick.judged.assertions);
+    let (failed_step, mut reason, assertions) = (
+        pick.judged.failed_step,
+        pick.judged.reason.clone(),
+        pick.judged.assertions,
+    );
     if cut {
         reason = format!("{}: only {} of 3 runs fit", runner::OUT_OF_TIME, runs.len());
     }
     let ms = runs.iter().map(|r| r.ms).sum();
-    Checked { call, failed_step, reason, assertions, ms, runs }
+    Checked {
+        call,
+        failed_step,
+        reason,
+        assertions,
+        ms,
+        runs,
+    }
 }
 
 /// One `promise_runs` row (`promise` None: a search with a check that was not saved). Kinds follow the spec: create, gate, control, check, bisect, undo, all.
-pub fn record(db: &Connection, promise: impl Into<Option<i64>>, kind: &str, tree: Option<&[u8; 32]>, r: &RunResult, now: i64) -> Result<()> {
+pub fn record(
+    db: &Connection,
+    promise: impl Into<Option<i64>>,
+    kind: &str,
+    tree: Option<&[u8; 32]>,
+    r: &RunResult,
+    now: i64,
+) -> Result<()> {
     let j = &r.judged;
     let reason = (!j.reason.is_empty()).then(|| clean(&j.reason, 300));
     db.execute(
@@ -409,14 +512,25 @@ pub fn record(db: &Connection, promise: impl Into<Option<i64>>, kind: &str, tree
 }
 
 /// Raw runs on one version, stopping at an UNRUNNABLE or the deadline. `say` gets one line per run.
-fn raw_runs(ws: &Ws, spec: &Spec, tree: &[u8; 32], n: usize, until: Instant, say: &dyn Fn(&str)) -> Vec<RunResult> {
+fn raw_runs(
+    ws: &Ws,
+    spec: &Spec,
+    tree: &[u8; 32],
+    n: usize,
+    until: Instant,
+    say: &dyn Fn(&str),
+) -> Vec<RunResult> {
     let mut v: Vec<RunResult> = Vec::new();
     for i in 1..=n {
         if Instant::now() >= until {
             break;
         }
         let r = scratch::run_once(ws, spec, tree, Some(spec.assertions()));
-        say(&format!("  run {i} of {n}: {} ({})", r.judged.verdict.as_str(), secs(r.ms)));
+        say(&format!(
+            "  run {i} of {n}: {} ({})",
+            r.judged.verdict.as_str(),
+            secs(r.ms)
+        ));
         let stop = r.judged.verdict == Verdict::Unrunnable;
         v.push(r);
         if stop {
@@ -455,7 +569,10 @@ pub enum Done {
 pub fn not_saved(ws: &mut Ws, id: i64, why: String) -> Result<Done> {
     let at = now_ns();
     write(ws, |w| {
-        w.conn.execute("UPDATE promises SET state='dropped', announced=0 WHERE id=?1", [id])?;
+        w.conn.execute(
+            "UPDATE promises SET state='dropped', announced=0 WHERE id=?1",
+            [id],
+        )?;
         w.conn.execute(
             "INSERT INTO promise_runs(promise_id,tree_id,kind,verdict,failed_step,reason,assertions_n,token_ok,ms,at) VALUES(?1,NULL,'create','UNRUNNABLE',NULL,?2,0,0,0,?3)",
             params![id, clean(&why, 300), at],
@@ -472,26 +589,56 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
     let until = Instant::now() + Duration::from_secs(QUALIFY_SECS);
     let p = get(&ws.conn, id)?.ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
     let l = spec_of(ws, &p)?;
-    let Some(good) = p.good_point else { return not_saved(ws, id, "there is no version to call good.".into()) };
+    let Some(good) = p.good_point else {
+        return not_saved(ws, id, "there is no version to call good.".into());
+    };
     let gtree = match point_tree(&ws.conn, good) {
         Ok(t) => t,
         Err(_) => return not_saved(ws, id, format!("save point {good} is gone.")),
     };
     let gname = good_name(&ws.conn, good);
-    say(&format!("Checking promise #{id} \"{}\" on {gname}: {GOOD_RUNS} runs.", clean(&p.name, 60)));
+    say(&format!(
+        "Checking promise #{id} \"{}\" on {gname}: {GOOD_RUNS} runs.",
+        clean(&p.name, 60)
+    ));
     let good_runs = raw_runs(ws, &l.spec, &gtree, GOOD_RUNS, until, say);
     let at = now_ns();
-    write(ws, |w| good_runs.iter().try_for_each(|r| record(&w.conn, id, "create", Some(&gtree), r, at)))?;
-    if let Some(u) = good_runs.iter().find(|r| r.judged.verdict == Verdict::Unrunnable) {
-        return not_saved(ws, id, format!("the check could not run on {gname}: {}", u.judged.reason));
+    write(ws, |w| {
+        good_runs
+            .iter()
+            .try_for_each(|r| record(&w.conn, id, "create", Some(&gtree), r, at))
+    })?;
+    if let Some(u) = good_runs
+        .iter()
+        .find(|r| r.judged.verdict == Verdict::Unrunnable)
+    {
+        return not_saved(
+            ws,
+            id,
+            format!("the check could not run on {gname}: {}", u.judged.reason),
+        );
     }
     if good_runs.len() < GOOD_RUNS {
-        return not_saved(ws, id, format!("the checks took longer than {} minutes.", QUALIFY_SECS / 60));
+        return not_saved(
+            ws,
+            id,
+            format!("the checks took longer than {} minutes.", QUALIFY_SECS / 60),
+        );
     }
-    let fails = good_runs.iter().filter(|r| r.judged.verdict == Verdict::Fail).count();
+    let fails = good_runs
+        .iter()
+        .filter(|r| r.judged.verdict == Verdict::Fail)
+        .count();
     if fails == GOOD_RUNS {
         let last = &good_runs[GOOD_RUNS - 1].judged;
-        return not_saved(ws, id, format!("it fails on {gname} in {GOOD_RUNS} of {GOOD_RUNS} runs ({}).", last.reason));
+        return not_saved(
+            ws,
+            id,
+            format!(
+                "it fails on {gname} in {GOOD_RUNS} of {GOOD_RUNS} runs ({}).",
+                last.reason
+            ),
+        );
     }
     if fails > 0 {
         let flake = fails as f64 / GOOD_RUNS as f64;
@@ -502,7 +649,14 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
             )?;
             Ok(())
         })?;
-        return Ok(Done::Saved(Saved { tier: "advisory", state: "flaky", good_runs: GOOD_RUNS, good_fails: fails, bad_point: None, note: None }));
+        return Ok(Done::Saved(Saved {
+            tier: "advisory",
+            state: "flaky",
+            good_runs: GOOD_RUNS,
+            good_fails: fails,
+            bad_point: None,
+            note: None,
+        }));
     }
     // Good holds 5 of 5. Does an earlier version fail it?
     let candidates = match p.bad_point {
@@ -514,17 +668,33 @@ pub fn qualify(ws: &mut Ws, id: i64, say: &dyn Fn(&str)) -> Result<Done> {
         if Instant::now() >= until {
             break;
         }
-        let Ok(btree) = point_tree(&ws.conn, c) else { continue };
-        say(&format!("Looking for an earlier version that fails it: {}.", point_name(&ws.conn, c)));
+        let Ok(btree) = point_tree(&ws.conn, c) else {
+            continue;
+        };
+        say(&format!(
+            "Looking for an earlier version that fails it: {}.",
+            point_name(&ws.conn, c)
+        ));
         let rs = raw_runs(ws, &l.spec, &btree, BAD_RUNS, until, say);
         let at = now_ns();
-        write(ws, |w| rs.iter().try_for_each(|r| record(&w.conn, id, "create", Some(&btree), r, at)))?;
+        write(ws, |w| {
+            rs.iter()
+                .try_for_each(|r| record(&w.conn, id, "create", Some(&btree), r, at))
+        })?;
         if rs.len() == BAD_RUNS && rs.iter().all(fails_at_assertion) {
             bad = Some(c);
             break;
         }
     }
-    let pr = Proof { state: "live", hat: 0.0, good, bad, runs: GOOD_RUNS, fails: 0, cold_ms: good_runs[0].ms };
+    let pr = Proof {
+        state: "live",
+        hat: 0.0,
+        good,
+        bad,
+        runs: GOOD_RUNS,
+        fails: 0,
+        cold_ms: good_runs[0].ms,
+    };
     Ok(Done::Saved(finish(ws, id, &pr, until, say)?))
 }
 
@@ -543,25 +713,47 @@ pub struct Proof {
 
 /// What a promise watches (spec 18): the files the bad-to-good change touched. Docs and tests do not count, lock files and settings do.
 pub fn watched_json(ws: &Ws, bad: &[u8; 32], good: &[u8; 32]) -> Option<String> {
-    let v: Vec<String> = crate::findbreak::changed_files_opt(ws, bad, good)?.into_iter().filter(|p| crate::gate::is_global(p) || !crate::gate::doc_like(p)).collect();
+    let v: Vec<String> = crate::findbreak::changed_files_opt(ws, bad, good)?
+        .into_iter()
+        .filter(|p| crate::gate::is_global(p) || !crate::gate::doc_like(p))
+        .collect();
     serde_json::to_string(&v).ok()
 }
 
 /// After the proof (spec 17), for `promise add` and for a repro that find-break confirmed: the tier, what the promise watches and the mutant
 /// result, written together. Only a live promise with a bad version is assessed for shadow; a flaky one never is.
-pub fn finish(ws: &mut Ws, id: i64, pr: &Proof, until: Instant, say: &dyn Fn(&str)) -> Result<Saved> {
+pub fn finish(
+    ws: &mut Ws,
+    id: i64,
+    pr: &Proof,
+    until: Instant,
+    say: &dyn Fn(&str),
+) -> Result<Saved> {
     let p = get(&ws.conn, id)?.ok_or_else(|| Error::NotFound(format!("promise {id}")))?;
     let gtree = point_tree(&ws.conn, pr.good)?;
     let btree = pr.bad.and_then(|b| point_tree(&ws.conn, b).ok());
     let watched = btree.as_ref().and_then(|bt| watched_json(ws, bt, &gtree));
     let spec = spec_of(ws, &p)?.spec;
     let a = match (&btree, pr.state) {
-        (None, _) => shadow::Assessed { tier: "unproven", note: None, killed: None, tried: None },
-        (Some(_), "flaky") => shadow::Assessed { tier: "advisory", note: None, killed: None, tried: None },
+        (None, _) => shadow::Assessed {
+            tier: "unproven",
+            note: None,
+            killed: None,
+            tried: None,
+        },
+        (Some(_), "flaky") => shadow::Assessed {
+            tier: "advisory",
+            note: None,
+            killed: None,
+            tried: None,
+        },
         (Some(bt), _) => shadow::assess(ws, &p, &spec, &gtree, bt, pr.cold_ms, until, say),
     };
     // Last, and only if time is left: one more run for the dependency record (a slow app is left without one, which keeps it always selected).
-    let deps = if pr.state == "live" && pr.cold_ms <= shadow::COLD_MS && Instant::now() + Duration::from_millis(3 * pr.cold_ms + 5000) < until {
+    let deps = if pr.state == "live"
+        && pr.cold_ms <= shadow::COLD_MS
+        && Instant::now() + Duration::from_millis(3 * pr.cold_ms + 5000) < until
+    {
         say("Recording which files the app runs.");
         crate::deps::record(ws, &spec, &gtree).and_then(|v| serde_json::to_string(&v).ok())
     } else {
@@ -574,7 +766,14 @@ pub fn finish(ws: &mut Ws, id: i64, pr: &Proof, until: Instant, say: &dyn Fn(&st
         )?;
         Ok(())
     })?;
-    Ok(Saved { tier: a.tier, state: pr.state, good_runs: pr.runs, good_fails: pr.fails, bad_point: pr.bad, note: a.note })
+    Ok(Saved {
+        tier: a.tier,
+        state: pr.state,
+        good_runs: pr.runs,
+        good_fails: pr.fails,
+        bad_point: pr.bad,
+        note: a.note,
+    })
 }
 
 /// The foreground answer to `promise add` once qualification is done (spec 24).
@@ -586,17 +785,28 @@ pub fn saved_line(db: &Connection, p: &Promise, s: &Saved) -> String {
             "Promise #{} \"{name}\" saved but flaky: it failed {} of {} runs on {good}. It stays advisory and can never stop the AI.",
             p.id, s.good_fails, s.good_runs
         ),
-        (_, "unproven") => format!("Promise #{} \"{name}\" saved as a guard only: no earlier version fails it, so Torpor can't prove it tests the new work.", p.id),
+        (_, "unproven") => format!(
+            "Promise #{} \"{name}\" saved as a guard only: no earlier version fails it, so Torpor can't prove it tests the new work.",
+            p.id
+        ),
         _ => {
             let bad = s.bad_point.map(|b| point_name(db, b)).unwrap_or_default();
-            let proof = format!("Promise #{} \"{name}\" saved. Proof: passed {} of {} on {good} and failed {BAD_RUNS} of {BAD_RUNS} on {bad}.", p.id, s.good_runs, s.good_runs);
+            let proof = format!(
+                "Promise #{} \"{name}\" saved. Proof: passed {} of {} on {good} and failed {BAD_RUNS} of {BAD_RUNS} on {bad}.",
+                p.id, s.good_runs, s.good_runs
+            );
             match (s.tier, &s.note) {
                 ("shadow", _) => format!(
                     "{proof} In shadow for now: Torpor will say when it would have stopped the AI, but does not stop it yet. It starts to stop it after one real catch or three clean days, or when you run: torpor promise block {}",
                     p.id
                 ),
-                (_, Some(n)) => format!("{proof} Advisory for now: Torpor shows failures but does not stop the AI, because {}.", n.trim_end_matches('.')),
-                _ => format!("{proof} Advisory for now: Torpor shows failures but does not stop the AI."),
+                (_, Some(n)) => format!(
+                    "{proof} Advisory for now: Torpor shows failures but does not stop the AI, because {}.",
+                    n.trim_end_matches('.')
+                ),
+                _ => format!(
+                    "{proof} Advisory for now: Torpor shows failures but does not stop the AI."
+                ),
             }
         }
     }
@@ -615,28 +825,64 @@ pub fn with_hint(reason: &str, hint: &str) -> String {
 pub fn check_line(p: &Promise, spec: &Spec, c: &Checked) -> String {
     let name = clean(&p.name, 60);
     match c.call {
-        Call::Pass => format!("Promise #{} {name}: PASS ({} checks, {}).", p.id, c.assertions, secs(c.ms)),
+        Call::Pass => format!(
+            "Promise #{} {name}: PASS ({} checks, {}).",
+            p.id,
+            c.assertions,
+            secs(c.ms)
+        ),
         Call::Fail => {
             let step = c.failed_step.unwrap_or(0);
-            let why = step.checked_sub(1).and_then(|i| spec.steps.get(i)).and_then(|s| s.why.clone()).unwrap_or_else(|| "an assertion failed".into());
-            format!("Promise #{} {name}: FAIL at step {step}: {} ({}).", p.id, clean(&why, 160), clean(c.reason.trim_end_matches('.'), 200))
+            let why = step
+                .checked_sub(1)
+                .and_then(|i| spec.steps.get(i))
+                .and_then(|s| s.why.clone())
+                .unwrap_or_else(|| "an assertion failed".into());
+            format!(
+                "Promise #{} {name}: FAIL at step {step}: {} ({}).",
+                p.id,
+                clean(&why, 160),
+                clean(c.reason.trim_end_matches('.'), 200)
+            )
         }
-        Call::Flaky => format!("Promise #{} {name}: FLAKY: it failed once and passed on a re-run, so the result can't be trusted ({}).", p.id, secs(c.ms)),
-        Call::Unrunnable => format!("Promise #{} {name}: UNRUNNABLE: {}", p.id, with_hint(&clean(&c.reason, 250), &format!("torpor promise show {}", p.id))),
+        Call::Flaky => format!(
+            "Promise #{} {name}: FLAKY: it failed once and passed on a re-run, so the result can't be trusted ({}).",
+            p.id,
+            secs(c.ms)
+        ),
+        Call::Unrunnable => format!(
+            "Promise #{} {name}: UNRUNNABLE: {}",
+            p.id,
+            with_hint(
+                &clean(&c.reason, 250),
+                &format!("torpor promise show {}", p.id)
+            )
+        ),
     }
 }
 
 pub fn tier_label(p: &Promise) -> &str {
-    if p.tier == "unproven" { "guard only" } else { p.tier.as_str() }
+    if p.tier == "unproven" {
+        "guard only"
+    } else {
+        p.tier.as_str()
+    }
 }
 
 pub fn turn_n(db: &Connection, turn_id: Option<i64>) -> Option<i64> {
-    db.query_row("SELECT n FROM turns WHERE id=?1", [turn_id?], |r| r.get(0)).optional().ok().flatten()
+    db.query_row("SELECT n FROM turns WHERE id=?1", [turn_id?], |r| r.get(0))
+        .optional()
+        .ok()
+        .flatten()
 }
 
 /// "your words, turn 12" / "the AI, turn 12".
 pub fn source_phrase(db: &Connection, p: &Promise) -> String {
-    let who = if p.source == "agent" { "the AI" } else { "your words" };
+    let who = if p.source == "agent" {
+        "the AI"
+    } else {
+        "your words"
+    };
     match turn_n(db, p.created_turn) {
         Some(n) => format!("{who}, turn {n}"),
         None => who.to_string(),
@@ -644,7 +890,9 @@ pub fn source_phrase(db: &Connection, p: &Promise) -> String {
 }
 
 fn when(ns: i64, now: i64) -> String {
-    local_stamp(ns, now).trim_start_matches("today ").to_string()
+    local_stamp(ns, now)
+        .trim_start_matches("today ")
+        .to_string()
 }
 
 /// The latest run of the kinds a person cares about: (verdict, at).
@@ -672,24 +920,44 @@ pub fn list_line(db: &Connection, p: &Promise, now: i64) -> String {
         "live" => String::new(),
         s => format!(" ({s})"),
     };
-    format!("#{} {} · {}{suffix} · {last} · {}", p.id, clean(&p.name, 60), tier_label(p), source_phrase(db, p))
+    format!(
+        "#{} {} · {}{suffix} · {last} · {}",
+        p.id,
+        clean(&p.name, 60),
+        tier_label(p),
+        source_phrase(db, p)
+    )
 }
 
 // ---------------------------------------------------------------- disputes
 
 pub fn disputes(p: &Promise) -> Vec<Value> {
-    p.disputes_json.as_deref().and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok()).unwrap_or_default()
+    p.disputes_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Vec<Value>>(s).ok())
+        .unwrap_or_default()
 }
 
 fn store_disputes(db: &Connection, id: i64, d: &[Value]) -> Result<()> {
-    db.execute("UPDATE promises SET disputes_json=?2 WHERE id=?1", params![id, serde_json::to_string(d)?])?;
+    db.execute(
+        "UPDATE promises SET disputes_json=?2 WHERE id=?1",
+        params![id, serde_json::to_string(d)?],
+    )?;
     Ok(())
 }
 
 /// The AI says a promise is wrong: it turns advisory at once and the user is asked at the next Stop.
 pub fn dispute(db: &Connection, p: &Promise, why: &str, now: i64) -> Result<()> {
     let mut d = disputes(p);
-    let prev = if p.state == "disputed" { d.iter().rev().find_map(|x| x["prev"].as_str()).unwrap_or("live").to_string() } else { p.state.clone() };
+    let prev = if p.state == "disputed" {
+        d.iter()
+            .rev()
+            .find_map(|x| x["prev"].as_str())
+            .unwrap_or("live")
+            .to_string()
+    } else {
+        p.state.clone()
+    };
     d.push(json!({"at": now, "why": clean(why, 400), "prev": prev, "valid": null, "shown": false}));
     store_disputes(db, p.id, &d)?;
     if matches!(p.state.as_str(), "live" | "flaky") {
@@ -701,14 +969,23 @@ pub fn dispute(db: &Connection, p: &Promise, why: &str, now: i64) -> Result<()> 
 /// A dispute, a drop, a flaky or a quarantine call ends a shadow wait (spec 17): no catch stays open and the clean days start again.
 pub fn end_shadow_wait(db: &Connection, id: i64) -> Result<()> {
     db.execute("UPDATE promises SET shadow_days=0 WHERE id=?1", [id])?;
-    db.execute("DELETE FROM meta WHERE key IN (?1,?2)", params![format!("would:{id}"), format!("shadow_day:{id}")])?;
+    db.execute(
+        "DELETE FROM meta WHERE key IN (?1,?2)",
+        params![format!("would:{id}"), format!("shadow_day:{id}")],
+    )?;
     Ok(())
 }
 
 /// Shadow becomes blocking (spec 17). False when the promise is not in shadow. `catch`: a true catch ended the wait.
 pub fn promote(db: &Connection, id: i64, catch: bool) -> Result<bool> {
-    let n = db.execute("UPDATE promises SET tier='blocking', catches=catches+?2 WHERE id=?1 AND tier='shadow'", params![id, catch as i64])?;
-    db.execute("DELETE FROM meta WHERE key IN (?1,?2)", params![format!("would:{id}"), format!("shadow_day:{id}")])?;
+    let n = db.execute(
+        "UPDATE promises SET tier='blocking', catches=catches+?2 WHERE id=?1 AND tier='shadow'",
+        params![id, catch as i64],
+    )?;
+    db.execute(
+        "DELETE FROM meta WHERE key IN (?1,?2)",
+        params![format!("would:{id}"), format!("shadow_day:{id}")],
+    )?;
     Ok(n > 0)
 }
 
@@ -716,7 +993,12 @@ pub fn promote(db: &Connection, id: i64, catch: bool) -> Result<bool> {
 pub fn valid_in_window(db: &Connection, now: i64) -> Result<usize> {
     let mut n = 0;
     for p in all(db, true)? {
-        n += disputes(&p).iter().filter(|d| d["valid"] == json!(true) && d["at"].as_i64().is_some_and(|a| now - a < 7 * DAY_NS)).count();
+        n += disputes(&p)
+            .iter()
+            .filter(|d| {
+                d["valid"] == json!(true) && d["at"].as_i64().is_some_and(|a| now - a < 7 * DAY_NS)
+            })
+            .count();
     }
     Ok(n)
 }
@@ -741,10 +1023,17 @@ pub fn settle_disputes(db: &Connection, id: i64, valid: bool, now: i64) -> Resul
 pub fn keep_after_dispute(db: &Connection, p: &Promise, now: i64) -> Result<bool> {
     let d = disputes(p);
     let open = d.iter().any(|x| x["valid"].is_null());
-    let prev = d.iter().rev().find_map(|x| x["prev"].as_str().map(str::to_string)).unwrap_or_else(|| "live".into());
+    let prev = d
+        .iter()
+        .rev()
+        .find_map(|x| x["prev"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "live".into());
     settle_disputes(db, p.id, false, now)?;
     if p.state == "disputed" {
-        db.execute("UPDATE promises SET state=?2 WHERE id=?1", params![p.id, prev])?;
+        db.execute(
+            "UPDATE promises SET state=?2 WHERE id=?1",
+            params![p.id, prev],
+        )?;
     }
     Ok(open)
 }
@@ -755,7 +1044,10 @@ pub fn drop_promise(db: &Connection, p: &Promise, now: i64) -> Result<()> {
     if open {
         settle_disputes(db, p.id, true, now)?;
     }
-    db.execute("UPDATE promises SET state='dropped', announced=1 WHERE id=?1", [p.id])?;
+    db.execute(
+        "UPDATE promises SET state='dropped', announced=1 WHERE id=?1",
+        [p.id],
+    )?;
     end_shadow_wait(db, p.id)
 }
 
@@ -769,11 +1061,17 @@ fn cut(s: String) -> String {
 /// Each line starts with "Torpor". Promises left `proposed` for a long time (a qualification that died) are dropped first.
 pub fn stop_notes(db: &Connection, now: i64) -> Result<Vec<String>> {
     let stale: Vec<i64> = {
-        let mut st = db.prepare("SELECT id FROM promises WHERE tier='proposed' AND state='live' AND created_at<?1")?;
-        st.query_map([now - STALE_NS], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?
+        let mut st = db.prepare(
+            "SELECT id FROM promises WHERE tier='proposed' AND state='live' AND created_at<?1",
+        )?;
+        st.query_map([now - STALE_NS], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?
     };
     for id in stale {
-        db.execute("UPDATE promises SET state='dropped', announced=0 WHERE id=?1", [id])?;
+        db.execute(
+            "UPDATE promises SET state='dropped', announced=0 WHERE id=?1",
+            [id],
+        )?;
         db.execute(
             "INSERT INTO promise_runs(promise_id,tree_id,kind,verdict,failed_step,reason,assertions_n,token_ok,ms,at) VALUES(?1,NULL,'create','UNRUNNABLE',NULL,'the check did not finish',0,0,0,?2)",
             params![id, now],
@@ -788,13 +1086,25 @@ pub fn stop_notes(db: &Connection, now: i64) -> Result<Vec<String>> {
                     .query_row("SELECT COALESCE(reason,'') FROM promise_runs WHERE promise_id=?1 ORDER BY id DESC LIMIT 1", [p.id], |r| r.get(0))
                     .optional()?
                     .unwrap_or_default();
-                notes.push(cut(format!("Torpor: promise #{} \"{name}\" was not saved: {}", p.id, if why.is_empty() { "the check did not finish." } else { &why })));
+                notes.push(cut(format!(
+                    "Torpor: promise #{} \"{name}\" was not saved: {}",
+                    p.id,
+                    if why.is_empty() {
+                        "the check did not finish."
+                    } else {
+                        &why
+                    }
+                )));
                 db.execute("UPDATE promises SET announced=1 WHERE id=?1", [p.id])?;
             }
             continue;
         }
         if !p.announced && p.tier != "proposed" {
-            let label = if p.state == "flaky" { "flaky, advisory only" } else { tier_label(&p) };
+            let label = if p.state == "flaky" {
+                "flaky, advisory only"
+            } else {
+                tier_label(&p)
+            };
             let from = match (p.source == "agent", turn_n(db, p.created_turn)) {
                 (true, Some(n)) => format!("proposed by the AI at turn {n}"),
                 (true, None) => "proposed by the AI".to_string(),
@@ -829,7 +1139,10 @@ pub fn stop_notes(db: &Connection, now: i64) -> Result<Vec<String>> {
 /// `torpor gate on|off` (user only). `gate_demoted` is set by two valid disputes in 7 days; the gate (item 6) must check both flags.
 pub fn gate_set(db: &Connection, on: bool) -> Result<()> {
     if on {
-        db.execute("DELETE FROM meta WHERE key IN ('gate_off','gate_demoted')", [])?;
+        db.execute(
+            "DELETE FROM meta WHERE key IN ('gate_off','gate_demoted')",
+            [],
+        )?;
     } else {
         meta_set(db, "gate_off", "1")?;
     }
@@ -847,13 +1160,22 @@ mod tests {
 
     #[test]
     fn hint_goes_inside_a_closing_bracket() {
-        assert_eq!(with_hint("the app did not start (npm run dev exit 1)", "torpor promise show 2"), "the app did not start (npm run dev exit 1; torpor promise show 2)");
+        assert_eq!(
+            with_hint(
+                "the app did not start (npm run dev exit 1)",
+                "torpor promise show 2"
+            ),
+            "the app did not start (npm run dev exit 1; torpor promise show 2)"
+        );
         assert_eq!(with_hint("no free port", "h"), "no free port (h)");
     }
 
     #[test]
     fn clean_strips_control_characters_and_secrets() {
-        let s = clean("line one\nline two ghp_abcdefghijklmnopqrstuvwxyz0123456789", 200);
+        let s = clean(
+            "line one\nline two ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            200,
+        );
         assert!(!s.contains('\n') && !s.contains("ghp_"), "{s}");
         assert_eq!(clean(&"x".repeat(500), 40).chars().count(), 40);
     }

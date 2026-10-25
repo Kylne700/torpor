@@ -3,7 +3,7 @@
 //! paths); the once-a-day thinning and the cap are driven through the real binary with a temp HOME.
 mod common;
 use common::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::{BTreeSet, HashMap};
 use torpor::retention::{self, GcOutcome};
 use torpor::store::Ws;
@@ -22,7 +22,13 @@ struct P {
 }
 
 fn p(name: &'static str, kind: &'static str, visible: bool, pinned: bool, age_h: i64) -> P {
-    P { name, kind, visible, pinned, age_h }
+    P {
+        name,
+        kind,
+        visible,
+        pinned,
+        age_h,
+    }
 }
 
 fn rw(sim: &Sim) -> Connection {
@@ -57,7 +63,16 @@ fn load(c: &Connection, now: i64, mut list: Vec<P>) -> HashMap<&'static str, i64
 }
 
 fn dropped(c: &Connection, ids: &HashMap<&'static str, i64>) -> BTreeSet<&'static str> {
-    ids.iter().filter(|(_, id)| c.query_row("SELECT dropped FROM points WHERE id=?1", [**id], |r| r.get::<_, i64>(0)).unwrap() == 1).map(|(n, _)| *n).collect()
+    ids.iter()
+        .filter(|(_, id)| {
+            c.query_row("SELECT dropped FROM points WHERE id=?1", [**id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                == 1
+        })
+        .map(|(n, _)| *n)
+        .collect()
 }
 
 /// A moment at 12:00 UTC, so that "N hours ago" lands on known calendar days.
@@ -94,27 +109,76 @@ fn thinning_keeps_two_days_then_one_point_per_day() {
         ],
     );
     // Text: a prompt and a command from 11 days ago and from 3 days ago.
-    for (n, started, preview) in [(1, now - 11 * D, "old prompt"), (2, now - 3 * D, "recent prompt")] {
-        c.execute("INSERT INTO turns(id,n,session_id,started_at,preview) VALUES(?1,?1,'s',?2,?3)", params![n, started, preview]).unwrap();
+    for (n, started, preview) in [
+        (1, now - 11 * D, "old prompt"),
+        (2, now - 3 * D, "recent prompt"),
+    ] {
+        c.execute(
+            "INSERT INTO turns(id,n,session_id,started_at,preview) VALUES(?1,?1,'s',?2,?3)",
+            params![n, started, preview],
+        )
+        .unwrap();
         c.execute("INSERT INTO tool_events(session_id,turn_id,tool_name,cmd_preview,at) VALUES('s',?1,'Bash',?2,?3)", params![n, format!("cmd {preview}"), started]).unwrap();
     }
 
     let n = retention::thin(&c, now, 10, false).unwrap();
     let got = dropped(&c, &ids);
-    let want: BTreeSet<&str> = ["tool_49h", "d3_b", "d3_c", "d5_b", "out_w", "old_vis", "old_pin", "old_prebash"].into_iter().collect();
+    let want: BTreeSet<&str> = [
+        "tool_49h",
+        "d3_b",
+        "d3_c",
+        "d5_b",
+        "out_w",
+        "old_vis",
+        "old_pin",
+        "old_prebash",
+    ]
+    .into_iter()
+    .collect();
     assert_eq!(got, want, "dropped points");
     assert_eq!(n, want.len(), "the count thin() reports");
 
-    let preview = |id: i64| c.query_row("SELECT preview FROM turns WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+    let preview = |id: i64| {
+        c.query_row("SELECT preview FROM turns WHERE id=?1", [id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    };
     assert_eq!(preview(1), None, "text older than W goes");
     assert_eq!(preview(2).as_deref(), Some("recent prompt"));
-    let cmd = |id: i64| c.query_row("SELECT cmd_preview FROM tool_events WHERE turn_id=?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+    let cmd = |id: i64| {
+        c.query_row(
+            "SELECT cmd_preview FROM tool_events WHERE turn_id=?1",
+            [id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+    };
     assert_eq!(cmd(1), None);
     assert_eq!(cmd(2).as_deref(), Some("cmd recent prompt"));
-    let note = |id: i64| c.query_row("SELECT note FROM points WHERE id=?1", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
-    assert_eq!(note(ids["old_prebash"]), None, "a command note older than W is cleared");
-    assert_eq!(c.query_row("SELECT COUNT(*) FROM turns", [], |r| r.get::<_, i64>(0)).unwrap(), 2, "turn rows are metadata and stay");
-    assert_eq!(c.query_row("SELECT COUNT(*) FROM tool_events", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    let note = |id: i64| {
+        c.query_row("SELECT note FROM points WHERE id=?1", [id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        note(ids["old_prebash"]),
+        None,
+        "a command note older than W is cleared"
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM turns", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2,
+        "turn rows are metadata and stay"
+    );
+    assert_eq!(
+        c.query_row("SELECT COUNT(*) FROM tool_events", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
 
     // Doing it again changes nothing.
     assert_eq!(retention::thin(&c, now, 10, false).unwrap(), 0);
@@ -124,7 +188,15 @@ fn thinning_keeps_two_days_then_one_point_per_day() {
 fn the_newest_point_is_never_thinned() {
     let (_sim, c) = empty_store();
     let now = noon();
-    let ids = load(&c, now, vec![p("a", "end", true, false, 900), p("b", "end", true, false, 800), p("last", "end", true, false, 700)]);
+    let ids = load(
+        &c,
+        now,
+        vec![
+            p("a", "end", true, false, 900),
+            p("b", "end", true, false, 800),
+            p("last", "end", true, false, 700),
+        ],
+    );
     retention::thin(&c, now, 30, false).unwrap();
     assert_eq!(dropped(&c, &ids), ["a", "b"].into_iter().collect());
     retention::thin(&c, now, 30, true).unwrap();
@@ -153,20 +225,39 @@ fn thinning_harder_keeps_a_day_and_a_week() {
         ],
     );
     retention::thin(&c, now, 30, true).unwrap();
-    let want: BTreeSet<&str> = ["tool_26h", "v31h", "v6d_b", "v8d", "v40d", "pin40d"].into_iter().collect();
+    let want: BTreeSet<&str> = ["tool_26h", "v31h", "v6d_b", "v8d", "v40d", "pin40d"]
+        .into_iter()
+        .collect();
     assert_eq!(dropped(&c, &ids), want);
 }
 
 /// Spread every point except the newest over two old calendar days (D-5 and D-3, real UTC days).
 fn age_history(c: &Connection, now: i64) -> (Vec<i64>, Vec<i64>, i64) {
-    let ids: Vec<i64> = c.prepare("SELECT id FROM points ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+    let ids: Vec<i64> = c
+        .prepare("SELECT id FROM points ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
     let newest = *ids.last().unwrap();
     let today0 = (now / D) * D;
     let (mut a, mut b) = (vec![], vec![]);
     for (i, id) in ids[..ids.len() - 1].iter().enumerate() {
-        let (group, day_back) = if i < (ids.len() - 1) / 2 { (&mut a, 5) } else { (&mut b, 3) };
+        let (group, day_back) = if i < (ids.len() - 1) / 2 {
+            (&mut a, 5)
+        } else {
+            (&mut b, 3)
+        };
         group.push(*id);
-        c.execute("UPDATE points SET created_at=?2 WHERE id=?1", params![id, today0 - day_back * D + 10 * H + i as i64 * 60_000_000_000]).unwrap();
+        c.execute(
+            "UPDATE points SET created_at=?2 WHERE id=?1",
+            params![
+                id,
+                today0 - day_back * D + 10 * H + i as i64 * 60_000_000_000
+            ],
+        )
+        .unwrap();
     }
     (a, b, newest)
 }
@@ -187,26 +278,75 @@ fn thinning_runs_at_session_start_at_most_once_a_day() {
     let now = now_ns();
     let (day5, day3, newest) = age_history(&c, now);
     assert!(day5.len() >= 3 && day3.len() >= 3);
-    c.execute("DELETE FROM meta WHERE key='last_thin'", []).unwrap();
-    let alive = |ids: &[i64]| -> Vec<i64> { ids.iter().copied().filter(|id| c.query_row("SELECT dropped FROM points WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap() == 0).collect() };
-    let last_visible = |ids: &[i64]| -> i64 { ids.iter().copied().filter(|id| c.query_row("SELECT visible FROM points WHERE id=?1", [id], |r| r.get::<_, i64>(0)).unwrap() == 1).max().unwrap() };
+    c.execute("DELETE FROM meta WHERE key='last_thin'", [])
+        .unwrap();
+    let alive = |ids: &[i64]| -> Vec<i64> {
+        ids.iter()
+            .copied()
+            .filter(|id| {
+                c.query_row("SELECT dropped FROM points WHERE id=?1", [id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+                    == 0
+            })
+            .collect()
+    };
+    let last_visible = |ids: &[i64]| -> i64 {
+        ids.iter()
+            .copied()
+            .filter(|id| {
+                c.query_row("SELECT visible FROM points WHERE id=?1", [id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap()
+                    == 1
+            })
+            .max()
+            .unwrap()
+    };
 
     let mut t = sim.second_session();
     t.session_start();
-    assert_eq!(alive(&day5), vec![last_visible(&day5)], "day 5: only the last visible point stays");
-    assert_eq!(alive(&day3), vec![last_visible(&day3)], "day 3: only the last visible point stays");
+    assert_eq!(
+        alive(&day5),
+        vec![last_visible(&day5)],
+        "day 5: only the last visible point stays"
+    );
+    assert_eq!(
+        alive(&day3),
+        vec![last_visible(&day3)],
+        "day 3: only the last visible point stays"
+    );
     assert!(alive(&[newest]) == vec![newest], "the newest stays");
-    let stamp: i64 = c.query_row("SELECT value FROM meta WHERE key='last_thin'", [], |r| r.get::<_, String>(0)).unwrap().parse().unwrap();
-    assert!((now_ns() - stamp).abs() < 30 * 1_000_000_000, "last_thin is stamped");
+    let stamp: i64 = c
+        .query_row("SELECT value FROM meta WHERE key='last_thin'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        (now_ns() - stamp).abs() < 30 * 1_000_000_000,
+        "last_thin is stamped"
+    );
 
     // Within a day: not again. A point that would be thinned stays.
     c.execute("INSERT INTO points(id,kind,visible,tree_id,created_at) SELECT 9001,'end',1,tree_id,?1 FROM points WHERE id=?2", params![(now / D) * D - 4 * D, newest]).unwrap();
     c.execute("INSERT INTO points(id,kind,visible,tree_id,created_at) SELECT 9002,'end',1,tree_id,?1 FROM points WHERE id=?2", params![(now / D) * D - 4 * D + H, newest]).unwrap();
     let mut u = t.second_session();
     u.session_start();
-    assert_eq!(alive(&[9001, 9002]), vec![9001, 9002], "thinning ran twice within a day");
+    assert_eq!(
+        alive(&[9001, 9002]),
+        vec![9001, 9002],
+        "thinning ran twice within a day"
+    );
     // A day later: it does.
-    c.execute("UPDATE meta SET value=?1 WHERE key='last_thin'", [(now_ns() - 25 * H).to_string()]).unwrap();
+    c.execute(
+        "UPDATE meta SET value=?1 WHERE key='last_thin'",
+        [(now_ns() - 25 * H).to_string()],
+    )
+    .unwrap();
     let mut v = u.second_session();
     v.session_start();
     assert_eq!(alive(&[9001, 9002]), vec![9002]);
@@ -226,22 +366,46 @@ fn a_store_over_two_gigabytes_thins_harder_and_says_so() {
         sim.session_end("other");
         let c = rw(&sim);
         let today0 = (now_ns() / D) * D;
-        let ids: Vec<i64> = c.prepare("SELECT id FROM points ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
+        let ids: Vec<i64> = c
+            .prepare("SELECT id FROM points ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
         // One visible point ten days old (kept by normal thinning, dropped by the harder kind), then the rest.
         let old = ids[0];
-        c.execute("UPDATE points SET created_at=?2 WHERE id=?1", params![old, today0 - 10 * D + 10 * H]).unwrap();
-        c.execute("UPDATE points SET visible=1 WHERE id=?1", [old]).unwrap();
-        c.execute("DELETE FROM meta WHERE key='last_thin'", []).unwrap();
+        c.execute(
+            "UPDATE points SET created_at=?2 WHERE id=?1",
+            params![old, today0 - 10 * D + 10 * H],
+        )
+        .unwrap();
+        c.execute("UPDATE points SET visible=1 WHERE id=?1", [old])
+            .unwrap();
+        c.execute("DELETE FROM meta WHERE key='last_thin'", [])
+            .unwrap();
         if over {
             c.execute("INSERT INTO blobs(id,kind,size,stored_size,created_at) VALUES(randomblob(32),'file',?1,?1,?2)", params![3i64 << 30, now_ns()]).unwrap();
         }
         let mut t = sim.second_session();
         t.session_start();
-        let gone: i64 = c.query_row("SELECT dropped FROM points WHERE id=?1", [old], |r| r.get(0)).unwrap();
-        let harder_at: Option<String> = c.query_row("SELECT value FROM meta WHERE key='thinned_harder_at'", [], |r| r.get(0)).ok();
-        let v: serde_json::Value = serde_json::from_str(t.cli(&["status", "--json"]).stdout.trim()).unwrap();
+        let gone: i64 = c
+            .query_row("SELECT dropped FROM points WHERE id=?1", [old], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let harder_at: Option<String> = c
+            .query_row(
+                "SELECT value FROM meta WHERE key='thinned_harder_at'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let v: serde_json::Value =
+            serde_json::from_str(t.cli(&["status", "--json"]).stdout.trim()).unwrap();
         let notes = v["notes"].to_string();
-        let sentence = "Torpor reached its 2 GB limit for this project and kept fewer old save points.";
+        let sentence =
+            "Torpor reached its 2 GB limit for this project and kept fewer old save points.";
         if over {
             assert_eq!(gone, 1, "over the cap the ten-day-old point goes");
             assert!(harder_at.is_some());
@@ -268,7 +432,10 @@ fn noise(seed: u64) -> Vec<u8> {
 
 fn loose_files(sim: &Sim) -> usize {
     let mut n = 0;
-    for d in std::fs::read_dir(sim.ws_dir().join("objects")).unwrap().flatten() {
+    for d in std::fs::read_dir(sim.ws_dir().join("objects"))
+        .unwrap()
+        .flatten()
+    {
         n += std::fs::read_dir(d.path()).unwrap().flatten().count();
     }
     n
@@ -302,28 +469,60 @@ fn gc_deletes_only_what_nothing_reaches_and_only_after_the_grace() {
     let (thome, root) = (sim.env.thome.clone(), sim.env.proj.clone());
     let real = now_ns();
     let mut ws = Ws::open_in(&thome, &root, false).unwrap();
-    ws.conn.execute("UPDATE heartbeat SET last_at = last_at - ?1", [H]).unwrap(); // the session went quiet an hour ago
+    ws.conn
+        .execute("UPDATE heartbeat SET last_at = last_at - ?1", [H])
+        .unwrap(); // the session went quiet an hour ago
     let blobs0 = count(&ws.conn, "SELECT COUNT(*) FROM blobs");
 
     // Nothing is unreachable yet, and everything is younger than the grace anyway.
-    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 20 * 60_000_000_000).unwrap() else { panic!("not quiet") };
+    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 20 * 60_000_000_000).unwrap()
+    else {
+        panic!("not quiet")
+    };
     assert_eq!((s.blobs, s.orphan_files), (0, 0));
     assert_eq!(count(&ws.conn, "SELECT COUNT(*) FROM blobs"), blobs0);
 
     // Everything but the newest save point ages out. The old blobs are unreachable now, but still inside the grace.
     let dropped = retention::thin(&ws.conn, real + 60 * D, 30, false).unwrap();
     assert!(dropped >= 4, "dropped {dropped}");
-    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 20 * 60_000_000_000).unwrap() else { panic!("not quiet") };
-    assert_eq!((s.blobs, s.orphan_files), (0, 0), "the grace period protects young blobs and young stray files");
-    assert_eq!(loose_files(&sim), loose0 + 2, "no file went: the five versions and the two stray files are all still there");
+    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 20 * 60_000_000_000).unwrap()
+    else {
+        panic!("not quiet")
+    };
+    assert_eq!(
+        (s.blobs, s.orphan_files),
+        (0, 0),
+        "the grace period protects young blobs and young stray files"
+    );
+    assert_eq!(
+        loose_files(&sim),
+        loose0 + 2,
+        "no file went: the five versions and the two stray files are all still there"
+    );
 
     // Two days later: the dead go, the live stay.
-    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 2 * D).unwrap() else { panic!("not quiet") };
+    let GcOutcome::Done(s) = retention::gc(&mut ws, false, real + 2 * D).unwrap() else {
+        panic!("not quiet")
+    };
     assert!(s.blobs >= 4, "{s:?}");
     assert_eq!(s.orphan_files, 2, "the stray file and the temp file");
-    assert_eq!(count(&ws.conn, "SELECT COUNT(*) FROM blobs"), blobs0 - s.blobs as i64);
-    assert_eq!(loose_files(&sim), 1, "only the newest big file is left on disk");
-    assert_eq!(count(&ws.conn, "SELECT COUNT(*) FROM stat_cache WHERE blob_id NOT IN (SELECT id FROM blobs)"), 0, "a cached hash never names a blob that is gone");
+    assert_eq!(
+        count(&ws.conn, "SELECT COUNT(*) FROM blobs"),
+        blobs0 - s.blobs as i64
+    );
+    assert_eq!(
+        loose_files(&sim),
+        1,
+        "only the newest big file is left on disk"
+    );
+    assert_eq!(
+        count(
+            &ws.conn,
+            "SELECT COUNT(*) FROM stat_cache WHERE blob_id NOT IN (SELECT id FROM blobs)"
+        ),
+        0,
+        "a cached hash never names a blob that is gone"
+    );
     drop(ws);
     sim.verify_point(sim.max_point());
 
@@ -348,11 +547,23 @@ fn gc_waits_for_a_quiet_moment() {
     let now = now_ns();
     {
         let mut ws = Ws::open_in(&thome, &root, false).unwrap();
-        assert!(matches!(retention::gc(&mut ws, false, now), Ok(GcOutcome::NotQuiet)), "a hook ran a moment ago");
-        assert!(matches!(retention::gc(&mut ws, true, now), Ok(GcOutcome::NotQuiet)), "and its session is still open");
+        assert!(
+            matches!(retention::gc(&mut ws, false, now), Ok(GcOutcome::NotQuiet)),
+            "a hook ran a moment ago"
+        );
+        assert!(
+            matches!(retention::gc(&mut ws, true, now), Ok(GcOutcome::NotQuiet)),
+            "and its session is still open"
+        );
     }
     sim.session_end("other");
     let mut ws = Ws::open_in(&thome, &root, false).unwrap();
-    assert!(matches!(retention::gc(&mut ws, true, now), Ok(GcOutcome::Done(_))), "--if-quiet ignores sessions that ended");
-    assert!(matches!(retention::gc(&mut ws, false, now), Ok(GcOutcome::NotQuiet)), "a plain gc still waits ten minutes");
+    assert!(
+        matches!(retention::gc(&mut ws, true, now), Ok(GcOutcome::Done(_))),
+        "--if-quiet ignores sessions that ended"
+    );
+    assert!(
+        matches!(retention::gc(&mut ws, false, now), Ok(GcOutcome::NotQuiet)),
+        "a plain gc still waits ten minutes"
+    );
 }

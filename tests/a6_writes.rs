@@ -31,7 +31,10 @@ fn mask() -> WatchMask {
 
 impl Watch {
     fn new() -> Watch {
-        Watch { ino: Inotify::init().unwrap(), dirs: HashMap::new() }
+        Watch {
+            ino: Inotify::init().unwrap(),
+            dirs: HashMap::new(),
+        }
     }
 
     /// Watch `dir` and every folder below it (links are not followed).
@@ -42,7 +45,9 @@ impl Watch {
             }
             Err(_) => return, // already gone again
         }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in rd.flatten() {
             if e.file_type().is_ok_and(|t| t.is_dir()) {
                 self.add_tree(&e.path());
@@ -62,16 +67,24 @@ impl Watch {
                 Err(e) => panic!("inotify: {e}"),
             };
             for ev in events {
-                assert!(!ev.mask.contains(EventMask::Q_OVERFLOW), "the inotify queue overflowed: events were lost");
+                assert!(
+                    !ev.mask.contains(EventMask::Q_OVERFLOW),
+                    "the inotify queue overflowed: events were lost"
+                );
                 if ev.mask.contains(EventMask::IGNORED) {
                     continue;
                 }
-                let Some(dir) = self.dirs.get(&ev.wd) else { continue };
+                let Some(dir) = self.dirs.get(&ev.wd) else {
+                    continue;
+                };
                 let path = match ev.name {
                     Some(n) => dir.join(n),
                     None => dir.clone(),
                 };
-                if ev.mask.contains(EventMask::ISDIR) && (ev.mask.contains(EventMask::CREATE) || ev.mask.contains(EventMask::MOVED_TO)) {
+                if ev.mask.contains(EventMask::ISDIR)
+                    && (ev.mask.contains(EventMask::CREATE)
+                        || ev.mask.contains(EventMask::MOVED_TO))
+                {
                     fresh.push(path.clone());
                 }
                 got.push((path, ev.mask));
@@ -87,14 +100,21 @@ impl Watch {
 type Seen = Rc<RefCell<Vec<(usize, String, PathBuf, EventMask)>>>;
 
 /// Make every Torpor process of `sim` an observed step: events before it are thrown away, events during it are kept.
-fn attach(sim: &Sim, w: &Rc<RefCell<Watch>>, seen: &Seen, thrown: &Rc<Cell<usize>>, step: &Rc<Cell<usize>>) {
+fn attach(
+    sim: &Sim,
+    w: &Rc<RefCell<Watch>>,
+    seen: &Seen,
+    thrown: &Rc<Cell<usize>>,
+    step: &Rc<Cell<usize>>,
+) {
     let (w, seen, thrown, step) = (w.clone(), seen.clone(), thrown.clone(), step.clone());
     *sim.observer.borrow_mut() = Some(Box::new(move |after, label| {
         let events = w.borrow_mut().drain();
         if after {
             step.set(step.get() + 1);
             for (p, m) in events {
-                seen.borrow_mut().push((step.get(), label.to_string(), p, m));
+                seen.borrow_mut()
+                    .push((step.get(), label.to_string(), p, m));
             }
         } else {
             thrown.set(thrown.get() + events.len());
@@ -115,7 +135,11 @@ fn git(env: &Env, args: &[&str]) {
         .env("GIT_COMMITTER_EMAIL", "t@example.com")
         .output()
         .unwrap();
-    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 }
 
 #[test]
@@ -141,13 +165,21 @@ fn a6_torpor_writes_only_inside_its_store_and_the_key_file() {
     let w = Rc::new(RefCell::new(Watch::new()));
     w.borrow_mut().add_tree(&env.proj);
     w.borrow_mut().add_tree(&env.home);
-    assert!(w.borrow().dirs.values().any(|p| p.starts_with(env.proj.join(".git").join("objects"))), ".git must be watched too");
+    assert!(
+        w.borrow()
+            .dirs
+            .values()
+            .any(|p| p.starts_with(env.proj.join(".git").join("objects"))),
+        ".git must be watched too"
+    );
     let (seen, thrown, step): (Seen, Rc<Cell<usize>>, Rc<Cell<usize>>) = Default::default();
     attach(&sim, &w, &seen, &thrown, &step);
 
     // One long session that uses every kind of event.
     let home = env.home.to_string_lossy().into_owned();
-    let git_env = format!("export HOME='{home}' GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com");
+    let git_env = format!(
+        "export HOME='{home}' GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com"
+    );
     sim.session_start();
     sim.prompt("turn one");
     sim.edit("src/main.rs", "fn main() { println!(\"hi\"); }\n");
@@ -186,29 +218,66 @@ fn a6_torpor_writes_only_inside_its_store_and_the_key_file() {
     // The evidence: only the key file and its two parent folders may have been touched, in one single step.
     let seen = seen.borrow();
     let allowed = env.home.join(".config");
-    let (key, bad): (Vec<_>, Vec<_>) = seen.iter().partition(|(_, _, p, _)| p.starts_with(&allowed));
-    assert!(bad.is_empty(), "Torpor wrote outside its store:\n{}", bad.iter().map(|(s, l, p, m)| format!("  step {s} ({l}): {} {m:?}", p.display())).collect::<Vec<_>>().join("\n"));
+    let (key, bad): (Vec<_>, Vec<_>) = seen
+        .iter()
+        .partition(|(_, _, p, _)| p.starts_with(&allowed));
+    assert!(
+        bad.is_empty(),
+        "Torpor wrote outside its store:\n{}",
+        bad.iter()
+            .map(|(s, l, p, m)| format!("  step {s} ({l}): {} {m:?}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     let key_steps: BTreeSet<usize> = key.iter().map(|(s, ..)| *s).collect();
-    assert_eq!(key_steps.len(), 1, "the key file is made by exactly one hook, got steps {key_steps:?}: {key:?}");
+    assert_eq!(
+        key_steps.len(),
+        1,
+        "the key file is made by exactly one hook, got steps {key_steps:?}: {key:?}"
+    );
     assert!(env.key.exists(), "the key file exists afterwards");
     for (_, _, p, _) in &key {
-        assert!(p.starts_with(env.key.parent().unwrap()) || *p == allowed || p == env.key.parent().unwrap(), "unexpected path under .config: {}", p.display());
+        assert!(
+            p.starts_with(env.key.parent().unwrap())
+                || *p == allowed
+                || p == env.key.parent().unwrap(),
+            "unexpected path under .config: {}",
+            p.display()
+        );
     }
-    assert!(step.get() >= 35, "only {} observed steps: the scenario did not run", step.get());
-    assert!(thrown.get() > 20, "the watch saw only {} harness events: it is not watching", thrown.get());
+    assert!(
+        step.get() >= 35,
+        "only {} observed steps: the scenario did not run",
+        step.get()
+    );
+    assert!(
+        thrown.get() > 20,
+        "the watch saw only {} harness events: it is not watching",
+        thrown.get()
+    );
 
     // The machinery itself: a write inside .git, a new folder and a file inside it, a file in HOME must all show up.
     let mut wb = w.borrow_mut();
     wb.drain();
     std::fs::write(env.proj.join(".git").join("probe"), "x").unwrap();
     let got: Vec<PathBuf> = wb.drain().into_iter().map(|(p, _)| p).collect();
-    assert!(got.contains(&env.proj.join(".git").join("probe")), "the watch missed a write inside .git: {got:?}");
+    assert!(
+        got.contains(&env.proj.join(".git").join("probe")),
+        "the watch missed a write inside .git: {got:?}"
+    );
     std::fs::create_dir_all(env.proj.join("newdir/inner")).unwrap();
     wb.drain();
     std::fs::write(env.proj.join("newdir/inner/f.txt"), "x").unwrap();
     std::fs::write(env.home.join("somefile"), "x").unwrap();
     let got: Vec<PathBuf> = wb.drain().into_iter().map(|(p, _)| p).collect();
-    for want in [env.proj.join("newdir/inner/f.txt"), env.home.join("somefile")] {
-        assert!(got.contains(&want), "the watch missed a write to {}: {got:?}", want.display());
+    for want in [
+        env.proj.join("newdir/inner/f.txt"),
+        env.home.join("somefile"),
+    ] {
+        assert!(
+            got.contains(&want),
+            "the watch missed a write to {}: {got:?}",
+            want.display()
+        );
     }
 }

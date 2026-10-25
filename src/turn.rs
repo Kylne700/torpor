@@ -1,6 +1,6 @@
 //! Sessions, turns, heartbeat and tool-event rows (spec section 4). Plain SQL helpers; no scanning here.
 use crate::util::*;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Clone, Debug)]
 pub struct Turn {
@@ -16,7 +16,15 @@ pub struct Turn {
 const TURN_COLS: &str = "id,n,session_id,prompt_id,end_kind,start_point,end_point";
 
 fn turn_of(r: &rusqlite::Row) -> rusqlite::Result<Turn> {
-    Ok(Turn { id: r.get(0)?, n: r.get(1)?, session_id: r.get(2)?, prompt_id: r.get(3)?, end_kind: r.get(4)?, start_point: r.get(5)?, end_point: r.get(6)? })
+    Ok(Turn {
+        id: r.get(0)?,
+        n: r.get(1)?,
+        session_id: r.get(2)?,
+        prompt_id: r.get(3)?,
+        end_kind: r.get(4)?,
+        start_point: r.get(5)?,
+        end_point: r.get(6)?,
+    })
 }
 
 pub fn heartbeat(db: &Connection, session: &str, event: &str, now: i64) -> Result<()> {
@@ -41,7 +49,8 @@ pub fn touch_session(db: &Connection, s: &SessionInfo, now: i64, restart: bool) 
     db.prepare_cached("UPDATE sessions SET last_seen=?2, transcript_path=COALESCE(?3,transcript_path), permission_mode=COALESCE(?4,permission_mode), source=COALESCE(?5,source) WHERE id=?1")?
         .execute(params![s.id, now, s.transcript_path, s.permission_mode, s.source])?;
     if restart {
-        db.prepare_cached("UPDATE sessions SET ended_at=NULL, end_reason=NULL WHERE id=?1")?.execute([s.id])?;
+        db.prepare_cached("UPDATE sessions SET ended_at=NULL, end_reason=NULL WHERE id=?1")?
+            .execute([s.id])?;
     }
     Ok(())
 }
@@ -64,33 +73,65 @@ pub fn open_of(db: &Connection, session: &str) -> Result<Option<Turn>> {
 /// The session's newest turn, open or ended.
 pub fn newest_of(db: &Connection, session: &str) -> Result<Option<Turn>> {
     Ok(db
-        .prepare_cached(&format!("SELECT {TURN_COLS} FROM turns WHERE session_id=?1 ORDER BY id DESC LIMIT 1"))?
+        .prepare_cached(&format!(
+            "SELECT {TURN_COLS} FROM turns WHERE session_id=?1 ORDER BY id DESC LIMIT 1"
+        ))?
         .query_row([session], turn_of)
         .optional()?)
 }
 
 pub fn by_id(db: &Connection, id: i64) -> Result<Option<Turn>> {
-    Ok(db.prepare_cached(&format!("SELECT {TURN_COLS} FROM turns WHERE id=?1"))?.query_row([id], turn_of).optional()?)
+    Ok(db
+        .prepare_cached(&format!("SELECT {TURN_COLS} FROM turns WHERE id=?1"))?
+        .query_row([id], turn_of)
+        .optional()?)
 }
 
 /// Number of prompts this session has submitted so far (for the `seq-<n>` key when prompt_id is missing).
 pub fn count_of(db: &Connection, session: &str) -> Result<i64> {
-    Ok(db.query_row("SELECT COUNT(*) FROM turns WHERE session_id=?1", [session], |r| r.get(0))?)
+    Ok(db.query_row(
+        "SELECT COUNT(*) FROM turns WHERE session_id=?1",
+        [session],
+        |r| r.get(0),
+    )?)
 }
 
-pub fn create(db: &Connection, session: &str, prompt_id: &str, now: i64, preview: Option<&str>, origin: &str) -> Result<Turn> {
+pub fn create(
+    db: &Connection,
+    session: &str,
+    prompt_id: &str,
+    now: i64,
+    preview: Option<&str>,
+    origin: &str,
+) -> Result<Turn> {
     let n: i64 = db.query_row("SELECT COALESCE(MAX(n),0)+1 FROM turns", [], |r| r.get(0))?;
     db.prepare_cached("INSERT INTO turns(n,session_id,prompt_id,started_at,end_kind,origin,origin_by,preview) VALUES(?1,?2,?3,?4,'open',?5,'none',?6)")?
         .execute(params![n, session, prompt_id, now, origin, preview])?;
-    Ok(Turn { id: db.last_insert_rowid(), n, session_id: session.to_string(), prompt_id: Some(prompt_id.to_string()), end_kind: "open".into(), start_point: None, end_point: None })
+    Ok(Turn {
+        id: db.last_insert_rowid(),
+        n,
+        session_id: session.to_string(),
+        prompt_id: Some(prompt_id.to_string()),
+        end_kind: "open".into(),
+        start_point: None,
+        end_point: None,
+    })
 }
 
 pub fn set_start_point(db: &Connection, turn: i64, point: Option<i64>) -> Result<()> {
-    db.prepare_cached("UPDATE turns SET start_point=?2 WHERE id=?1")?.execute(params![turn, point])?;
+    db.prepare_cached("UPDATE turns SET start_point=?2 WHERE id=?1")?
+        .execute(params![turn, point])?;
     Ok(())
 }
 
-pub fn close(db: &Connection, turn: i64, kind: &str, end_point: Option<i64>, now: i64, background_json: Option<&str>) -> Result<()> {
+pub fn close(
+    db: &Connection,
+    turn: i64,
+    kind: &str,
+    end_point: Option<i64>,
+    now: i64,
+    background_json: Option<&str>,
+) -> Result<()> {
     db.prepare_cached("UPDATE turns SET end_kind=?2, ended_at=?3, end_point=COALESCE(?4,end_point), background_json=?5 WHERE id=?1")?
         .execute(params![turn, kind, now, end_point, background_json])?;
     Ok(())
@@ -98,17 +139,20 @@ pub fn close(db: &Connection, turn: i64, kind: &str, end_point: Option<i64>, now
 
 /// A closed turn whose prompt_id shows up again (Stop-block continuation, task notification) is open again.
 pub fn reopen(db: &Connection, turn: i64) -> Result<()> {
-    db.prepare_cached("UPDATE turns SET end_kind='open', ended_at=NULL WHERE id=?1")?.execute([turn])?;
+    db.prepare_cached("UPDATE turns SET end_kind='open', ended_at=NULL WHERE id=?1")?
+        .execute([turn])?;
     Ok(())
 }
 
 pub fn bump_bash(db: &Connection, turn: i64) -> Result<()> {
-    db.prepare_cached("UPDATE turns SET bash_count=bash_count+1 WHERE id=?1")?.execute([turn])?;
+    db.prepare_cached("UPDATE turns SET bash_count=bash_count+1 WHERE id=?1")?
+        .execute([turn])?;
     Ok(())
 }
 
 pub fn set_origin(db: &Connection, turn: i64, origin: &str, by: &str) -> Result<()> {
-    db.prepare_cached("UPDATE turns SET origin=?2, origin_by=?3 WHERE id=?1")?.execute(params![turn, origin, by])?;
+    db.prepare_cached("UPDATE turns SET origin=?2, origin_by=?3 WHERE id=?1")?
+        .execute(params![turn, origin, by])?;
     Ok(())
 }
 
@@ -157,7 +201,16 @@ pub fn net_changes(db: &Connection, turn: i64, classes: &str) -> Result<Vec<Net>
                 e.tool_use_id = tool_use_id;
             }
             None => {
-                net.insert(path.clone(), Net { path, old, new, class, tool_use_id });
+                net.insert(
+                    path.clone(),
+                    Net {
+                        path,
+                        old,
+                        new,
+                        class,
+                        tool_use_id,
+                    },
+                );
             }
         }
     }

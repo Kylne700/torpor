@@ -75,7 +75,10 @@ impl From<serde_json::Error> for Error {
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         if let rusqlite::Error::SqliteFailure(f, _) = &e {
-            if matches!(f.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) {
+            if matches!(
+                f.code,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+            ) {
                 return Error::Busy;
             }
         }
@@ -145,7 +148,9 @@ pub fn local_hhmm(ns: i64) -> String {
 
 /// "Oct 20" in local time.
 pub fn local_md(ns: i64) -> String {
-    const M: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const M: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let a = local_tm(ns);
     format!("{} {}", M[(a.tm_mon as usize).min(11)], a.tm_mday)
 }
@@ -162,8 +167,16 @@ pub fn local_stamp(ns: i64, now: i64) -> String {
 /// Local midnight of a `YYYY-MM-DD` date, in ns; None when the text is not a real date.
 pub fn parse_local_date(s: &str) -> Option<i64> {
     let mut it = s.split('-');
-    let (y, m, d): (i32, i32, i32) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?);
-    if it.next().is_some() || !(1971..=2100).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    let (y, m, d): (i32, i32, i32) = (
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    );
+    if it.next().is_some()
+        || !(1971..=2100).contains(&y)
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&d)
+    {
         return None;
     }
     // SAFETY: mktime only reads and normalizes the zeroed tm we pass.
@@ -210,13 +223,23 @@ pub fn fault_point(domain: &str) {
     use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
     static RESTORE: AtomicU64 = AtomicU64::new(0);
     static CAPTURE: AtomicU64 = AtomicU64::new(0);
-    let Ok(spec) = std::env::var("TORPOR_FAULT") else { return };
-    let Some((d, k)) = spec.split_once(':') else { return };
+    let Ok(spec) = std::env::var("TORPOR_FAULT") else {
+        return;
+    };
+    let Some((d, k)) = spec.split_once(':') else {
+        return;
+    };
     let Ok(k) = k.parse::<u64>() else { return };
     if d != domain {
         return;
     }
-    let n = if domain == "restore" { &RESTORE } else { &CAPTURE }.fetch_add(1, SeqCst) + 1;
+    let n = if domain == "restore" {
+        &RESTORE
+    } else {
+        &CAPTURE
+    }
+    .fetch_add(1, SeqCst)
+        + 1;
     if k == 0 {
         eprintln!("fault-step {domain} {n}");
     } else if n == k {

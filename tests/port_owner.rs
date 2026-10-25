@@ -25,7 +25,10 @@ struct Other {
 
 impl Other {
     fn start(status: u16) -> Other {
-        let dir = tempfile::Builder::new().prefix("torpor-other").tempdir().unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("torpor-other")
+            .tempdir()
+            .unwrap();
         let log = dir.path().join("seen.log");
         let mut child = Command::new("node")
             .args(["-e", OTHER_JS])
@@ -38,14 +41,28 @@ impl Other {
             .spawn()
             .unwrap();
         let mut line = String::new();
-        BufReader::new(child.stdout.as_mut().unwrap()).read_line(&mut line).unwrap();
-        let port = line.trim().parse().unwrap_or_else(|_| panic!("the other process said {line:?}, not its port"));
-        Other { child, port, log, _dir: dir }
+        BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let port = line
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("the other process said {line:?}, not its port"));
+        Other {
+            child,
+            port,
+            log,
+            _dir: dir,
+        }
     }
 
     /// The request lines it has answered, oldest first.
     fn seen(&self) -> Vec<String> {
-        fs::read_to_string(&self.log).unwrap_or_default().lines().map(String::from).collect()
+        fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect()
     }
 
     #[cfg(target_os = "linux")]
@@ -76,12 +93,22 @@ fn slow_login(secs: &str) -> Sim {
 fn an_app_that_ends_at_once_because_its_port_is_taken_is_started_once_more() {
     let s = slow_login("0.3"); // the app must end within 3 s of its start, also on a slow runner
     let other = Other::start(503);
-    let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &other.port.to_string())]);
+    let c = s.cli_env(
+        &["check", "1"],
+        &[("TORPOR_TEST_PORT", &other.port.to_string())],
+    );
     assert_eq!(c.code, 0, "{}", why(&c));
-    assert!(c.stdout.contains("Promise #1 login works: PASS"), "{}", why(&c));
+    assert!(
+        c.stdout.contains("Promise #1 login works: PASS"),
+        "{}",
+        why(&c)
+    );
     // The first start was on the taken port: the ready path was asked there, and nothing else.
     let seen = other.seen();
-    assert!(!seen.is_empty() && seen.iter().all(|l| l == "GET /login"), "{seen:?}");
+    assert!(
+        !seen.is_empty() && seen.iter().all(|l| l == "GET /login"),
+        "{seen:?}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -89,9 +116,16 @@ fn an_app_that_ends_at_once_because_its_port_is_taken_is_started_once_more() {
 fn an_answer_from_another_process_is_not_the_apps_and_the_app_is_started_once_more() {
     let s = slow_login("1");
     let mut other = Other::start(200);
-    let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &other.port.to_string())]);
+    let c = s.cli_env(
+        &["check", "1"],
+        &[("TORPOR_TEST_PORT", &other.port.to_string())],
+    );
     assert_eq!(c.code, 0, "{}", why(&c));
-    assert!(c.stdout.contains("Promise #1 login works: PASS"), "{}", why(&c));
+    assert!(
+        c.stdout.contains("Promise #1 login works: PASS"),
+        "{}",
+        why(&c)
+    );
     // It was asked for the ready path once, and no step of the check ran against it.
     assert_eq!(other.seen(), ["GET /login"]);
     assert!(other.alive(), "Torpor stops only its own app");
@@ -103,9 +137,22 @@ fn a_port_that_stays_taken_makes_the_check_unrunnable_and_the_other_process_is_l
     let s = slow_login("1");
     let mut other = Other::start(200);
     let (p, pid) = (other.port, other.child.id());
-    let c = s.cli_env(&["check", "1"], &[("TORPOR_TEST_PORT", &format!("{p},{p}"))]);
+    let c = s.cli_env(
+        &["check", "1"],
+        &[("TORPOR_TEST_PORT", &format!("{p},{p}"))],
+    );
     assert_eq!(c.code, 1, "{}", why(&c));
-    assert!(c.stdout.contains(&format!("UNRUNNABLE: port {p} is used by another process (pid {pid}), not by the app")), "{}", why(&c));
-    assert_eq!(other.seen(), ["GET /login", "GET /login"], "one ready question for each start, no step");
+    assert!(
+        c.stdout.contains(&format!(
+            "UNRUNNABLE: port {p} is used by another process (pid {pid}), not by the app"
+        )),
+        "{}",
+        why(&c)
+    );
+    assert_eq!(
+        other.seen(),
+        ["GET /login", "GET /login"],
+        "one ready question for each start, no step"
+    );
     assert!(other.alive(), "Torpor stops only its own app");
 }

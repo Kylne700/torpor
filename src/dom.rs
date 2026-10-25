@@ -23,7 +23,15 @@ const INSTALL_MJS: &str = include_str!("../assets/runner/install.mjs");
 const WARM_UP_SECS: u64 = 30;
 /// The runner's own limits add up to about 70 s (browser start 30, the check 30 plus one step, closing 3); this is later than all of them.
 const RUNNER_SECS: u64 = 90;
-const CHROMIUM_NAMES: [&str; 7] = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable", "brave-browser", "microsoft-edge", "microsoft-edge-stable"];
+const CHROMIUM_NAMES: [&str; 7] = [
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "google-chrome-stable",
+    "brave-browser",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+];
 const MAC_BROWSERS: [&str; 4] = [
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -39,17 +47,25 @@ pub fn runner_dir(home: &Path) -> PathBuf {
 
 /// The package folder holds a package.json only once the installer has moved the checked package into place (its last step).
 pub fn installed(dir: &Path) -> bool {
-    dir.join("node_modules/playwright-core/package.json").is_file()
+    dir.join("node_modules/playwright-core/package.json")
+        .is_file()
 }
 
 /// Playwright's own Chromium (the download path): a `chromium-<rev>` folder in the runner's browser folder that holds Playwright's
 /// `INSTALLATION_COMPLETE` marker. A download that stopped half way has no marker, so the next `runner install` offers it again.
 pub fn own_browser(dir: &Path) -> bool {
-    fs::read_dir(dir.join("browsers")).is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("chromium-") && e.path().join("INSTALLATION_COMPLETE").is_file()))
+    fs::read_dir(dir.join("browsers")).is_ok_and(|rd| {
+        rd.flatten().any(|e| {
+            e.file_name().to_string_lossy().starts_with("chromium-")
+                && e.path().join("INSTALLATION_COMPLETE").is_file()
+        })
+    })
 }
 
 fn path_dirs() -> Vec<PathBuf> {
-    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default()
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default()
 }
 
 fn is_exec(p: &Path) -> bool {
@@ -57,7 +73,9 @@ fn is_exec(p: &Path) -> bool {
 }
 
 fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
-    names.iter().find_map(|n| dirs.iter().map(|d| d.join(n)).find(|p| is_exec(p)))
+    names
+        .iter()
+        .find_map(|n| dirs.iter().map(|d| d.join(n)).find(|p| is_exec(p)))
 }
 
 /// The `node` that page runs and the install use. The first `node` on the PATH can be a version manager's shim (asdf, mise, volta) that needs the
@@ -65,7 +83,9 @@ fn find_in(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
 /// binary is what runs. If it cannot say, the first one is used as before.
 pub fn find_node() -> Option<PathBuf> {
     let first = find_in(&path_dirs(), &["node"])?;
-    let env: Vec<(String, String)> = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let env: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect();
     Some(real_node(&first, &env).unwrap_or(first))
 }
 
@@ -73,7 +93,14 @@ pub fn find_node() -> Option<PathBuf> {
 fn real_node(node: &Path, env: &[(String, String)]) -> Option<PathBuf> {
     let mut c = Command::new(node);
     c.args(["-p", "process.execPath"]);
-    let mut app = App::launch(c, &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), env, PathBuf::from("/dev/null"), None).ok()?;
+    let mut app = App::launch(
+        c,
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+        env,
+        PathBuf::from("/dev/null"),
+        None,
+    )
+    .ok()?;
     if !app.wait_end(Duration::from_secs(5)) {
         return None; // dropping `app` stops what it started
     }
@@ -94,7 +121,8 @@ pub fn find_chromium() -> Option<PathBuf> {
 }
 
 fn find_chromium_in(dirs: &[PathBuf], bundles: &[&str]) -> Option<PathBuf> {
-    find_in(dirs, &CHROMIUM_NAMES).or_else(|| bundles.iter().map(PathBuf::from).find(|p| is_exec(p)))
+    find_in(dirs, &CHROMIUM_NAMES)
+        .or_else(|| bundles.iter().map(PathBuf::from).find(|p| is_exec(p)))
 }
 
 /// Before the app is started: can page steps run at all? Err = the UNRUNNABLE reason.
@@ -138,7 +166,10 @@ pub fn step_json(i: usize, st: &Step) -> Value {
         Act::Url(UrlWant::Path(p)) => ("expect_url", json!({"path": p})),
         Act::Url(UrlWant::PathRe(p)) => ("expect_url", json!({"path_re": p})),
         Act::Count(l, Count::N(n)) => ("expect_count", json!({"loc": loc_json(l), "n": n})),
-        Act::Count(l, Count::Range(lo, hi)) => ("expect_count", json!({"loc": loc_json(l), "min": lo, "max": hi})),
+        Act::Count(l, Count::Range(lo, hi)) => (
+            "expect_count",
+            json!({"loc": loc_json(l), "min": lo, "max": hi}),
+        ),
         Act::ConsoleClean => ("expect_console_clean", json!({})),
         Act::Http(h) => {
             let e = &h.expect;
@@ -156,8 +187,19 @@ pub fn step_json(i: usize, st: &Step) -> Value {
 }
 
 /// What goes to the runner on stdin: the steps with {rand} and {port} filled in, the run's port and nonce, and the Chromium to use (null = Playwright's own).
-pub fn payload(spec: &Spec, port: u16, rand: &str, nonce: &str, chromium: Option<&Path>) -> Vec<u8> {
-    let steps: Vec<Value> = spec.steps.iter().enumerate().map(|(ix, st)| spec::subst_value(&step_json(ix + 1, st), rand, port)).collect();
+pub fn payload(
+    spec: &Spec,
+    port: u16,
+    rand: &str,
+    nonce: &str,
+    chromium: Option<&Path>,
+) -> Vec<u8> {
+    let steps: Vec<Value> = spec
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(ix, st)| spec::subst_value(&step_json(ix + 1, st), rand, port))
+        .collect();
     json!({"nonce": nonce, "port": port, "chromium": chromium.map(|c| c.to_string_lossy().into_owned()), "steps": steps}).to_string().into_bytes()
 }
 
@@ -171,15 +213,27 @@ fn warm_up(spec: &Spec, port: u16, rand: &str) -> std::result::Result<(), String
             paths.push(p);
         }
     }
-    let (end, mut c) = (Instant::now() + Duration::from_secs(WARM_UP_SECS), Client::new(port));
+    let (end, mut c) = (
+        Instant::now() + Duration::from_secs(WARM_UP_SECS),
+        Client::new(port),
+    );
     for p in paths {
         if Instant::now() >= end {
             break;
         }
         match c.request("GET", &p, None) {
-            Ok(r) if r.status >= 500 => return Err(format!("GET {p} answered {} before the check started", r.status)),
+            Ok(r) if r.status >= 500 => {
+                return Err(format!(
+                    "GET {p} answered {} before the check started",
+                    r.status
+                ));
+            }
             Ok(_) => {}
-            Err(ReqErr::Down(m)) => return Err(format!("the app did not answer before the check started ({m})")),
+            Err(ReqErr::Down(m)) => {
+                return Err(format!(
+                    "the app did not answer before the check started ({m})"
+                ));
+            }
             Err(ReqErr::Unrunnable(m)) => return Err(m),
         }
     }
@@ -205,13 +259,20 @@ struct ShortTmp(PathBuf);
 impl ShortTmp {
     fn new() -> std::io::Result<ShortTmp> {
         let base = std::env::temp_dir();
-        let base = if base.as_os_str().len() <= 40 { base } else { PathBuf::from("/tmp") };
+        let base = if base.as_os_str().len() <= 40 {
+            base
+        } else {
+            PathBuf::from("/tmp")
+        };
         Self::make(&base, || runner::new_rand().map(|r| format!("tp-{r}")))
     }
 
     /// A new private folder `<base>/<name>`. A name that is taken (a shared /tmp holds other people's folders, and anyone can plant one) is
     /// never used: the next name is tried, and after 8 tries it is an error. No random name: no folder (the check cannot run).
-    fn make(base: &Path, mut name: impl FnMut() -> std::io::Result<String>) -> std::io::Result<ShortTmp> {
+    fn make(
+        base: &Path,
+        mut name: impl FnMut() -> std::io::Result<String>,
+    ) -> std::io::Result<ShortTmp> {
         for _ in 0..8 {
             let p = base.join(name()?);
             match fs::DirBuilder::new().mode(0o700).create(&p) {
@@ -220,7 +281,10 @@ impl ShortTmp {
                 Err(e) => return Err(e),
             }
         }
-        Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "every name tried was already taken"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "every name tried was already taken",
+        ))
     }
 }
 
@@ -244,9 +308,16 @@ fn reap_tmp_in(base: &Path, age: Duration) {
     // SAFETY: geteuid has no arguments and cannot fail.
     let me = unsafe { libc::geteuid() };
     for e in fs::read_dir(base).into_iter().flatten().flatten() {
-        let Ok(m) = e.path().symlink_metadata() else { continue };
-        let old = m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d >= age);
-        if e.file_name().to_string_lossy().starts_with("tp-") && m.is_dir() && m.uid() == me && old {
+        let Ok(m) = e.path().symlink_metadata() else {
+            continue;
+        };
+        let old = m
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|d| d >= age);
+        if e.file_name().to_string_lossy().starts_with("tp-") && m.is_dir() && m.uid() == me && old
+        {
             let _ = fs::remove_dir_all(e.path());
         }
     }
@@ -282,29 +353,64 @@ pub fn run_steps(home: &Path, spec: &Spec, run: &Run, opts: &Opts) -> Vec<String
         Some(s) => s.clone(),
         None => match refresh_script(&dir) {
             Ok(p) => p,
-            Err(e) => return vec![error_line("setup", &format!("the browser runner could not be prepared ({e})"))],
+            Err(e) => {
+                return vec![error_line(
+                    "setup",
+                    &format!("the browser runner could not be prepared ({e})"),
+                )];
+            }
         },
     };
-    let Some(node) = find_node() else { return vec![error_line("setup", "Node.js is not installed, so page (browser) steps cannot run")] };
+    let Some(node) = find_node() else {
+        return vec![error_line(
+            "setup",
+            "Node.js is not installed, so page (browser) steps cannot run",
+        )];
+    };
     let tmp = match ShortTmp::new() {
         Ok(t) => t,
-        Err(e) => return vec![error_line("setup", &format!("no temporary folder for the browser ({e})"))],
+        Err(e) => {
+            return vec![error_line(
+                "setup",
+                &format!("no temporary folder for the browser ({e})"),
+            )];
+        }
     };
     // Exactly these four (spec 16 names three; TMPDIR is the short folder above). No DISPLAY, no proxy, nothing of the user's environment.
-    let path = std::env::var("PATH").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| DEFAULT_PATH.into());
+    let path = std::env::var("PATH")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| DEFAULT_PATH.into());
     let env = vec![
         ("PATH".to_string(), path),
-        ("HOME".to_string(), run.dir().join("home").to_string_lossy().into_owned()),
+        (
+            "HOME".to_string(),
+            run.dir().join("home").to_string_lossy().into_owned(),
+        ),
         ("TMPDIR".to_string(), tmp.0.to_string_lossy().into_owned()),
-        ("PLAYWRIGHT_BROWSERS_PATH".to_string(), dir.join("browsers").to_string_lossy().into_owned()),
+        (
+            "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+            dir.join("browsers").to_string_lossy().into_owned(),
+        ),
     ];
     let mut c = Command::new(&node);
     c.arg(&script);
     let log = run.dir().join("runner.log");
-    let input = payload(spec, run.port, &run.rand, &run.nonce, find_chromium().as_deref());
+    let input = payload(
+        spec,
+        run.port,
+        &run.rand,
+        &run.nonce,
+        find_chromium().as_deref(),
+    );
     let mut app = match App::launch(c, run.dir(), &env, log.clone(), Some(input)) {
         Ok(a) => a,
-        Err(e) => return vec![error_line("setup", &format!("the browser runner could not be started ({e})"))],
+        Err(e) => {
+            return vec![error_line(
+                "setup",
+                &format!("the browser runner could not be started ({e})"),
+            )];
+        }
     };
     let ended = app.wait_end(Duration::from_secs(RUNNER_SECS));
     if !ended {
@@ -314,7 +420,11 @@ pub fn run_steps(home: &Path, spec: &Spec, run: &Run, opts: &Opts) -> Vec<String
     // What the pipe carried, kept in memory: the app under test shares the scratch folder and could rewrite `runner.log` after the done line.
     let mut lines = read_lines(&app.head());
     if !ended && !lines.iter().any(|l| l.starts_with("{\"p\":\"done\"")) {
-        let msg = if runner::out_of_time() { OUT_OF_TIME } else { "the browser runner did not finish" };
+        let msg = if runner::out_of_time() {
+            OUT_OF_TIME
+        } else {
+            "the browser runner did not finish"
+        };
         lines.push(error_line("check", msg));
     }
     lines
@@ -328,9 +438,14 @@ fn source() -> Result<(String, String)> {
     #[cfg(feature = "fault-inject")]
     if let Ok(r) = std::env::var("TORPOR_TEST_REGISTRY") {
         if !r.starts_with("http://127.0.0.1:") {
-            return Err(Error::msg("TORPOR_TEST_REGISTRY must be an http://127.0.0.1:PORT address"));
+            return Err(Error::msg(
+                "TORPOR_TEST_REGISTRY must be an http://127.0.0.1:PORT address",
+            ));
         }
-        return Ok((r, std::env::var("TORPOR_TEST_INTEGRITY").unwrap_or_else(|_| PW_INTEGRITY.into())));
+        return Ok((
+            r,
+            std::env::var("TORPOR_TEST_INTEGRITY").unwrap_or_else(|_| PW_INTEGRITY.into()),
+        ));
     }
     Ok((REGISTRY.to_string(), PW_INTEGRITY.to_string()))
 }
@@ -344,13 +459,34 @@ pub fn prompt(dir: &Path, need_package: bool, need_browser: bool) -> String {
     if need_browser {
         parts.push("a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers, because none was found on this computer");
     }
-    format!("The browser runner needs {}. Install into {}? [y/N]", parts.join(", plus "), dir.display())
+    format!(
+        "The browser runner needs {}. Install into {}? [y/N]",
+        parts.join(", plus "),
+        dir.display()
+    )
 }
 
 /// The environment of a download: the PATH, and only what node needs to reach a proxy or a private certificate authority.
 fn download_env(home: &Path) -> Vec<(String, String)> {
-    let mut env = vec![("PATH".to_string(), std::env::var("PATH").ok().filter(|p| !p.is_empty()).unwrap_or_else(|| DEFAULT_PATH.into())), ("HOME".to_string(), home.to_string_lossy().into_owned())];
-    for k in ["NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"] {
+    let mut env = vec![
+        (
+            "PATH".to_string(),
+            std::env::var("PATH")
+                .ok()
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| DEFAULT_PATH.into()),
+        ),
+        ("HOME".to_string(), home.to_string_lossy().into_owned()),
+    ];
+    for k in [
+        "NODE_EXTRA_CA_CERTS",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+        "NODE_USE_ENV_PROXY",
+    ] {
         if let Some(v) = std::env::var_os(k).filter(|v| !v.is_empty()) {
             env.push((k.to_string(), v.to_string_lossy().into_owned()));
         }
@@ -363,7 +499,12 @@ fn download_env(home: &Path) -> Vec<(String, String)> {
 /// Chromium that is already installed, and a stand-in cli.js).
 pub fn chromium_command(dir: &Path, node: &Path) -> Command {
     let mut c = Command::new(node);
-    c.arg(dir.join("node_modules/playwright-core/cli.js")).arg("install").arg("--no-shell").arg("chromium").current_dir(dir).env_clear();
+    c.arg(dir.join("node_modules/playwright-core/cli.js"))
+        .arg("install")
+        .arg("--no-shell")
+        .arg("chromium")
+        .current_dir(dir)
+        .env_clear();
     c.envs(download_env(&dir.join("home")));
     c.env("PLAYWRIGHT_BROWSERS_PATH", dir.join("browsers"));
     c
@@ -371,13 +512,28 @@ pub fn chromium_command(dir: &Path, node: &Path) -> Command {
 
 /// Run a node command to its end. Ok = its last line of output.
 fn run_node(mut c: Command, what: &str) -> Result<String> {
-    let out = c.output().map_err(|e| Error::msg(format!("{what}: node could not be started ({e})")))?;
+    let out = c
+        .output()
+        .map_err(|e| Error::msg(format!("{what}: node could not be started ({e})")))?;
     if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string());
+        return Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string());
     }
     let text = String::from_utf8_lossy(&[out.stderr, out.stdout].concat()).into_owned();
-    let last = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it failed without a message");
-    Err(Error::msg(format!("{what}: {}", trunc_chars(last.trim(), 300))))
+    let last = text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("it failed without a message");
+    Err(Error::msg(format!(
+        "{what}: {}",
+        trunc_chars(last.trim(), 300)
+    )))
 }
 
 /// Install playwright-core (when `need_package`) and then Chromium (when `need_browser`) into `dir`, which the caller asked the user about.
@@ -390,7 +546,14 @@ pub fn install(dir: &Path, node: &Path, need_package: bool, need_browser: bool) 
         let installer = dir.join("install.mjs");
         fs::write(&installer, INSTALL_MJS)?;
         let mut c = Command::new(node);
-        c.arg(&installer).arg(dir).arg(PW_VERSION).arg(&integrity).arg(&registry).current_dir(dir).env_clear().envs(download_env(dir));
+        c.arg(&installer)
+            .arg(dir)
+            .arg(PW_VERSION)
+            .arg(&integrity)
+            .arg(&registry)
+            .current_dir(dir)
+            .env_clear()
+            .envs(download_env(dir));
         let line = run_node(c, "the download failed")?;
         fs::write(dir.join("package.json"), format!("{}\n", serde_json::to_string_pretty(&json!({"name": "torpor-runner", "version": "1.0.0", "private": true, "dependencies": {"playwright-core": PW_VERSION}})).unwrap_or_default()))?;
         let lock = json!({
@@ -404,8 +567,22 @@ pub fn install(dir: &Path, node: &Path, need_package: bool, need_browser: bool) 
                 }
             }
         });
-        fs::write(dir.join("package-lock.json"), format!("{}\n", serde_json::to_string_pretty(&lock).unwrap_or_default()))?;
-        said.push_str(&format!("{}\nInto {}.\n", if line.is_empty() { format!("Installed playwright-core {PW_VERSION}") } else { line }, dir.display()));
+        fs::write(
+            dir.join("package-lock.json"),
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&lock).unwrap_or_default()
+            ),
+        )?;
+        said.push_str(&format!(
+            "{}\nInto {}.\n",
+            if line.is_empty() {
+                format!("Installed playwright-core {PW_VERSION}")
+            } else {
+                line
+            },
+            dir.display()
+        ));
     }
     refresh_script(dir)?;
     if need_browser {
@@ -419,11 +596,24 @@ pub fn install(dir: &Path, node: &Path, need_package: bool, need_browser: bool) 
 
 /// Node 20 or newer (playwright-core needs it). Err = the sentence to show.
 pub fn node_ok(node: &Path) -> std::result::Result<(), String> {
-    let out = Command::new(node).arg("--version").env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default()).output().map_err(|e| format!("Node.js could not be started ({e})"))?;
+    let out = Command::new(node)
+        .arg("--version")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("Node.js could not be started ({e})"))?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    match v.trim_start_matches('v').split('.').next().and_then(|m| m.parse::<u32>().ok()) {
+    match v
+        .trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+    {
         Some(m) if m >= 20 => Ok(()),
-        _ => Err(format!("Node.js 20 or newer is needed (this one says {})", if v.is_empty() { "nothing" } else { &v })),
+        _ => Err(format!(
+            "Node.js 20 or newer is needed (this one says {})",
+            if v.is_empty() { "nothing" } else { &v }
+        )),
     }
 }
 
@@ -432,8 +622,12 @@ mod tests {
     use super::*;
 
     fn linted(steps: &str) -> Spec {
-        let raw = format!(r#"{{"v":1,"name":"page check","why":"the page works","start":{{"cmd":"node server.js --port {{port}}","ready":"/login","timeout_s":30}},"env":{{}},"steps":{steps}}}"#);
-        spec::lint(&raw).unwrap_or_else(|p| panic!("lint: {p:?}")).spec
+        let raw = format!(
+            r#"{{"v":1,"name":"page check","why":"the page works","start":{{"cmd":"node server.js --port {{port}}","ready":"/login","timeout_s":30}},"env":{{}},"steps":{steps}}}"#
+        );
+        spec::lint(&raw)
+            .unwrap_or_else(|p| panic!("lint: {p:?}"))
+            .spec
     }
 
     #[test]
@@ -445,7 +639,10 @@ mod tests {
         reap_tmp_in(d.path(), Duration::from_secs(3600));
         assert!(a.exists() && b.exists(), "a new folder stays");
         reap_tmp_in(d.path(), Duration::ZERO);
-        assert!(!a.exists() && b.exists(), "an old tp- folder goes, other names stay");
+        assert!(
+            !a.exists() && b.exists(),
+            "an old tp- folder goes, other names stay"
+        );
     }
 
     #[test]
@@ -458,8 +655,22 @@ mod tests {
             {"expect_count":{"text":"Sign in"},"min":1,"why":"a button"},{"expect_console_clean":true,"why":"no errors"},
             {"http":{"method":"POST","path":"/api/login","json":{"email":"kim-the-tester"}},"expect":{"status_in":[200,201],"json_has":["ok"],"json_type":{"ok":"boolean"},"body_contains":"ok","length_range":[1,50]},"why":"signs in"}]"#,
         );
-        let v: Value = serde_json::from_slice(&payload(&s, 4321, "r1", "nonce1", Some(Path::new("/usr/bin/chromium")))).unwrap();
-        assert_eq!((v["nonce"].as_str(), v["port"].as_u64(), v["chromium"].as_str()), (Some("nonce1"), Some(4321), Some("/usr/bin/chromium")));
+        let v: Value = serde_json::from_slice(&payload(
+            &s,
+            4321,
+            "r1",
+            "nonce1",
+            Some(Path::new("/usr/bin/chromium")),
+        ))
+        .unwrap();
+        assert_eq!(
+            (
+                v["nonce"].as_str(),
+                v["port"].as_u64(),
+                v["chromium"].as_str()
+            ),
+            (Some("nonce1"), Some(4321), Some("/usr/bin/chromium"))
+        );
         let steps = v["steps"].as_array().unwrap();
         assert_eq!(steps.len(), 17);
         for (ix, st) in steps.iter().enumerate() {
@@ -468,27 +679,67 @@ mod tests {
         let ops: Vec<&str> = steps.iter().map(|s| s["op"].as_str().unwrap()).collect();
         assert_eq!(
             ops,
-            ["goto", "expect_visible", "fill", "click", "press", "select", "check", "uncheck", "wait_http", "expect_hidden", "expect_text", "expect_url", "expect_url", "expect_count", "expect_count", "expect_console_clean", "http"]
+            [
+                "goto",
+                "expect_visible",
+                "fill",
+                "click",
+                "press",
+                "select",
+                "check",
+                "uncheck",
+                "wait_http",
+                "expect_hidden",
+                "expect_text",
+                "expect_url",
+                "expect_url",
+                "expect_count",
+                "expect_count",
+                "expect_console_clean",
+                "http"
+            ]
         );
         assert_eq!(steps[0]["path"], "/dom?x=r1", "{{rand}} is filled in");
-        assert_eq!(steps[1]["loc"], json!({"k": "role", "v": "heading", "name": "Account"}));
+        assert_eq!(
+            steps[1]["loc"],
+            json!({"k": "role", "v": "heading", "name": "Account"})
+        );
         assert_eq!(steps[2]["loc"], json!({"k": "label", "v": "Email"}));
         assert_eq!(steps[2]["value"], "kim-the-tester");
         assert_eq!(steps[4]["key"], "Enter");
         assert_eq!(steps[9]["loc"], json!({"k": "text_re", "v": "^Error"}));
         assert_eq!(steps[10]["loc"], json!({"k": "testid", "v": "out"}));
         assert_eq!(steps[10]["contains"], "hi");
-        assert_eq!((steps[11]["path"].as_str(), steps[12]["path_re"].as_str()), (Some("/dom"), Some("^/d")));
-        assert_eq!((steps[13]["n"].as_u64(), steps[13]["loc"]["k"].as_str()), (Some(1), Some("text")));
-        assert_eq!((steps[14]["min"].as_u64(), steps[14]["max"].clone()), (Some(1), Value::Null));
+        assert_eq!(
+            (steps[11]["path"].as_str(), steps[12]["path_re"].as_str()),
+            (Some("/dom"), Some("^/d"))
+        );
+        assert_eq!(
+            (steps[13]["n"].as_u64(), steps[13]["loc"]["k"].as_str()),
+            (Some(1), Some("text"))
+        );
+        assert_eq!(
+            (steps[14]["min"].as_u64(), steps[14]["max"].clone()),
+            (Some(1), Value::Null)
+        );
         let h = &steps[16];
-        assert_eq!((h["method"].as_str(), h["path"].as_str(), h["json"].clone()), (Some("POST"), Some("/api/login"), json!({"email": "kim-the-tester"})));
+        assert_eq!(
+            (h["method"].as_str(), h["path"].as_str(), h["json"].clone()),
+            (
+                Some("POST"),
+                Some("/api/login"),
+                json!({"email": "kim-the-tester"})
+            )
+        );
         assert_eq!(h["expect"]["status_in"], json!([200, 201]));
         assert_eq!(h["expect"]["json_type"], json!([["ok", "boolean"]]));
         assert_eq!(h["expect"]["length_range"], json!([1, 50]));
         assert!(steps[0].get("json").is_none() && h["expect"]["status"].is_null());
         let none: Value = serde_json::from_slice(&payload(&s, 1, "r", "n", None)).unwrap();
-        assert!(none["chromium"].is_null(), "no system Chromium: the runner uses its own");
+        assert!(
+            none["chromium"].is_null(),
+            "no system Chromium: the runner uses its own"
+        );
     }
 
     #[test]
@@ -505,7 +756,11 @@ mod tests {
         mk(&b.join("google-chrome"), 0o755);
         mk(&a.join("brave-browser"), 0o755);
         let dirs = vec![a.clone(), b.clone()];
-        assert_eq!(find_chromium_in(&dirs, &[]), Some(b.join("google-chrome")), "names are tried in order, directories within a name");
+        assert_eq!(
+            find_chromium_in(&dirs, &[]),
+            Some(b.join("google-chrome")),
+            "names are tried in order, directories within a name"
+        );
         mk(&b.join("chromium"), 0o755);
         assert_eq!(find_chromium_in(&dirs, &[]), Some(b.join("chromium")));
         std::fs::remove_file(b.join("chromium")).unwrap();
@@ -515,7 +770,10 @@ mod tests {
         assert_eq!(find_chromium_in(&dirs, &[]), None);
         let bundle = tmp.path().join("Chromium");
         mk(&bundle, 0o755);
-        assert_eq!(find_chromium_in(&dirs, &[bundle.to_str().unwrap()]), Some(bundle));
+        assert_eq!(
+            find_chromium_in(&dirs, &[bundle.to_str().unwrap()]),
+            Some(bundle)
+        );
         assert_eq!(find_in(&dirs, &["node"]), None);
     }
 
@@ -526,53 +784,125 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), RUN_MJS);
         std::fs::write(&p, "old runner").unwrap();
         assert_eq!(refresh_script(tmp.path()).unwrap(), p);
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), RUN_MJS, "a newer Torpor brings its own runner");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            RUN_MJS,
+            "a newer Torpor brings its own runner"
+        );
         let before = std::fs::metadata(&p).unwrap().modified().unwrap();
         refresh_script(tmp.path()).unwrap();
-        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before, "unchanged bytes are not rewritten");
-        let names: Vec<String> = std::fs::read_dir(tmp.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().modified().unwrap(),
+            before,
+            "unchanged bytes are not rewritten"
+        );
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
         assert_eq!(names, ["run.mjs"], "no temp file is left");
     }
 
     #[test]
-    fn installed_means_the_checked_package_is_in_place_and_a_browser_folder_means_playwrights_own_chromium() {
+    fn installed_means_the_checked_package_is_in_place_and_a_browser_folder_means_playwrights_own_chromium()
+     {
         let tmp = tempfile::tempdir().unwrap();
         let dir = runner_dir(tmp.path());
         assert!(dir.ends_with("runner/1.64.1"));
         assert!(!installed(&dir) && !own_browser(&dir));
         std::fs::create_dir_all(dir.join("node_modules/playwright-core")).unwrap();
-        assert!(!installed(&dir), "a folder without its package.json is not an install");
+        assert!(
+            !installed(&dir),
+            "a folder without its package.json is not an install"
+        );
         std::fs::write(dir.join("node_modules/playwright-core/package.json"), "{}").unwrap();
         assert!(installed(&dir));
         std::fs::create_dir_all(dir.join("browsers/ffmpeg-1")).unwrap();
         assert!(!own_browser(&dir));
         std::fs::create_dir_all(dir.join("browsers/chromium-1234")).unwrap();
-        assert!(!own_browser(&dir), "a download that stopped half way (no INSTALLATION_COMPLETE) is not a browser");
+        assert!(
+            !own_browser(&dir),
+            "a download that stopped half way (no INSTALLATION_COMPLETE) is not a browser"
+        );
         std::fs::create_dir_all(dir.join("browsers/chromium_headless_shell-1234")).unwrap();
-        std::fs::write(dir.join("browsers/chromium_headless_shell-1234/INSTALLATION_COMPLETE"), "").unwrap();
-        assert!(!own_browser(&dir), "the headless shell is not the browser the runner starts");
+        std::fs::write(
+            dir.join("browsers/chromium_headless_shell-1234/INSTALLATION_COMPLETE"),
+            "",
+        )
+        .unwrap();
+        assert!(
+            !own_browser(&dir),
+            "the headless shell is not the browser the runner starts"
+        );
         std::fs::write(dir.join("browsers/chromium-1234/INSTALLATION_COMPLETE"), "").unwrap();
         assert!(own_browser(&dir));
     }
 
     #[test]
-    fn the_question_names_what_is_downloaded_from_where_and_the_chromium_download_runs_in_the_runner_folder_alone() {
+    fn the_question_names_what_is_downloaded_from_where_and_the_chromium_download_runs_in_the_runner_folder_alone()
+     {
         let dir = Path::new("/srv/h/runner/1.64.1");
         let q = prompt(dir, true, false);
-        assert!(q.starts_with("The browser runner needs about 3 MB (playwright-core from the npm registry).") && q.ends_with("Install into /srv/h/runner/1.64.1? [y/N]"), "{q}");
+        assert!(
+            q.starts_with(
+                "The browser runner needs about 3 MB (playwright-core from the npm registry)."
+            ) && q.ends_with("Install into /srv/h/runner/1.64.1? [y/N]"),
+            "{q}"
+        );
         assert!(!q.contains("Chromium"));
         let q = prompt(dir, true, true);
         assert!(q.contains("plus a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers, because none was found"), "{q}");
         assert!(prompt(dir, false, true).starts_with("The browser runner needs a Chromium of a few hundred MB (with ffmpeg) from Playwright's servers"));
         let c = chromium_command(dir, Path::new("/usr/bin/node"));
         assert_eq!(c.get_program(), "/usr/bin/node");
-        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, ["/srv/h/runner/1.64.1/node_modules/playwright-core/cli.js", "install", "--no-shell", "chromium"]);
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "/srv/h/runner/1.64.1/node_modules/playwright-core/cli.js",
+                "install",
+                "--no-shell",
+                "chromium"
+            ]
+        );
         assert_eq!(c.get_current_dir(), Some(dir));
-        let envs: std::collections::BTreeMap<String, String> = c.get_envs().filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned()))).collect();
-        assert_eq!(envs["PLAYWRIGHT_BROWSERS_PATH"], "/srv/h/runner/1.64.1/browsers");
-        assert_eq!(envs["HOME"], "/srv/h/runner/1.64.1/home", "the download never touches the real home");
-        assert!(envs.keys().all(|k| ["PATH", "HOME", "PLAYWRIGHT_BROWSERS_PATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "NODE_USE_ENV_PROXY"].contains(&k.as_str())), "{envs:?}");
+        let envs: std::collections::BTreeMap<String, String> = c
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert_eq!(
+            envs["PLAYWRIGHT_BROWSERS_PATH"],
+            "/srv/h/runner/1.64.1/browsers"
+        );
+        assert_eq!(
+            envs["HOME"], "/srv/h/runner/1.64.1/home",
+            "the download never touches the real home"
+        );
+        assert!(
+            envs.keys().all(|k| [
+                "PATH",
+                "HOME",
+                "PLAYWRIGHT_BROWSERS_PATH",
+                "NODE_EXTRA_CA_CERTS",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "HTTPS_PROXY",
+                "HTTP_PROXY",
+                "NO_PROXY",
+                "NODE_USE_ENV_PROXY"
+            ]
+            .contains(&k.as_str())),
+            "{envs:?}"
+        );
     }
 
     #[test]
@@ -591,21 +921,37 @@ mod tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         let fail: Value = serde_json::from_str(&lines[1]).unwrap();
         let msg = fail["msg"].as_str().unwrap();
-        assert!(!msg.contains("sk-ant-api03") && msg.chars().count() <= 301, "{msg}");
+        assert!(
+            !msg.contains("sk-ant-api03") && msg.chars().count() <= 301,
+            "{msg}"
+        );
         assert_eq!(fail["i"], 3);
         assert!(read_lines(b"").is_empty());
     }
 
     #[test]
     fn a_version_manager_shim_is_replaced_by_the_node_it_finds_with_the_environment_it_gets() {
-        let Some(node) = find_in(&path_dirs(), &["node"]) else { return };
+        let Some(node) = find_in(&path_dirs(), &["node"]) else {
+            return;
+        };
         let tmp = tempfile::tempdir().unwrap();
         let shim = tmp.path().join("node");
         fs::write(&shim, "#!/bin/sh\nexec \"$SHIM_REAL\" \"$@\"\n").unwrap();
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
-        let real = real_node(&shim, &[("SHIM_REAL".into(), node.to_string_lossy().into_owned())]).unwrap();
-        assert!(real.is_absolute() && is_exec(&real) && real != shim, "{real:?}");
-        assert_eq!(real_node(&shim, &[]), None, "without its environment the shim finds no node, and the caller keeps the first one");
+        let real = real_node(
+            &shim,
+            &[("SHIM_REAL".into(), node.to_string_lossy().into_owned())],
+        )
+        .unwrap();
+        assert!(
+            real.is_absolute() && is_exec(&real) && real != shim,
+            "{real:?}"
+        );
+        assert_eq!(
+            real_node(&shim, &[]),
+            None,
+            "without its environment the shim finds no node, and the caller keeps the first one"
+        );
     }
 
     #[test]
@@ -616,7 +962,11 @@ mod tests {
             let p = tmp.path().join(name);
             std::fs::write(&p, text).unwrap();
             let out = Command::new(&node).arg("--check").arg(&p).output().unwrap();
-            assert!(out.status.success(), "{name}: {}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 
@@ -625,7 +975,10 @@ mod tests {
         let t = ShortTmp::new().unwrap();
         let p = t.0.clone();
         assert!(p.is_dir() && p.as_os_str().len() <= 60, "{p:?}");
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         drop(t);
         assert!(!p.exists());
     }
@@ -636,18 +989,41 @@ mod tests {
         let base = tmp.path();
         // Somebody else's folder (open, with a file in it) and a planted link: neither is used or followed.
         std::fs::create_dir(base.join("tp-taken")).unwrap();
-        std::fs::set_permissions(base.join("tp-taken"), std::fs::Permissions::from_mode(0o777)).unwrap();
+        std::fs::set_permissions(
+            base.join("tp-taken"),
+            std::fs::Permissions::from_mode(0o777),
+        )
+        .unwrap();
         std::fs::write(base.join("tp-taken/mine"), "x").unwrap();
         std::fs::create_dir(base.join("elsewhere")).unwrap();
         std::os::unix::fs::symlink(base.join("elsewhere"), base.join("tp-link")).unwrap();
         let mut names = ["tp-taken", "tp-link", "tp-free"].into_iter();
         let t = ShortTmp::make(base, || Ok(names.next().unwrap().to_string())).unwrap();
         assert_eq!(t.0, base.join("tp-free"));
-        assert_eq!(std::fs::metadata(&t.0).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(std::fs::metadata(base.join("tp-taken")).unwrap().permissions().mode() & 0o777, 0o777, "the other folder is as it was");
-        assert!(base.join("tp-taken/mine").is_file() && std::fs::read_dir(base.join("elsewhere")).unwrap().next().is_none());
+        assert_eq!(
+            std::fs::metadata(&t.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(base.join("tp-taken"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o777,
+            "the other folder is as it was"
+        );
+        assert!(
+            base.join("tp-taken/mine").is_file()
+                && std::fs::read_dir(base.join("elsewhere"))
+                    .unwrap()
+                    .next()
+                    .is_none()
+        );
         // Every name taken: an error, not a reused folder.
-        let e = ShortTmp::make(base, || Ok("tp-taken".to_string())).err().unwrap();
+        let e = ShortTmp::make(base, || Ok("tp-taken".to_string()))
+            .err()
+            .unwrap();
         assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
         // No random name: an error, and nothing was made.
         let before = std::fs::read_dir(base).unwrap().count();
@@ -666,7 +1042,10 @@ mod tests {
         };
         assert!(node_ok(&fake("v20.0.0")).is_ok() && node_ok(&fake("v24.1.0")).is_ok());
         let e = node_ok(&fake("v18.19.1")).unwrap_err();
-        assert!(e.contains("Node.js 20 or newer") && e.contains("v18.19.1"), "{e}");
+        assert!(
+            e.contains("Node.js 20 or newer") && e.contains("v18.19.1"),
+            "{e}"
+        );
         assert!(node_ok(&fake("garbage")).is_err());
     }
 }

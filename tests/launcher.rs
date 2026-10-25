@@ -1,7 +1,7 @@
 //! Packaging (spec 9): the launcher's version, hooks.json, and the launcher's install steps.
 mod common;
 use common::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 
 fn read(rel: &str) -> String {
@@ -12,11 +12,23 @@ fn read(rel: &str) -> String {
 fn launcher_version_equals_manifest_and_cargo() {
     let plugin: Value = serde_json::from_str(&read(".claude-plugin/plugin.json")).unwrap();
     let launcher = read("bin/torpor");
-    let v = launcher.lines().find_map(|l| l.strip_prefix("V=")).expect("launcher has a V= line").trim().to_string();
-    assert_eq!(plugin["version"].as_str(), Some(v.as_str()), "launcher V vs plugin.json version");
+    let v = launcher
+        .lines()
+        .find_map(|l| l.strip_prefix("V="))
+        .expect("launcher has a V= line")
+        .trim()
+        .to_string();
+    assert_eq!(
+        plugin["version"].as_str(),
+        Some(v.as_str()),
+        "launcher V vs plugin.json version"
+    );
     assert_eq!(v, env!("CARGO_PKG_VERSION"), "launcher V vs Cargo version");
     assert_eq!(plugin["name"], "torpor");
-    let mode = std::fs::metadata(manifest_dir().join("bin/torpor")).unwrap().permissions().mode();
+    let mode = std::fs::metadata(manifest_dir().join("bin/torpor"))
+        .unwrap()
+        .permissions()
+        .mode();
     assert_eq!(mode & 0o111, 0o111, "launcher must be executable");
 }
 
@@ -24,16 +36,37 @@ fn launcher_version_equals_manifest_and_cargo() {
 #[test]
 fn the_skill_has_the_exact_description_a_short_body_and_a_check_the_lint_accepts() {
     let text = read("skills/torpor/SKILL.md");
-    let (front, body) = text.strip_prefix("---\n").and_then(|t| t.split_once("\n---\n")).expect("front matter");
+    let (front, body) = text
+        .strip_prefix("---\n")
+        .and_then(|t| t.split_once("\n---\n"))
+        .expect("front matter");
     let want = "Use when the user says something works now, or that something which worked is broken, or asks to undo or find what broke. Torpor save points, promises and checks.";
-    assert!(front.lines().any(|l| l == format!("description: {want}")), "description: {front}");
+    assert!(
+        front.lines().any(|l| l == format!("description: {want}")),
+        "description: {front}"
+    );
     assert!(front.lines().any(|l| l == "name: torpor"));
-    assert!(body.lines().count() <= 60, "the body has {} lines", body.lines().count());
-    for must in ["torpor promise add -", "torpor find-break", "--check -", "torpor undo <turn>", "torpor promise dispute <id>", "timeout 600000"] {
+    assert!(
+        body.lines().count() <= 60,
+        "the body has {} lines",
+        body.lines().count()
+    );
+    for must in [
+        "torpor promise add -",
+        "torpor find-break",
+        "--check -",
+        "torpor undo <turn>",
+        "torpor promise dispute <id>",
+        "timeout 600000",
+    ] {
         assert!(body.contains(must), "the body does not say: {must}");
     }
-    let json = body.split("```\n").nth(1).expect("a fenced check in the body");
-    let l = torpor::spec::lint(json).unwrap_or_else(|e| panic!("the example check is rejected: {e:?}"));
+    let json = body
+        .split("```\n")
+        .nth(1)
+        .expect("a fenced check in the body");
+    let l =
+        torpor::spec::lint(json).unwrap_or_else(|e| panic!("the example check is rejected: {e:?}"));
     assert_eq!(l.spec.name, "login works");
 }
 
@@ -55,10 +88,20 @@ fn hooks_json_matches_the_spec() {
     ];
     assert_eq!(hooks.len(), table.len(), "exactly the ten events");
     for (ev, timeout, matcher) in table {
-        let groups = hooks[ev].as_array().unwrap_or_else(|| panic!("{ev} missing"));
+        let groups = hooks[ev]
+            .as_array()
+            .unwrap_or_else(|| panic!("{ev} missing"));
         assert_eq!(groups.len(), 1, "{ev}");
         let g = &groups[0];
-        assert_eq!(g.get("matcher").and_then(|m| m.as_str()), if matcher { Some("Bash|Edit|Write|MultiEdit|NotebookEdit") } else { None }, "{ev} matcher");
+        assert_eq!(
+            g.get("matcher").and_then(|m| m.as_str()),
+            if matcher {
+                Some("Bash|Edit|Write|MultiEdit|NotebookEdit")
+            } else {
+                None
+            },
+            "{ev} matcher"
+        );
         let cmds = g["hooks"].as_array().unwrap();
         assert_eq!(cmds.len(), 1, "{ev}");
         let c = &cmds[0];
@@ -67,13 +110,23 @@ fn hooks_json_matches_the_spec() {
         assert_eq!(c["onFailure"], "continue", "{ev}");
         assert_eq!(c["args"], json!(["hook", ev]), "{ev}");
         assert_eq!(c["timeout"], timeout, "{ev} timeout");
-        assert!(c.get("async").is_none() && c.get("asyncRewake").is_none(), "{ev}: no async");
+        assert!(
+            c.get("async").is_none() && c.get("asyncRewake").is_none(),
+            "{ev}: no async"
+        );
     }
     // The timeout in hooks.json must always be longer than the binary's own deadline (spec 3.2).
-    assert_eq!(torpor::hook::own_deadline_ms("Stop"), Some(30_000), "the Stop hook's own deadline (spec 18)");
+    assert_eq!(
+        torpor::hook::own_deadline_ms("Stop"),
+        Some(30_000),
+        "the Stop hook's own deadline (spec 18)"
+    );
     for (ev, timeout, _) in table {
         let own = torpor::hook::own_deadline_ms(ev).unwrap();
-        assert!(own < timeout as u64 * 1000, "{ev}: own deadline {own} ms vs timeout {timeout} s");
+        assert!(
+            own < timeout as u64 * 1000,
+            "{ev}: own deadline {own} ms vs timeout {timeout} s"
+        );
     }
 }
 
@@ -91,22 +144,53 @@ fn launcher_installs_then_takes_the_fast_path() {
 
     // First run (a terminal command): copies the binary, writes the shim, runs the copy.
     let o = version(&launcher);
-    assert_eq!((o.code, o.stdout.trim().to_string()), (0, format!("torpor {v}")), "stderr: {}", o.stderr);
+    assert_eq!(
+        (o.code, o.stdout.trim().to_string()),
+        (0, format!("torpor {v}")),
+        "stderr: {}",
+        o.stderr
+    );
     let installed = sim.env.thome.join("bin").join(v).join("torpor");
     assert!(installed.exists(), "binary installed at {installed:?}");
-    assert_eq!(std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777, 0o755);
+    assert_eq!(
+        std::fs::metadata(&installed).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
     let shim_path = sim.env.thome.join("bin/torpor");
     let shim = std::fs::read_to_string(&shim_path).unwrap();
-    assert!(shim.starts_with("#!/bin/sh\n") && shim.contains(&format!("{}/bin/{v}/torpor", sim.env.thome.display())), "shim: {shim}");
-    assert_eq!(std::fs::metadata(&shim_path).unwrap().permissions().mode() & 0o111, 0o111);
-    assert_eq!(std::fs::metadata(&sim.env.thome).unwrap().permissions().mode() & 0o777, 0o700, "the store folder is private");
+    assert!(
+        shim.starts_with("#!/bin/sh\n")
+            && shim.contains(&format!("{}/bin/{v}/torpor", sim.env.thome.display())),
+        "shim: {shim}"
+    );
+    assert_eq!(
+        std::fs::metadata(&shim_path).unwrap().permissions().mode() & 0o111,
+        0o111
+    );
+    assert_eq!(
+        std::fs::metadata(&sim.env.thome)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700,
+        "the store folder is private"
+    );
 
     // Second run: the shipped binary is gone, the installed copy still answers (fast path), and so does the shim.
     std::fs::remove_dir_all(root.join("dist")).unwrap();
     let o = version(&launcher);
-    assert_eq!((o.code, o.stdout.trim().to_string()), (0, format!("torpor {v}")), "fast path");
+    assert_eq!(
+        (o.code, o.stdout.trim().to_string()),
+        (0, format!("torpor {v}")),
+        "fast path"
+    );
     let o = version(&shim_path);
-    assert_eq!((o.code, o.stdout.trim().to_string()), (0, format!("torpor {v}")), "shim");
+    assert_eq!(
+        (o.code, o.stdout.trim().to_string()),
+        (0, format!("torpor {v}")),
+        "shim"
+    );
 }
 
 /// A shipped binary of another version (a stale dist/ after a plugin update) runs where it is and is never installed:
@@ -129,16 +213,25 @@ fn launcher_runs_a_binary_of_another_version_in_place_and_installs_nothing() {
     // Twice: the second run is not a fast path, because nothing was installed.
     for _ in 0..2 {
         let o = run(&["version"], b"");
-        assert_eq!((o.code, o.stdout.trim()), (0, "torpor 0.0.1"), "the stub ran where it is; stderr: {}", o.stderr);
+        assert_eq!(
+            (o.code, o.stdout.trim()),
+            (0, "torpor 0.0.1"),
+            "the stub ran where it is; stderr: {}",
+            o.stderr
+        );
         let o = run(&["status", "--all"], b"");
         assert_eq!(o.stdout.trim(), "stub ran in place: status --all");
     }
     let bin = sim.env.thome.join("bin");
-    let left: Vec<_> = std::fs::read_dir(&bin).map(|d| d.flatten().map(|e| e.file_name()).collect()).unwrap_or_default();
+    let left: Vec<_> = std::fs::read_dir(&bin)
+        .map(|d| d.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
     assert!(left.is_empty(), "no copy, no temp file, no shim: {left:?}");
     // A hook still ends well and says nothing.
     sim.pid = "p1".into();
-    let payload = sim.payload("SessionStart", json!({"source": "startup"})).to_string();
+    let payload = sim
+        .payload("SessionStart", json!({"source": "startup"}))
+        .to_string();
     let o = run(&["hook", "SessionStart"], payload.as_bytes());
     check_contract("SessionStart", &o);
     assert_eq!(o.stdout, "");
@@ -150,14 +243,21 @@ fn launcher_hook_through_installed_copy_records_save_points() {
     write_files(sim.proj(), &[("a.txt", "A1\n")]);
     let root = make_plugin_root(sim.env._tmp.path(), true);
     let launcher = root.join("bin/torpor");
-    for (ev, extra) in [("SessionStart", json!({"source": "startup"})), ("UserPromptSubmit", json!({"prompt": "hello"}))] {
+    for (ev, extra) in [
+        ("SessionStart", json!({"source": "startup"})),
+        ("UserPromptSubmit", json!({"prompt": "hello"})),
+    ] {
         sim.pid = "p1".into();
         let mut c = cmd_with(&launcher, &sim.env);
         c.args(["hook", ev]);
         let o = run_cmd(c, sim.payload(ev, extra).to_string().as_bytes());
         check_contract(ev, &o);
     }
-    assert_eq!(sim.q_i64("SELECT COUNT(*) FROM points"), 1, "the launcher ran the real hook");
+    assert_eq!(
+        sim.q_i64("SELECT COUNT(*) FROM points"),
+        1,
+        "the launcher ran the real hook"
+    );
     assert_eq!(sim.q_i64("SELECT COUNT(*) FROM turns"), 1);
 }
 
@@ -170,8 +270,13 @@ fn a8c_a_fresh_plugin_copy_still_lists_every_save_point() {
     let tmp = sim.env._tmp.path().to_path_buf();
     let ids = |sim: &Sim| -> Vec<i64> {
         let c = sim.conn();
-        let mut st = c.prepare("SELECT id FROM points WHERE visible=1 AND dropped=0 ORDER BY id").unwrap();
-        st.query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect()
+        let mut st = c
+            .prepare("SELECT id FROM points WHERE visible=1 AND dropped=0 ORDER BY id")
+            .unwrap();
+        st.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|x| x.unwrap())
+            .collect()
     };
     let log_turns = |sim: &Sim| -> Vec<i64> {
         let o = sim.cli(&["log", "--json"]);
@@ -208,10 +313,25 @@ fn a8c_a_fresh_plugin_copy_still_lists_every_save_point() {
 
     assert_eq!(log_turns(&sim), [3, 2, 1]);
     let now = ids(&sim);
-    assert!(first.iter().all(|i| now.contains(i)), "every old save point is still listed: {first:?} vs {now:?}");
+    assert!(
+        first.iter().all(|i| now.contains(i)),
+        "every old save point is still listed: {first:?} vs {now:?}"
+    );
     assert!(now.len() >= first.len() + 4);
-    assert!(sim.env.thome.join("bin").join(env!("CARGO_PKG_VERSION")).join("torpor").exists(), "installed again");
-    assert!(sim.status().stdout.starts_with("Torpor is saving this project.\n"));
+    assert!(
+        sim.env
+            .thome
+            .join("bin")
+            .join(env!("CARGO_PKG_VERSION"))
+            .join("torpor")
+            .exists(),
+        "installed again"
+    );
+    assert!(
+        sim.status()
+            .stdout
+            .starts_with("Torpor is saving this project.\n")
+    );
     // And the oldest turn can still be gone back to.
     let o = sim.cli(&["back", "--turn", "1"]);
     assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);

@@ -51,8 +51,20 @@ pub enum Out {
 // ---------------------------------------------------------------- what counts as a change that matters
 
 const LOCKFILES: [&str; 14] = [
-    "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "poetry.lock", "uv.lock", "Pipfile.lock", "Cargo.lock",
-    "Gemfile.lock", "composer.lock", "go.sum", "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lock",
+    "bun.lockb",
+    "poetry.lock",
+    "uv.lock",
+    "Pipfile.lock",
+    "Cargo.lock",
+    "Gemfile.lock",
+    "composer.lock",
+    "go.sum",
+    "package.json",
 ];
 
 fn base(p: &str) -> &str {
@@ -79,7 +91,12 @@ pub fn doc_like(p: &str) -> bool {
     let b = base(&low);
     let ext = b.rsplit_once('.').map(|x| x.1).unwrap_or("");
     matches!(ext, "md" | "mdx" | "txt" | "rst" | "adoc")
-        || low.split('/').rev().skip(1).any(|d| matches!(d, "docs" | "doc" | "test" | "tests" | "__tests__" | "spec" | "specs" | "e2e"))
+        || low.split('/').rev().skip(1).any(|d| {
+            matches!(
+                d,
+                "docs" | "doc" | "test" | "tests" | "__tests__" | "spec" | "specs" | "e2e"
+            )
+        })
         || b.contains(".test.")
         || b.contains(".spec.")
         || b.contains("_test.")
@@ -104,24 +121,36 @@ pub fn watched_set(p: &Promise) -> Option<BTreeSet<String>> {
     if a.is_none() && b.is_none() {
         return None;
     }
-    Some(a.into_iter().flatten().chain(b.into_iter().flatten()).collect())
+    Some(
+        a.into_iter()
+            .flatten()
+            .chain(b.into_iter().flatten())
+            .collect(),
+    )
 }
 
 fn overlap_of(w: &BTreeSet<String>, diff: &[String]) -> usize {
-    diff.iter().filter(|x| w.contains(*x) || is_global(x)).count()
+    diff.iter()
+        .filter(|x| w.contains(*x) || is_global(x))
+        .count()
 }
 
 /// Does a change to `files` reach this promise (spec 20)? Its watched set holds one of them, or one is a global file. While the files a
 /// promise reads are not known yet, any file that is not a doc or a test may matter.
 pub fn meets(p: &Promise, files: &[String]) -> bool {
     let watched = watched_set(p);
-    watched.as_ref().is_some_and(|w| overlap_of(w, files) > 0) || (p.deps_json.is_none() && files.iter().any(|f| relevant(f, watched.as_ref())))
+    watched.as_ref().is_some_and(|w| overlap_of(w, files) > 0)
+        || (p.deps_json.is_none() && files.iter().any(|f| relevant(f, watched.as_ref())))
 }
 
 // ---------------------------------------------------------------- small readers
 
 pub fn eligible(p: &Promise) -> bool {
-    p.state == "live" && matches!(p.tier.as_str(), "advisory" | "unproven" | "shadow" | "blocking")
+    p.state == "live"
+        && matches!(
+            p.tier.as_str(),
+            "advisory" | "unproven" | "shadow" | "blocking"
+        )
 }
 
 pub fn eligible_count(db: &Connection) -> i64 {
@@ -129,7 +158,9 @@ pub fn eligible_count(db: &Connection) -> i64 {
 }
 
 fn id_list(db: &Connection, key: &str) -> Vec<i64> {
-    meta_get(db, key).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    meta_get(db, key)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn latest_verdict(db: &Connection, id: i64) -> Option<String> {
@@ -186,7 +217,11 @@ fn flake_hat(db: &Connection, id: i64) -> f64 {
 /// Blocks so far in this chain (session, prompt) and the tree of the newest one.
 /// An error is returned, never read as "no blocks yet": that would lift the cap. The caller fails open (the Stop is allowed).
 fn chain_state(db: &Connection, session: &str, prompt: &str) -> Result<(i64, Option<Vec<u8>>)> {
-    let sum: i64 = db.query_row("SELECT COALESCE(SUM(blocks),0) FROM gate_chain WHERE session_id=?1 AND prompt_id=?2", params![session, prompt], |r| r.get(0))?;
+    let sum: i64 = db.query_row(
+        "SELECT COALESCE(SUM(blocks),0) FROM gate_chain WHERE session_id=?1 AND prompt_id=?2",
+        params![session, prompt],
+        |r| r.get(0),
+    )?;
     let tree: Option<Vec<u8>> = db
         .query_row("SELECT tree_id FROM gate_chain WHERE session_id=?1 AND prompt_id=?2 AND blocks>0 ORDER BY rowid DESC LIMIT 1", params![session, prompt], |r| r.get(0))
         .optional()?
@@ -206,27 +241,69 @@ const TOUCH_IDS: usize = 5;
 fn touch_line(ids: &[i64]) -> String {
     let shown = &ids[..ids.len().min(TOUCH_IDS)];
     let nums: Vec<String> = shown.iter().map(|i| format!("#{i}")).collect();
-    let more = if ids.len() > shown.len() { format!(" and {} more", ids.len() - shown.len()) } else { String::new() };
-    let run = if ids.len() > shown.len() { "--all".to_string() } else { shown.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ") };
-    format!("Torpor: edit touches promise{} {}{more}; `torpor check {run}` before finishing", if ids.len() == 1 { "" } else { "s" }, nums.join(", "))
+    let more = if ids.len() > shown.len() {
+        format!(" and {} more", ids.len() - shown.len())
+    } else {
+        String::new()
+    };
+    let run = if ids.len() > shown.len() {
+        "--all".to_string()
+    } else {
+        shown
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    format!(
+        "Torpor: edit touches promise{} {}{more}; `torpor check {run}` before finishing",
+        if ids.len() == 1 { "" } else { "s" },
+        nums.join(", ")
+    )
 }
 
 /// Spec 18 (B8): an edit whose files meet the watched set of a promise says so, once per promise per turn and within the push budgets (spec 23).
 /// None = nothing to say. Only the numbers of promises are in the line, never their names.
-pub fn touched(db: &Connection, session: &str, turn_id: i64, turn_n: i64, rels: &[String]) -> Option<String> {
+pub fn touched(
+    db: &Connection,
+    session: &str,
+    turn_id: i64,
+    turn_n: i64,
+    rels: &[String],
+) -> Option<String> {
     let ps = promise::all(db, false).ok()?;
     let told = |id: i64| -> bool {
-        db.query_row("SELECT EXISTS(SELECT 1 FROM push_log WHERE turn_id=?1 AND kind=?2 AND delivered=1)", params![turn_id, format!("touch:{id}")], |r| r.get(0)).unwrap_or(true)
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM push_log WHERE turn_id=?1 AND kind=?2 AND delivered=1)",
+            params![turn_id, format!("touch:{id}")],
+            |r| r.get(0),
+        )
+        .unwrap_or(true)
     };
     let ids: Vec<i64> = ps
         .iter()
-        .filter(|p| eligible(p) && watched_set(p).is_some_and(|w| rels.iter().any(|r| w.contains(r))))
+        .filter(|p| {
+            eligible(p) && watched_set(p).is_some_and(|w| rels.iter().any(|r| w.contains(r)))
+        })
         .map(|p| p.id)
         .filter(|id| !told(*id))
         .collect();
     let first = *ids.first()?;
     let line = touch_line(&ids);
-    if !push::admit(db, &push::Push { session, turn_id, turn_n, kind: &format!("touch:{first}"), text: &line, window: 1, must: false }).ok()? {
+    if !push::admit(
+        db,
+        &push::Push {
+            session,
+            turn_id,
+            turn_n,
+            kind: &format!("touch:{first}"),
+            text: &line,
+            window: 1,
+            must: false,
+        },
+    )
+    .ok()?
+    {
         return None;
     }
     // The other promises of the line are told too (no tokens of their own: the line was counted once).
@@ -268,21 +345,53 @@ fn select(ws: &Ws, inp: &Input, ps: Vec<Promise>, paths: &[String]) -> Vec<Cand>
         if !paths.iter().any(|x| relevant(x, watched.as_ref())) {
             continue;
         }
-        let lp = p.last_pass_point.and_then(|pt| promise::point_tree(db, pt).ok());
-        let diff = lp.and_then(|t| diffs.entry(t).or_insert_with(|| findbreak::changed_files_opt(ws, &t, &inp.tree)).clone());
+        let lp = p
+            .last_pass_point
+            .and_then(|pt| promise::point_tree(db, pt).ok());
+        let diff = lp.and_then(|t| {
+            diffs
+                .entry(t)
+                .or_insert_with(|| findbreak::changed_files_opt(ws, &t, &inp.tree))
+                .clone()
+        });
         let overlap = match (&watched, &diff) {
             (Some(w), Some(d)) => overlap_of(w, d),
             _ => 0,
         };
-        let failed_last = matches!(latest_verdict(db, p.id).as_deref(), Some("FAIL" | "UNRUNNABLE"));
-        let picked = forced || failed_last || overlap > 0 || p.deps_json.is_none() || watched.is_none() || diff.is_none() || stops_since_run(db, p.id) >= 2;
+        let failed_last = matches!(
+            latest_verdict(db, p.id).as_deref(),
+            Some("FAIL" | "UNRUNNABLE")
+        );
+        let picked = forced
+            || failed_last
+            || overlap > 0
+            || p.deps_json.is_none()
+            || watched.is_none()
+            || diff.is_none()
+            || stops_since_run(db, p.id) >= 2;
         if picked {
             let est = est_ms(db, p.id);
-            out.push(Cand { p, watched, lp, diff, forced, failed_last, overlap, est });
+            out.push(Cand {
+                p,
+                watched,
+                lp,
+                diff,
+                forced,
+                failed_last,
+                overlap,
+                est,
+            });
         }
     }
     // Unverified first, then failed last time, then the bigger overlap, then the shorter run.
-    out.sort_by_key(|c| (!c.forced, !c.failed_last, std::cmp::Reverse(c.overlap), c.est));
+    out.sort_by_key(|c| {
+        (
+            !c.forced,
+            !c.failed_last,
+            std::cmp::Reverse(c.overlap),
+            c.est,
+        )
+    });
     out
 }
 
@@ -329,8 +438,13 @@ fn candidate(c: &Cand, f: &Checked, unverifiable: bool, gate_on: bool, open: boo
     tier_ok
         && !unverifiable
         && f.runs.len() >= 3
-        && f.runs.iter().all(|r| r.judged.verdict == Verdict::Fail && r.judged.failed_step.is_some())
-        && c.watched.as_ref().zip(c.diff.as_ref()).is_some_and(|(w, d)| overlap_of(w, d) > 0)
+        && f.runs
+            .iter()
+            .all(|r| r.judged.verdict == Verdict::Fail && r.judged.failed_step.is_some())
+        && c.watched
+            .as_ref()
+            .zip(c.diff.as_ref())
+            .is_some_and(|(w, d)| overlap_of(w, d) > 0)
 }
 
 fn run_all(ws: &Ws, inp: &Input, cands: &[Cand], gate_on: bool, open: bool) -> Vec<Res> {
@@ -354,7 +468,10 @@ fn run_all(ws: &Ws, inp: &Input, cands: &[Cand], gate_on: bool, open: bool) -> V
             Call::Unrunnable if cut_reason(&checked) => Res::Cut(std::mem::take(&mut checked.runs)),
             Call::Unrunnable => Res::Unrunnable(checked),
             Call::Fail => {
-                let step_why = checked.failed_step.and_then(|n| l.spec.steps.get(n.wrapping_sub(1))).and_then(|s| s.why.clone());
+                let step_why = checked
+                    .failed_step
+                    .and_then(|n| l.spec.steps.get(n.wrapping_sub(1)))
+                    .and_then(|s| s.why.clone());
                 let control = if !candidate(c, &checked, l.spec.unverifiable, gate_on, open) {
                     Control::No
                 } else if let Some(lp) = c.lp {
@@ -375,7 +492,11 @@ fn run_all(ws: &Ws, inp: &Input, cands: &[Cand], gate_on: bool, open: bool) -> V
                 if matches!(control, Control::Pass(_)) && c.p.tier == "blocking" {
                     ended = true; // the block ends this Stop; the rest run at the next one
                 }
-                Res::Fail(Box::new(FailInfo { checked, step_why, control }))
+                Res::Fail(Box::new(FailInfo {
+                    checked,
+                    step_why,
+                    control,
+                }))
             }
         };
         out.push(res);
@@ -396,10 +517,18 @@ struct Applied {
     ups: Option<(String, String)>,
 }
 
-fn record_runs(db: &Connection, id: i64, kind: &str, tree: &[u8; 32], runs: &[RunResult], now: i64) -> Result<()> {
+fn record_runs(
+    db: &Connection,
+    id: i64,
+    kind: &str,
+    tree: &[u8; 32],
+    runs: &[RunResult],
+    now: i64,
+) -> Result<()> {
     for r in runs {
         // A run cut by the clock says nothing about the check.
-        if r.judged.verdict == Verdict::Unrunnable && r.judged.reason.contains(runner::OUT_OF_TIME) {
+        if r.judged.verdict == Verdict::Unrunnable && r.judged.reason.contains(runner::OUT_OF_TIME)
+        {
             continue;
         }
         promise::record(db, id, kind, Some(tree), r, now)?;
@@ -418,7 +547,10 @@ fn shadow_pass(db: &Connection, p: &Promise, inp: &Input) -> Result<Option<Strin
     let id = p.id;
     if let Some(failed) = meta_get(db, &format!("would:{id}")) {
         if failed != hex(&inp.tree) && promise::promote(db, id, true)? {
-            return Ok(Some(format!("Torpor: promise {} would have stopped the AI and it was fixed since, so it stops the AI from now on. torpor promise show {id}", short_name(p))));
+            return Ok(Some(format!(
+                "Torpor: promise {} would have stopped the AI and it was fixed since, so it stops the AI from now on. torpor promise show {id}",
+                short_name(p)
+            )));
         }
         return Ok(None);
     }
@@ -427,21 +559,36 @@ fn shadow_pass(db: &Connection, p: &Promise, inp: &Input) -> Result<Option<Strin
         return Ok(None);
     }
     meta_set(db, &key, &day.to_string())?;
-    db.execute("UPDATE promises SET shadow_days=shadow_days+1 WHERE id=?1", [id])?;
-    let n: i64 = db.query_row("SELECT shadow_days FROM promises WHERE id=?1", [id], |r| r.get(0))?;
+    db.execute(
+        "UPDATE promises SET shadow_days=shadow_days+1 WHERE id=?1",
+        [id],
+    )?;
+    let n: i64 = db.query_row("SELECT shadow_days FROM promises WHERE id=?1", [id], |r| {
+        r.get(0)
+    })?;
     if n >= 3 && promise::promote(db, id, false)? {
-        return Ok(Some(format!("Torpor: promise {} passed on {n} different days without a false alarm, so it stops the AI from now on. torpor promise show {id}", short_name(p))));
+        return Ok(Some(format!(
+            "Torpor: promise {} passed on {n} different days without a false alarm, so it stops the AI from now on. torpor promise show {id}",
+            short_name(p)
+        )));
     }
     Ok(None)
 }
 
 fn set_hat(db: &Connection, id: i64) -> Result<()> {
-    db.execute("UPDATE promises SET flake_hat=?2 WHERE id=?1", params![id, flake_hat(db, id)])?;
+    db.execute(
+        "UPDATE promises SET flake_hat=?2 WHERE id=?1",
+        params![id, flake_hat(db, id)],
+    )?;
     Ok(())
 }
 
 fn flaky_line(p: &Promise) -> String {
-    format!("Torpor: promise {} passed and failed on the same version, so it is flaky and advisory only. torpor promise show {}", short_name(p), p.id)
+    format!(
+        "Torpor: promise {} passed and failed on the same version, so it is flaky and advisory only. torpor promise show {}",
+        short_name(p),
+        p.id
+    )
 }
 
 pub fn short_name(p: &Promise) -> String {
@@ -464,7 +611,11 @@ fn latest_turn_of(db: &Connection, files: &[String]) -> Option<i64> {
 }
 
 fn source_words(db: &Connection, p: &Promise) -> String {
-    let who = if p.source == "agent" { "the AI's own" } else { "the user's words" };
+    let who = if p.source == "agent" {
+        "the AI's own"
+    } else {
+        "the user's words"
+    };
     match promise::turn_n(db, p.created_turn) {
         Some(n) => format!("{who}, turn {n}"),
         None => who.to_string(),
@@ -484,7 +635,12 @@ fn block_reason(db: &Connection, c: &Cand, f: &FailInfo) -> String {
         Some(n) => format!("promise #{id} \"{n}\""),
         None => format!("promise #{id}"),
     };
-    let head = |step: &str| format!("Torpor: {name} ({}) fails now. Failing step: {step}. It failed 3 of 3 fresh runs and still passes on the saved working version.", source_words(db, p));
+    let head = |step: &str| {
+        format!(
+            "Torpor: {name} ({}) fails now. Failing step: {step}. It failed 3 of 3 fresh runs and still passes on the saved working version.",
+            source_words(db, p)
+        )
+    };
     let mut files: Vec<String> = c.diff.clone().unwrap_or_default();
     if let Some(w) = &c.watched {
         files.sort_by_key(|x| !(w.contains(x) || is_global(x)));
@@ -492,25 +648,51 @@ fn block_reason(db: &Connection, c: &Cand, f: &FailInfo) -> String {
     let changed = if files.is_empty() {
         String::new()
     } else {
-        let turn = latest_turn_of(db, &files[..files.len().min(3)]).map(|n| format!(" (turn {n})")).unwrap_or_default();
-        format!(" Changed since it last passed: {}{turn}.", push::names_phrase(&files))
+        let turn = latest_turn_of(db, &files[..files.len().min(3)])
+            .map(|n| format!(" (turn {n})"))
+            .unwrap_or_default();
+        format!(
+            " Changed since it last passed: {}{turn}.",
+            push::names_phrase(&files)
+        )
     };
     let tail = format!(
         " Fix the app, not the check, and do not special-case test values. If this promise is wrong or outdated run `torpor promise dispute {id} \"<why>\"`; it asks the user instead of you."
     );
     let step_n = f.checked.failed_step.unwrap_or(0);
-    let generic = if step_n > 0 { format!("step {step_n} of the check") } else { "a step of the check".to_string() };
-    let step = f.step_why.as_deref().and_then(|w| push::line_ok(w, 200)).unwrap_or(generic.clone());
+    let generic = if step_n > 0 {
+        format!("step {step_n} of the check")
+    } else {
+        "a step of the check".to_string()
+    };
+    let step = f
+        .step_why
+        .as_deref()
+        .and_then(|w| push::line_ok(w, 200))
+        .unwrap_or(generic.clone());
     let fixed = words_n(&head("")) + words_n(&changed) + words_n(&tail);
     let allow = BLOCK_WORDS.saturating_sub(fixed).min(25);
-    let step = if allow >= 3 { push::words(&step, allow) } else { generic };
+    let step = if allow >= 3 {
+        push::words(&step, allow)
+    } else {
+        generic
+    };
     format!("{}{changed}{tail}", head(&step))
 }
 
 fn fail_line(db: &Connection, c: &Cand, would: bool) -> String {
     let p = &c.p;
-    let tail = if would { "It would have stopped the AI, but it is in shadow mode." } else { "The AI was not stopped." };
-    format!("Torpor: promise {} failed after this turn (3 of 3 runs; {}). {tail} torpor promise show {}", short_name(p), passed_on(db, p), p.id)
+    let tail = if would {
+        "It would have stopped the AI, but it is in shadow mode."
+    } else {
+        "The AI was not stopped."
+    };
+    format!(
+        "Torpor: promise {} failed after this turn (3 of 3 runs; {}). {tail} torpor promise show {}",
+        short_name(p),
+        passed_on(db, p),
+        p.id
+    )
 }
 
 fn ups_text(turn_n: i64, c: &Cand, f: &FailInfo) -> String {
@@ -519,13 +701,27 @@ fn ups_text(turn_n: i64, c: &Cand, f: &FailInfo) -> String {
         .step_why
         .as_deref()
         .and_then(|w| push::line_ok(w, 200))
-        .map(|w| format!("Torpor: promise #{id} failed after turn {turn_n}: {}. Run torpor check {id}.", push::words(&w, 14)))
+        .map(|w| {
+            format!(
+                "Torpor: promise #{id} failed after turn {turn_n}: {}. Run torpor check {id}.",
+                push::words(&w, 14)
+            )
+        })
         .filter(|t| t.chars().count() <= 120);
-    with.unwrap_or_else(|| format!("Torpor: promise #{id} failed after turn {turn_n}. Run torpor check {id}."))
+    with.unwrap_or_else(|| {
+        format!("Torpor: promise #{id} failed after turn {turn_n}. Run torpor check {id}.")
+    })
 }
 
 /// Everything the gate learned, in one transaction: runs, flags, tiers, chain, receipt. Safe to run twice (the store retries on busy).
-fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skipped: &[String]) -> Result<Applied> {
+fn apply(
+    w: &Ws,
+    inp: &Input,
+    cands: &[Cand],
+    res: &[Res],
+    gate_on: bool,
+    skipped: &[String],
+) -> Result<Applied> {
     let db = &w.conn;
     let mut a = Applied::default();
     a.lines.extend(skipped.iter().cloned());
@@ -557,7 +753,10 @@ fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skippe
                     a.lines.push(flaky_line(&c.p));
                     a.outcomes.insert("flaky");
                 } else {
-                    db.execute("UPDATE promises SET last_pass_point=?2 WHERE id=?1", params![id, inp.end_pt])?;
+                    db.execute(
+                        "UPDATE promises SET last_pass_point=?2 WHERE id=?1",
+                        params![id, inp.end_pt],
+                    )?;
                     a.outcomes.insert("ok");
                     if c.p.tier == "shadow" {
                         a.lines.extend(shadow_pass(db, &c.p, inp)?);
@@ -624,7 +823,11 @@ fn apply(w: &Ws, inp: &Input, cands: &[Cand], res: &[Res], gate_on: bool, skippe
                     meta_set(db, &format!("would:{id}"), &hex(&inp.tree))?;
                 }
                 a.lines.push(fail_line(db, c, would));
-                a.outcomes.insert(if c.p.tier == "blocking" && !open { "unresolved" } else { "fail" });
+                a.outcomes.insert(if c.p.tier == "blocking" && !open {
+                    "unresolved"
+                } else {
+                    "fail"
+                });
                 if a.ups.is_none() {
                     a.ups = Some((format!("fail:{id}"), ups_text(inp.turn_n, c, f)));
                 }
@@ -642,9 +845,20 @@ pub fn last_receipts_all_unverified(db: &Connection) -> bool {
 }
 
 /// One row per Stop, even when nothing was selected. Only the newest KEEP_RECEIPTS stay.
-pub fn write_receipt(db: &Connection, inp_session: &str, turn_id: i64, now: i64, selected: i64, ran: i64, outcome: &str) -> Result<()> {
+pub fn write_receipt(
+    db: &Connection,
+    inp_session: &str,
+    turn_id: i64,
+    now: i64,
+    selected: i64,
+    ran: i64,
+    outcome: &str,
+) -> Result<()> {
     db.execute("INSERT INTO receipts(session_id,turn_id,at,selected,ran,outcome) VALUES(?1,?2,?3,?4,?5,?6)", params![inp_session, turn_id, now, selected, ran, outcome])?;
-    db.execute("DELETE FROM receipts WHERE id<=(SELECT MAX(id) FROM receipts)-?1", [KEEP_RECEIPTS])?;
+    db.execute(
+        "DELETE FROM receipts WHERE id<=(SELECT MAX(id) FROM receipts)-?1",
+        [KEEP_RECEIPTS],
+    )?;
     Ok(())
 }
 
@@ -673,11 +887,18 @@ pub const SILENT_NOTICE: &str = "Torpor's promise checks did not run at the last
 /// Run the gate for one Stop. Never blocks unless every condition at the top of this file holds.
 pub fn run(root: &Path, inp: &Input) -> Result<Out> {
     let mut ws = Ws::open(root, false)?;
-    let ps: Vec<Promise> = promise::all(&ws.conn, false)?.into_iter().filter(eligible).collect();
+    let ps: Vec<Promise> = promise::all(&ws.conn, false)?
+        .into_iter()
+        .filter(eligible)
+        .collect();
     if ps.is_empty() {
         return Ok(Out::Nothing);
     }
-    let paths: Vec<String> = turn::net_changes(&ws.conn, inp.turn_id, "'edit','shell','subagent','outside'")?.into_iter().map(|n| n.path).collect();
+    let paths: Vec<String> =
+        turn::net_changes(&ws.conn, inp.turn_id, "'edit','shell','subagent','outside'")?
+            .into_iter()
+            .map(|n| n.path)
+            .collect();
     let (sum, last) = chain_state(&ws.conn, &inp.session, &inp.prompt_id)?;
     let open = chain_open(sum, &last, &inp.tree);
     let gate_on = promise::gate_enabled(&ws.conn);
@@ -693,9 +914,19 @@ pub fn run(root: &Path, inp: &Input) -> Result<Out> {
     }
     let selected = cands.len() as i64;
     if cands.is_empty() {
-        let outcome = if skipped.is_empty() { "none" } else { "unresolved" };
-        promise::write(&mut ws, |w| write_receipt(&w.conn, &inp.session, inp.turn_id, inp.now, 0, 0, outcome))?;
-        return Ok(if skipped.is_empty() { Out::Nothing } else { Out::Lines(skipped) });
+        let outcome = if skipped.is_empty() {
+            "none"
+        } else {
+            "unresolved"
+        };
+        promise::write(&mut ws, |w| {
+            write_receipt(&w.conn, &inp.session, inp.turn_id, inp.now, 0, 0, outcome)
+        })?;
+        return Ok(if skipped.is_empty() {
+            Out::Nothing
+        } else {
+            Out::Lines(skipped)
+        });
     }
     // If this process is killed in the middle, these stay first in line for the next Stop.
     let ids = serde_json::to_string(&cands.iter().map(|c| c.p.id).collect::<Vec<_>>())?;
@@ -710,11 +941,26 @@ pub fn run(root: &Path, inp: &Input) -> Result<Out> {
         } else {
             meta_set(db, "gate_unrun", &serde_json::to_string(&a.unrun)?)?;
         }
-        let outcome = if a.outcomes.is_empty() { "none".to_string() } else { a.outcomes.iter().copied().collect::<Vec<_>>().join(",") };
-        write_receipt(db, &inp.session, inp.turn_id, inp.now, selected, a.ran, &outcome)?;
+        let outcome = if a.outcomes.is_empty() {
+            "none".to_string()
+        } else {
+            a.outcomes.iter().copied().collect::<Vec<_>>().join(",")
+        };
+        write_receipt(
+            db,
+            &inp.session,
+            inp.turn_id,
+            inp.now,
+            selected,
+            a.ran,
+            &outcome,
+        )?;
         let mut a = a;
         if a.outcomes.contains("unverified") && last_receipts_all_unverified(db) {
-            a.lines.push("Torpor: promise checks were cut short at the last 3 turn ends. torpor status".to_string());
+            a.lines.push(
+                "Torpor: promise checks were cut short at the last 3 turn ends. torpor status"
+                    .to_string(),
+            );
         }
         match &a.ups {
             Some((k, t)) => meta_set(db, "ups_line", &json!({"kind": k, "text": t}).to_string())?,
@@ -723,12 +969,29 @@ pub fn run(root: &Path, inp: &Input) -> Result<Out> {
             }
         }
         if let Some(reason) = &a.block {
-            let carry = [meta_get(db, "stop_carry").and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).unwrap_or_default(), inp.notices.clone()].concat();
+            let carry = [
+                meta_get(db, "stop_carry")
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                    .unwrap_or_default(),
+                inp.notices.clone(),
+            ]
+            .concat();
             if !carry.is_empty() {
                 meta_set(db, "stop_carry", &serde_json::to_string(&carry)?)?;
             }
             // A block is told whatever the budget (spec 23).
-            push::admit(db, &push::Push { session: &inp.session, turn_id: inp.turn_id, turn_n: inp.turn_n, kind: "block", text: reason, window: 0, must: true })?;
+            push::admit(
+                db,
+                &push::Push {
+                    session: &inp.session,
+                    turn_id: inp.turn_id,
+                    turn_n: inp.turn_n,
+                    kind: "block",
+                    text: reason,
+                    window: 0,
+                    must: true,
+                },
+            )?;
         }
         for l in &a.lines {
             let chars = l.chars().count() as i64;
@@ -744,8 +1007,14 @@ pub fn run(root: &Path, inp: &Input) -> Result<Out> {
 }
 
 fn id_list_from_chain(db: &Connection, session: &str, prompt: &str) -> Vec<i64> {
-    let Ok(mut st) = db.prepare("SELECT promise_id FROM gate_chain WHERE session_id=?1 AND prompt_id=?2 AND blocks>0") else { return Vec::new() };
-    st.query_map(params![session, prompt], |r| r.get(0)).map(|rows| rows.filter_map(|x| x.ok()).collect()).unwrap_or_default()
+    let Ok(mut st) = db.prepare(
+        "SELECT promise_id FROM gate_chain WHERE session_id=?1 AND prompt_id=?2 AND blocks>0",
+    ) else {
+        return Vec::new();
+    };
+    st.query_map(params![session, prompt], |r| r.get(0))
+        .map(|rows| rows.filter_map(|x| x.ok()).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -754,35 +1023,96 @@ mod tests {
 
     #[test]
     fn docs_and_tests_do_not_matter_but_globals_always_do() {
-        for p in ["README.md", "docs/guide.rst", "tests/app.test.js", "src/a.spec.ts", "src/x_test.go", "LICENSE", "notes.txt", "e2e/login.js", "CHANGELOG.md"] {
+        for p in [
+            "README.md",
+            "docs/guide.rst",
+            "tests/app.test.js",
+            "src/a.spec.ts",
+            "src/x_test.go",
+            "LICENSE",
+            "notes.txt",
+            "e2e/login.js",
+            "CHANGELOG.md",
+        ] {
             assert!(doc_like(p), "{p}");
         }
-        for p in ["src/auth.ts", "server.js", "lib/testing.js", "src/contest.js"] {
+        for p in [
+            "src/auth.ts",
+            "server.js",
+            "lib/testing.js",
+            "src/contest.js",
+        ] {
             assert!(!doc_like(p), "{p}");
         }
-        for p in ["package.json", "web/package-lock.json", ".env.local", "next.config.js", "middleware.ts", "prisma/schema.prisma", "db/migrations/001.sql", "requirements.txt", "a.sql"] {
+        for p in [
+            "package.json",
+            "web/package-lock.json",
+            ".env.local",
+            "next.config.js",
+            "middleware.ts",
+            "prisma/schema.prisma",
+            "db/migrations/001.sql",
+            "requirements.txt",
+            "a.sql",
+        ] {
             assert!(is_global(p), "{p}");
         }
-        assert!(!is_global("src/config.rs"), "only root-level config files are global");
+        assert!(
+            !is_global("src/config.rs"),
+            "only root-level config files are global"
+        );
         assert!(!is_global("src/auth.ts"));
-        assert!(relevant("requirements.txt", None), "a global beats the .txt rule");
+        assert!(
+            relevant("requirements.txt", None),
+            "a global beats the .txt rule"
+        );
         assert!(!relevant("README.md", None));
         let w: BTreeSet<String> = ["docs/api.md".to_string()].into();
-        assert!(relevant("docs/api.md", Some(&w)), "a doc the promise watches counts");
+        assert!(
+            relevant("docs/api.md", Some(&w)),
+            "a doc the promise watches counts"
+        );
     }
 
     #[test]
     fn the_watched_set_and_overlap() {
         let w: BTreeSet<String> = ["src/a.ts".to_string()].into();
-        assert_eq!(overlap_of(&w, &["src/a.ts".into(), "src/b.ts".into(), "package.json".into()]), 2);
+        assert_eq!(
+            overlap_of(
+                &w,
+                &["src/a.ts".into(), "src/b.ts".into(), "package.json".into()]
+            ),
+            2
+        );
         assert_eq!(overlap_of(&w, &["src/b.ts".into()]), 0);
     }
 
     fn promise(deps: Option<&str>, watched: Option<&str>) -> Promise {
         Promise {
-            id: 1, name: "login works".into(), why: None, source: "agent".into(), tier: "advisory".into(), state: "live".into(), spec_id: String::new(), good_point: None,
-            bad_point: None, created_turn: None, created_at: 0, want_source: None, announced: false, replaces: None, assertions_n: 1, flake_hat: None, mutants_killed: None,
-            mutants_tried: None, deps_json: deps.map(String::from), watched_json: watched.map(String::from), last_pass_point: None, shadow_days: 0, catches: 0, disputes_json: None,
+            id: 1,
+            name: "login works".into(),
+            why: None,
+            source: "agent".into(),
+            tier: "advisory".into(),
+            state: "live".into(),
+            spec_id: String::new(),
+            good_point: None,
+            bad_point: None,
+            created_turn: None,
+            created_at: 0,
+            want_source: None,
+            announced: false,
+            replaces: None,
+            assertions_n: 1,
+            flake_hat: None,
+            mutants_killed: None,
+            mutants_tried: None,
+            deps_json: deps.map(String::from),
+            watched_json: watched.map(String::from),
+            last_pass_point: None,
+            shadow_days: 0,
+            catches: 0,
+            disputes_json: None,
         }
     }
 
@@ -791,11 +1121,20 @@ mod tests {
         let f = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let known = promise(Some(r#"["server.js"]"#), Some(r#"["server.js"]"#));
         assert!(meets(&known, &f(&["server.js"])));
-        assert!(meets(&known, &f(&["package-lock.json"])), "a global file reaches every promise");
-        assert!(!meets(&known, &f(&["other.js"])), "a file the promise never read does not");
+        assert!(
+            meets(&known, &f(&["package-lock.json"])),
+            "a global file reaches every promise"
+        );
+        assert!(
+            !meets(&known, &f(&["other.js"])),
+            "a file the promise never read does not"
+        );
         assert!(!meets(&known, &f(&["README.md"])));
         let reads_a_doc = promise(Some(r#"["README.md"]"#), Some("[]"));
-        assert!(meets(&reads_a_doc, &f(&["README.md"])), "a doc it watches counts");
+        assert!(
+            meets(&reads_a_doc, &f(&["README.md"])),
+            "a doc it watches counts"
+        );
         // Nothing recorded what it reads yet: anything but a doc or a test may matter.
         let unknown = promise(None, Some(r#"["server.js"]"#));
         assert!(meets(&unknown, &f(&["other.js"])));

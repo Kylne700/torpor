@@ -9,7 +9,11 @@ fn the_demo_runs_offline_and_tells_the_story() {
         .output()
         .unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(o.status.success(), "{out}{}", String::from_utf8_lossy(&o.stderr));
+    assert!(
+        o.status.success(),
+        "{out}{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     for line in [
         "rewind left 1 shell-changed file from turn 4: server.js",
         "Turn 4 broke it",
